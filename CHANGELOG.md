@@ -5,6 +5,62 @@ makes the pair identifiable. `npm run check:version` guards the engine's own
 `package.json` ↔ `playbook.yaml` agreement, and `npm run pack:plugin` refuses to build a
 tarball whose plugin version differs from the engine it carries.
 
+## 0.7.0 — layered planning, human-gated branches, and two gates that could not be trusted
+
+Minor. New planning surface; existing playbooks that declare no `layers` behave exactly as before.
+
+### Added
+
+- **Layered planning (`layers:` in the master, `layer:` on a task).** `dependencies` orders
+  individual tasks; a layer is a named stratum (substrate → data → domain → interface) and may
+  carry a **gate** — a shell command that must exit 0 before anything in a *higher* layer is
+  claimable. A task's layer is **derived** from its dependencies (1 + its deepest dependency) and
+  a declared `layer:` is a **constraint** `pb validate` enforces, so an edge that silently pushes
+  work deeper fails the guardrail instead of quietly contradicting the declaration. A finished
+  layer whose gate is red still holds the layer above: ticking off every task is not the claim
+  that a stratum is sound. Tasks with no `layer:` are unconstrained in both directions, so layers
+  can be adopted incrementally.
+- **`pb plan --layers [--check-gates] [--strict] [--json]` — a dry run.** Reports derived layers,
+  per-layer gate state, group *and* gate blockers, the ready set, the derived order and the
+  critical path. It executes no `acceptance_check`, and it fingerprints the backlog, journal,
+  state and cycle brief before rendering and exits 3 if any of them changed — the dry run proves
+  its own read-only-ness rather than promising it. Gate commands run only under `--check-gates`;
+  exit 2 = structurally invalid (cycle, unknown layer, a layer earlier than its dependencies) or
+  a checked gate failing; 1 = `--strict` with work open. An **unverified** gate blocks a claim
+  rather than being assumed green, and enforcement covers all three selection paths (`pb next`,
+  the host payload, `pb loop run --auto`).
+- Gate results are memoized **per planning pass** and cleared between plans, because keying the
+  memo by command text alone let one playbook's verdict leak into another's tree.
+- **Human-gated layers (`human: true`), and one batch instead of stop-and-go.** Some gates only a
+  person can satisfy — buy the domain, provision the database, issue the credential. Declaring
+  `human: true` changes reporting and hand-off, never whether the gate gates. A failing gate now
+  blocks only its own branch (work *at* that layer, in unrelated layers, and unlayered work stay
+  claimable), `pb plan --layers --check-gates` collects every human-gated layer into one
+  `WAITING ON A HUMAN` batch — each gate command plus every task it holds up — and
+  `pb loop run --auto` reports that batch and ends `Status: stalled` instead of printing
+  "Autonomous run complete." while whole layers sit behind a red gate. That last part was the
+  real defect: gate-blocked work is filtered out of `claimable`, so the run was confidently wrong
+  about being finished. Pinned by `scripts/test-human-gates.mjs` (26 assertions), including that an
+  **unmarked** gate keeps exactly its previous semantics.
+
+### Fixed
+
+- **A blocked task replayed as `todo`, so the drift alarm blamed healthy state.** The state
+  reconstruction read the `release` *action* before a terminal *status*, so every
+  `pb record --status blocked` row was replayed as unclaimed work. `pb repair-state --check`
+  reported drift on healthy projections, and its suggested `--apply` "repair" would have
+  resurrected finished blocked work as todo. A terminal status now wins over the release action.
+  Pinned by `scripts/test-repair-terminal-release.mjs` (RED first: 5 of 9 assertions failed on the
+  old code).
+- **`shellSplit` deleted quotes inside an unquoted token**, so the most ordinary check shape there
+  is — `node -e "process.exit(require('fs').existsSync('x')?0:1)"` — reached node as
+  `require(fs)` and died with `ERR_INVALID_ARG_TYPE`. That is a gate which can never go green, and
+  it sat under every `acceptance_check` *and* every layer gate. A quote is now syntax only where a
+  word begins; empty quoted arguments are preserved; the divergence from POSIX concatenation is
+  documented and pinned by `scripts/test-shell-split-quotes.mjs`.
+- **A task naming an undeclared layer crashed the planner** with a `TypeError` on an undefined
+  bucket instead of reporting the problem. It is now a plan problem and a `pb validate` failure.
+
 ## 0.6.3 — the entry point catches up, and the OpenCode adapter goes multi-agent
 
 Patch. No engine gate behaviour changed.

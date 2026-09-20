@@ -1,6 +1,6 @@
 {
   "name": "dsh-agents-playbook",
-  "version": "0.6.3",
+  "version": "0.7.0",
   "description": "DeepSeek Harness plugin for Agent-Playbook: multi-agent claims, isolated git worktrees, and enforced acceptance checks. \"Done\" is an exit code, not a claim.",
   "type": "module",
   "main": "index.js",

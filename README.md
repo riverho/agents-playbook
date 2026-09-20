@@ -1,9 +1,10 @@
 # Agents-Playbook
 
-Current release: **v0.6.3** — **multi-agent leases**, complete **worktrees**, crash recovery, the
-**DeepSeek Harness plugin** (`dsh-agents-playbook`), and the **Stop gate** that enforces the loop at
-the harness boundary. On npm as [`agents-playbook`](https://www.npmjs.com/package/agents-playbook)
-· [what's in it](#whats-in-v063).
+Current release: **v0.7.0** — **layered planning** with a provably read-only dry run,
+**human-gated branches** that batch everything only a person can clear, **multi-agent leases**,
+complete **worktrees**, crash recovery, and the **DeepSeek Harness plugin**
+(`dsh-agents-playbook`). On npm as [`agents-playbook`](https://www.npmjs.com/package/agents-playbook)
+· [what's in it](#whats-in-v070).
 
 > **Done is an exit code, not prose.** The kernel is a `pb record --status done` that re-runs each
 > task's `acceptance_checks` (shell commands) and *refuses* on failure. Anchoring, the North Star
@@ -27,8 +28,49 @@ Agents lose the thread between sessions, drift from process, and — worst of al
    documents don't.
 3. **Durable state on disk** (backlog, append-only journal), so context loss never means work loss.
 
-That's the whole thesis. No specs pipeline, no DAG scheduler, no debt ledger — the playbook earns
-complexity only when a real workload demands it.
+That's the whole thesis. No specs pipeline, no debt ledger — the playbook earns complexity only
+when a real workload demands it. (Layers arrived in v0.7.0 and are held to that bar: they are an
+executable plan the claim path enforces, not metadata beside it. See
+[what came back differently](#what-was-deliberately-cut--and-what-came-back-differently).)
+
+## What's in v0.7.0
+
+**Plan the repo, not just the next task.** `dependencies` orders individual tasks; a **layer** is a
+named stratum (substrate → data → domain → interface) and may carry a **gate** — a shell command
+that must exit 0 before anything in a *higher* layer is claimable. A layer is a **projection of the
+dependency graph** (derived as 1 + its deepest dependency), and a declared `layer:` is a
+**constraint** `pb validate` enforces, so an edge that silently pushes work deeper is a guardrail
+failure rather than a quiet contradiction. A finished layer whose gate is **red** still holds the
+layer above: ticking off every task is not the claim that a stratum is sound.
+
+**A dry run that proves it wrote nothing.** `pb plan --layers [--check-gates] [--strict] [--json]`
+prints derived layers, per-layer gate state, blockers, the ready set, the derived order and the
+critical path. It fingerprints the backlog, journal, state and cycle brief before rendering and
+exits 3 if any changed, and it executes no `acceptance_check` — gate commands run only under
+`--check-gates`. Exit 2 = structurally invalid (cycle, unknown layer, a layer earlier than its
+dependencies) or a checked gate failing; 1 = `--strict` with work open.
+
+**Human-gated branches, batched into one hand-off.** `human: true` on a layer declares a gate only
+a person can satisfy — buy the domain, provision the database. It changes reporting and hand-off,
+never whether the gate gates. A failing gate blocks **only its own branch** (work at that layer, in
+unrelated layers, and unlayered work stay claimable), and every human-gated layer is collected into
+a single `WAITING ON A HUMAN` batch naming each gate command and **every** task it holds up.
+`pb loop run --auto` reports that batch and ends `Status: stalled` — previously it printed
+*"Autonomous run complete"* whenever the only remaining work sat above a red gate, which is an
+engine confidently wrong about being finished. Unmarked gates keep exactly their old semantics.
+
+### Fixed
+
+- **A blocked task replayed as `todo`.** The state reconstruction read the `release` *action* before
+  a terminal *status*, so every `pb record --status blocked` row replayed as unclaimed work:
+  `pb repair-state --check` reported drift on healthy projections, and its suggested `--apply`
+  would have resurrected finished blocked work as todo. Pinned by
+  `scripts/test-repair-terminal-release.mjs` (RED first).
+- **`shellSplit` deleted quotes inside an unquoted token**, so the most ordinary check shape there is
+  — `node -e "process.exit(require('fs').existsSync('x')?0:1)"` — reached node as `require(fs)` and
+  died with `ERR_INVALID_ARG_TYPE`. A gate that can never go green, sitting under every
+  `acceptance_check` *and* every layer gate.
+- **A task naming an undeclared layer crashed the planner** instead of reporting the problem.
 
 ## What's in v0.6.3
 
@@ -419,16 +461,28 @@ Being explicit about what is shipped and what is not:
 
 | Artifact | State |
 | --- | --- |
-| Engine (`agents-playbook`) | **repo + tag** `0.6.3`; npm latest is `0.6.2` — the `0.6.3` publish is pending a valid npm token |
+| Engine (`agents-playbook`) | **repo** `0.7.0` (unreleased, untagged); **npm latest is `0.6.3`** — the version bumped here is not published |
 | Git tags | `v0.1.0`, `v0.3`, `v0.3.2`, `v0.6.0`, `v0.6.1`, `v0.6.2`, `v0.6.3` |
-| Harness plugin (`dsh-agents-playbook`) | **repo + tag** `0.6.3`; npm latest is `0.6.2` — the `0.6.3` publish is pending. Install `dsh plugin --profile <p> add dsh-agents-playbook@^0.6.3` once published (needs pnpm; plain `npm install` does **not** enable it) |
+| Harness plugin (`dsh-agents-playbook`) | **repo** `0.7.0`; **npm latest is `0.6.3`**. Install `dsh plugin --profile <p> add dsh-agents-playbook@^0.6.3` (needs pnpm; plain `npm install` does **not** enable it) |
 | Live in-harness verification | pending (a boot either serves the Web UI or runs an LLM task, so it stays a human step) |
 
-## What was deliberately cut
+## What was deliberately cut — and what came back differently
 
 Earlier versions carried a spec/Work-Map layer (DAG scheduling, gates, waves, debt ledgers).
-It was planning metadata the CLI never executed — bureaucracy cosplaying as machinery. It was
-removed from the engine: no command reads it, and nothing here depends on it. A local `attic/`
-copy may still exist on the author's machine, but it is gitignored and **not shipped** — a clone
-gets the lean engine only. If a real workload ever needs orchestration, build it against
-demonstrated need, not anticipation.
+It was planning metadata the CLI never executed — bureaucracy cosplaying as machinery — and it was
+removed. (The `attic/` copy it was moved to is gitignored; it is not in this checkout, and no
+command reads it.)
+
+**v0.7.0 reintroduces layers and gates, deliberately unlike the version that was cut.** The
+distinction is the whole point:
+
+- The cut layer was a **second source of truth**: a DAG declared beside the backlog that no command
+  read, free to drift from the work it described.
+- Today's layer is a **projection of the dependency graph** the claim path already enforces. It is
+  derived (1 + deepest dependency), and a declared `layer:` is a *constraint* `pb validate` checks —
+  so it cannot drift silently; a contradiction is a guardrail failure.
+- Its gate is an **executable** shell command on the same gate path as `acceptance_checks`, not
+  metadata. Nothing reads a wave, a debt ledger, or a schedule, and none of that returned.
+
+The rule that decided it: planning earns its place only when the CLI *executes* it. Anything
+planning-shaped that no exit code depends on is still cut.

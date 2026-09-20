@@ -138,6 +138,18 @@ function relPosix(child, parent) {
 function shellSplit(cmd) {  const out = [];
   let cur = '';
   let quote = null;
+  // POSIX-ish quoting, with the rule that matters: a quote character is SYNTAX only
+  // where a word begins. Treating it as syntax anywhere DELETED quotes that were
+  // meant literally, so the ordinary command
+  //     node -e "process.exit(require('fs').existsSync('x')?0:1)"
+  // reached node as require(fs) and died with `The "id" argument must be of type
+  // string` — a check that could never go green, whatever the work did. A quote
+  // inside a word is now text, so the quoted argument survives intact.
+  //
+  // `started` exists for the empty quoted argument: `cmd ""` is a real argument that
+  // must not vanish, and `cur.length` alone cannot tell `""` from no word at all.
+  let started = false;
+  const begin = () => { started = true; };
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i];
     if (quote) {
@@ -152,19 +164,20 @@ function shellSplit(cmd) {  const out = [];
       }
     } else {
       if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
-        if (cur.length) { out.push(cur); cur = ''; }
+        if (started) { out.push(cur); cur = ''; started = false; }
       } else if (ch === '"' || ch === "'") {
-        quote = ch;
+        if (!started) { quote = ch; begin(); }
+        else cur += ch;
       } else if (ch === '\\') {
         const nxt = cmd[i + 1];
-        if (nxt === '"' || nxt === "'") { cur += nxt; i++; }
-        else { cur += ch; }
+        if (nxt === '"' || nxt === "'") { cur += nxt; i++; begin(); }
+        else { cur += ch; begin(); }
       } else {
-        cur += ch;
+        cur += ch; begin();
       }
     }
   }
-  if (cur.length) out.push(cur);
+  if (started) out.push(cur);
   return out;
 }
 
@@ -901,6 +914,358 @@ function unmetDeps(task, tasks) {
 }
 
 // ============================================================================
+//  layers — the planning view of the same graph `dependencies` already enforces.
+//
+//  A layer is a named stratum of a repo (substrate → data → domain → interface).
+//  The point of layers is NOT a prettier task list: it is that a layer can carry a
+//  GATE, so "we do not touch the domain layer while the data layer is red" becomes
+//  an enforced fact instead of an intention. That is what makes this planning for
+//  the maturity of a repo rather than planning for the next feature, and it is the
+//  same property that makes a modular repo safe to grow in parallel.
+//
+//  Two rules keep layers from becoming a second, lying source of truth:
+//    1. A layer is a PROJECTION of the dependency graph. Each task's depth is
+//       derived (1 + the deepest dependency), never declared-and-trusted.
+//    2. A declared `layer:` is a CONSTRAINT. A task may not sit in an EARLIER layer
+//       than anything it depends on, so an edge that silently pushes work deeper
+//       becomes a `pb validate` failure rather than a quiet contradiction.
+//  The graph is about order; the layers are about altitude. Neither is decoration.
+// ============================================================================
+function readLayerDefs() {
+  const raw = master.layers;
+  if (raw === undefined || raw === null) return { declared: false, layers: [], errors: [] };
+  if (!Array.isArray(raw)) return { declared: true, layers: [], errors: ['`layers` in the master must be a list of {id, name, gate} entries'] };
+  const layers = [];
+  const errors = [];
+  const seen = new Set();
+  raw.forEach((entry, i) => {
+    if (!entry || typeof entry !== 'object') { errors.push(`layers[${i}] is not an object`); return; }
+    const id = typeof entry.id === 'string' ? entry.id.trim() : '';
+    if (!id) { errors.push(`layers[${i}] is missing an id`); return; }
+    if (seen.has(id)) { errors.push(`duplicate layer id: ${id}`); return; }
+    seen.add(id);
+    layers.push({
+      id,
+      name: typeof entry.name === 'string' ? entry.name.trim() : '',
+      gate: typeof entry.gate === 'string' ? entry.gate.trim() : '',
+      about: typeof entry.about === 'string' ? entry.about.trim() : '',
+      // `human: true` declares that this gate fails until a PERSON acts — buy the domain,
+      // provision the database, issue the credential. The engine cannot infer that; only
+      // the plan author knows that no agent retry will ever turn this gate green. The
+      // flag changes reporting and hand-off, never whether the gate gates.
+      human: entry.human === true,
+    });
+  });
+  return { declared: true, layers, errors };
+}
+
+// Read-only gate evaluation, memoized WITHIN one planning pass. `pb next --claim`
+// and `pb loop run --auto` check gates as part of selection, so the same gate must
+// not be re-run for every candidate, and a gate that cannot start (bad command) is a
+// FAILED gate, never an excuse to proceed. The memo is cleared at the start of each
+// top-level plan: keying it by the command alone made one playbook's gate result leak
+// into the next (identical gate text, DIFFERENT working tree), which read as a gate
+// that could never go green.
+const layerGateCache = new Map();
+function evalLayerGate(gate) {
+  if (layerGateCache.has(gate)) return layerGateCache.get(gate);
+  const parts = shellSplit(gate);
+  let result = { ok: false, output: 'the gate is not a runnable command' };
+  if (parts.length) {
+    const [file, ...argv] = parts;
+    try {
+      runCommandSync(file, argv, { cwd: ROOT, stdio: 'pipe', timeout: 120000 });
+      result = { ok: true, output: '' };
+    } catch (e) {
+      result = { ok: false, output: [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim().split(/\r?\n/).slice(-8).join('\n') };
+    }
+  }
+  layerGateCache.set(gate, result);
+  return result;
+}
+
+// The derived plan: validate the layer declarations, compute each task's depth,
+// and report readiness / group blockers. PURE with respect to playbook state —
+// no journal row, no state touch. The only side effect is running a layer GATE
+// command, and only when `checkGates` is set (the caller opts in, and only AFTER
+// taking the confirmation snapshot it uses to prove the dry run stayed read-only).
+function computeLayerPlan({ checkGates = false, allTasks = null } = {}) {
+  const tasks = allTasks || backlogTasks();
+  // A fresh plan re-evaluates gates: a memo from an earlier plan describes an earlier
+  // tree, and a stale gate verdict is exactly the kind of confident-but-wrong answer
+  // this command exists to prevent.
+  layerGateCache.clear();
+  const tasksById = new Map(tasks.map((t) => [t.id, t]));
+  const defs = readLayerDefs();
+  const orderIds = defs.layers.map((l) => l.id);
+  const orderIndex = new Map(orderIds.map((id, i) => [id, i]));
+  const declared = new Map();
+  const edges = new Map();
+  const issues = defs.errors.map((message) => ({ code: 'bad-layer-list', message }));
+  const issueFor = (t, code, message) => issues.push({ code, task: t.id, message });
+
+  // --- structural validation (the part a dry run must surface, never hide) ----
+  for (const t of tasks) {
+    const declaredLayer = t.layer === undefined || t.layer === null || String(t.layer).trim() === ''
+      ? null
+      : String(t.layer).trim();
+    if (declaredLayer !== null) {
+      if (!orderIndex.has(declaredLayer)) {
+        issueFor(t, 'unknown-layer', `Task ${t.id} declares layer "${declaredLayer}", which the master's \`layers\` list does not define.`);
+      } else {
+        declared.set(t.id, declaredLayer);
+      }
+    }
+    const deps = Array.isArray(t.dependencies) ? t.dependencies.filter((d) => typeof d === 'string' && d) : [];
+    if (t.dependencies !== undefined && !Array.isArray(t.dependencies)) {
+      issueFor(t, 'bad-dependencies', `Task ${t.id} \`dependencies\` must be a list of task ids.`);
+    }
+    if (deps.includes(t.id)) issueFor(t, 'self-dependency', `Task ${t.id} depends on itself — no order can satisfy that.`);
+    edges.set(t.id, deps);
+  }
+  for (const t of tasks) {
+    for (const dep of edges.get(t.id) || []) {
+      if (dep !== t.id && !tasksById.has(dep)) {
+        issueFor(t, 'unknown-dependency', `Task ${t.id} depends on "${dep}", which is not in the backlog.`);
+      }
+    }
+  }
+  // Cycle detection by peeling roots: whatever survives has no root, i.e. every
+  // survivor is reachable from a cycle. The survivors NAME the cycle, which is what
+  // makes the failure actionable instead of just "invalid graph".
+  const indegree = new Map(tasks.map((t) => [t.id, (edges.get(t.id) || []).filter((d) => d !== t.id && tasksById.has(d)).length]));
+  const dependents = new Map(tasks.map((t) => [t.id, []]));
+  for (const t of tasks) for (const d of edges.get(t.id) || []) if (d !== t.id && tasksById.has(d)) dependents.get(d).push(t.id);
+  const peelQueue = tasks.filter((t) => indegree.get(t.id) === 0).map((t) => t.id);
+  const peeled = new Set();
+  while (peelQueue.length) {
+    const id = peelQueue.shift();
+    if (peeled.has(id)) continue;
+    peeled.add(id);
+    for (const next of dependents.get(id) || []) {
+      indegree.set(next, indegree.get(next) - 1);
+      if (indegree.get(next) === 0) peelQueue.push(next);
+    }
+  }
+  const inCycle = tasks.filter((t) => !peeled.has(t.id)).map((t) => t.id);
+  if (inCycle.length) {
+    issues.push({
+      code: 'cycle',
+      message: `Dependency cycle — no order can satisfy it. Tasks with no root: ${inCycle.join(', ')}.`,
+      cycle: inCycle,
+    });
+  }
+
+  // --- derive each task's layer (1 + deepest dependency) ----------------------
+  const depth = new Map();
+  const depthOf = (id, stack = new Set()) => {
+    if (depth.has(id)) return depth.get(id);
+    if (stack.has(id)) return 0; // a cycle — already reported; do not recurse forever
+    stack.add(id);
+    let d = 0;
+    for (const dep of edges.get(id) || []) {
+      if (dep === id || !tasksById.has(dep)) continue;
+      d = Math.max(d, depthOf(dep, stack) + 1);
+    }
+    stack.delete(id);
+    depth.set(id, d);
+    return d;
+  };
+  for (const t of tasks) depthOf(t.id);
+
+  // --- declared layer vs. derived depth: a constraint, not a decoration ------
+  for (const [id, layerId] of declared) {
+    const t = tasksById.get(id);
+    const layerPos = orderIndex.get(layerId);
+    for (const dep of edges.get(id) || []) {
+      if (dep === id || !tasksById.has(dep)) continue;
+      const depLayer = declared.get(dep);
+      if (depLayer && orderIndex.get(depLayer) >= layerPos) {
+        issueFor(t, 'layer-order',
+          `Task ${id} is declared layer "${layerId}" but depends on ${dep} in layer "${depLayer}" — a dependency may not come from the same or a later layer.`);
+      }
+    }
+    if (orderIds.length && layerPos < depth.get(id)) {
+      issueFor(t, 'layer-too-early',
+        `Task ${id} declares layer "${layerId}" (position ${layerPos + 1}) but its dependencies put it at position ${depth.get(id) + 1} — move it deeper or drop a dependency.`);
+    }
+  }
+  const unresolved = tasks.filter((t) => declared.has(t.id) && orderIndex.get(declared.get(t.id)) < depth.get(t.id)).length;
+
+  // --- gates: which lower layers must be green before a layer may start -------
+  const gateResults = {};
+  if (checkGates) {
+    for (const def of defs.layers) {
+      if (!def.gate) continue;
+      gateResults[def.id] = evalLayerGate(def.gate);
+    }
+  }
+  // gateBlockersFor(task): the lower-layer gates that must pass before it is
+  // claimable. Empty for an unlayered task or a layer-0 task.
+  const gateBlockersFor = (t) => {
+    const layerId = declared.get(t.id);
+    if (!layerId) return [];
+    const pos = orderIndex.get(layerId);
+    const blockers = [];
+    for (const def of defs.layers) {
+      const p = orderIndex.get(def.id);
+      if (p >= pos) continue;
+      if (!def.gate) continue;
+      if (!checkGates) {
+        // Without --check-gates the gate is NOT evaluated; block the claim (opt-in
+        // safety: an unevaluated gate is not a passed gate) and say so.
+        blockers.push({ layer: def.id, gate: def.gate, human: def.human, ok: false, evaluated: false, output: '' });
+        continue;
+      }
+      const res = gateResults[def.id] || { ok: false, output: '' };
+      if (!res.ok) blockers.push({ layer: def.id, gate: def.gate, human: def.human, ok: false, evaluated: true, output: res.output });
+    }
+    return blockers;
+  };
+  // group blockers: open work in a strictly LOWER layer. This holds regardless of
+  // the unlayeredTasksLoose setting — with that setting OFF the layer is a hard
+  // partition, with it ON an unlayered task may interleave anywhere.
+  const groupBlockersFor = (t) => {
+    const layerId = declared.get(t.id);
+    if (!layerId) return [];
+    const pos = orderIndex.get(layerId);
+    const blocking = [];
+    for (const other of tasks) {
+      const otherLayer = declared.get(other.id);
+      if (!otherLayer) continue;
+      if (orderIndex.get(otherLayer) >= pos) continue;
+      if (other.status !== 'done') blocking.push(other.id);
+    }
+    return blocking;
+  };
+
+  const readyByLayer = new Map(orderIds.map((id) => [id, []]));
+  const planned = tasks.map((t) => {
+    const deps = edges.get(t.id) || [];
+    const unmet = unmetDeps(t, tasks);
+    const layerId = declared.get(t.id) || null;
+    const unlayered = !layerId;
+    const groupBlocked = groupBlockersFor(t);
+    const gateBlocked = gateBlockersFor(t);
+    const ready = t.status === 'todo' && !unmet.length && !groupBlocked.length && !gateBlocked.length;
+    // A task whose declared layer is NOT in the `layers` list has no bucket to land
+    // in — it is reported as a plan problem above, and it must not crash the planner
+    // on the way to reporting it. Such a task is unlayered for gating purposes.
+    if (ready && layerId && readyByLayer.has(layerId)) readyByLayer.get(layerId).push(t.id);
+    return {
+      id: t.id, title: t.title, status: t.status, priority: prio(t),
+      layer: layerId, derived_layer: depth.get(t.id),
+      dependencies: deps, unmet_deps: unmet, group_blocked_by: groupBlocked, gate_blocked_by: gateBlocked,
+      manual: !!t.manual, gate_quality: gateQuality(t), ready, unlayered,
+    };
+  });
+  const plannedById = new Map(planned.map((p) => [p.id, p]));
+
+  // --- critical path: the longest chain of dependent work still open ---------
+  const openMemo = new Map();
+  const openChain = (id, stack = new Set()) => {
+    if (openMemo.has(id)) return openMemo.get(id);
+    if (stack.has(id)) return 0;
+    stack.add(id);
+    const p = plannedById.get(id);
+    const openSelf = p && p.status !== 'done' ? 1 : 0;
+    let deepest = 0;
+    for (const dep of (p ? p.dependencies : []) || []) {
+      if (dep === id || !plannedById.has(dep)) continue;
+      deepest = Math.max(deepest, openChain(dep, stack));
+    }
+    stack.delete(id);
+    const total = openSelf + deepest;
+    openMemo.set(id, total);
+    return total;
+  };
+  for (const t of tasks) openChain(t.id);
+  const openCount = planned.filter((p) => p.status !== 'done').length;
+  const pathHead = planned
+    .filter((p) => p.status !== 'done')
+    .sort((a, b) => openMemo.get(b.id) - openMemo.get(a.id) || a.priority - b.priority)[0] || null;
+
+  const layers = defs.layers.map((def, i) => {
+    const members = planned.filter((p) => p.layer === def.id);
+    const counts = { todo: 0, in_progress: 0, blocked: 0, done: 0 };
+    for (const m of members) if (counts[m.status] !== undefined) counts[m.status]++;
+    return {
+      id: def.id, name: def.name, about: def.about, position: i, gate: def.gate, human: def.human,
+      gate_result: checkGates && def.gate ? (gateResults[def.id] || null) : null,
+      counts, total: members.length,
+      ready: readyByLayer.get(def.id) || [],
+      tasks: members.map((m) => m.id),
+    };
+  });
+
+  const ready = planned.filter((p) => p.ready).sort((a, b) => a.priority - b.priority || (a.derived_layer - b.derived_layer));
+  // The WAITING-ON-HUMAN batch. Derived purely from the plan (nothing is cached into
+  // state), and only for layers whose author declared `human: true` — an unmarked gate
+  // keeps exactly today's semantics. The point: a red gate on a human layer is not a
+  // failure to retry, it is a question to answer, and every such question can be
+  // answered in ONE hand-off instead of stopping the run at the first one.
+  const waitingOnHuman = [];
+  const waitingOnAgent = [];
+  if (checkGates) {
+    for (const def of defs.layers) {
+      if (!def.gate) continue;
+      const res = gateResults[def.id];
+      if (!res || res.ok) continue;
+      const pos = orderIndex.get(def.id);
+      const blockedTasks = planned.filter((p) => p.status !== 'done'
+        && p.layer
+        && orderIndex.get(p.layer) > pos);
+      const entry = {
+        layer: def.id,
+        name: def.name,
+        gate: def.gate,
+        output: res.output || '',
+        blocked_tasks: blockedTasks.map((p) => p.id),
+        blocked_layers: defs.layers.filter((l) => orderIndex.get(l.id) > pos).map((l) => l.id),
+      };
+      (def.human ? waitingOnHuman : waitingOnAgent).push(entry);
+    }
+  }
+  return {
+    declared: defs.declared,
+    ordered: defs.layers.length > 0,
+    layers,
+    layer_ids: orderIds,
+    tasks: planned,
+    edges: Object.fromEntries(edges),
+    ready: ready.map((p) => p.id),
+    ready_tasks: ready,
+    critical_path: {
+      open_tasks: openCount,
+      length: pathHead ? openMemo.get(pathHead.id) : 0,
+      head: pathHead ? pathHead.id : null,
+    },
+    gate_results: gateResults,
+    gates_checked: checkGates,
+    unlayered_tasks: planned.filter((p) => p.unlayered).map((p) => p.id),
+    waiting_on_human: waitingOnHuman,
+    waiting_on_agent: waitingOnAgent,
+    problems: issues,
+    structurally_valid: issues.length === 0,
+    unresolved_layers: unresolved,
+  };
+}
+
+// Claims are gated by layers only when the playbook declares them, so a repo that
+// has not adopted layers behaves exactly as before. `plan` is passed in rather than
+// recomputed so selection and reporting judge the SAME snapshot: two computations
+// could otherwise disagree about a gate that runs a command as a side effect.
+function gateBlockersFor(plan, task) {
+  if (!plan || !plan.declared) return [];
+  const entry = plan.tasks.find((p) => p.id === task.id);
+  return entry ? entry.gate_blocked_by : [];
+}
+function unmetLayerGates(task, tasks) {
+  const plan = computeLayerPlan({ checkGates: true, allTasks: tasks });
+  return { plan, blockers: gateBlockersFor(plan, task) };
+}
+
+// ============================================================================
 //  acceptance checks — the enforcement layer. Checks are shell commands on the
 //  task; they run with cwd = playbook root. Exit 0 = pass. This is what makes
 //  "done" mean something: `record --status done` refuses if any check fails.
@@ -1110,7 +1475,22 @@ function runValidate() {
     }
   }
 
-  // 6. journal lines all valid JSON
+  // 6. structural guardrails for the layer/dependency graph. `pb validate` is the
+  // structural gate, so a cycle or a task declared in an earlier layer than its
+  // dependencies must FAIL here — a plan that cannot be ordered is not a plan, and
+  // finding that out at claim time (or mid-run) is far more expensive.
+  {
+    const plan = computeLayerPlan({ checkGates: false, allTasks: tasks });
+    for (const issue of plan.problems) {
+      const where = issue.task ? `[${issue.task}] ` : '';
+      failures.push(`${where}${issue.message} (${issue.code})`);
+    }
+    if (!plan.ordered && tasks.some((t) => t.layer !== undefined && String(t.layer).trim() !== '')) {
+      failures.push('Tasks declare a `layer` but the master declares no `layers` list, so the declaration cannot be resolved.');
+    }
+  }
+
+  // 7. journal lines all valid JSON
   readJournal().forEach((e) => {
     if (e.__malformed) failures.push(`Malformed JSON in ${JOURNAL} line ${e.__line}`);
   });
@@ -1949,7 +2329,15 @@ function cmdNext(args) {
     return !tm || !agentMode || tm === agentMode;
   };
   const todo = tasks.filter((t) => t.status === 'todo');
-  const claimable = todo.filter((t) => matchesMode(t) && unmetDeps(t, tasks).length === 0);
+  // Layered planning gates the CLAIM, on the same path `dependencies` already gates:
+  // a task whose layer sits above a failing (or unverified) gate is not claimable.
+  // The playbook's declared layer order is the plan, so honoring it by default is the
+  // point. `--force` remains the explicit, RECORDED escape hatch for a one-off
+  // override; there is no configuration switch that silently relaxes the partition,
+  // because the partition is the claim the plan is making.
+  const layerPlan = computeLayerPlan({ checkGates: true, allTasks: tasks });
+  const openGateBlockers = (t) => gateBlockersFor(layerPlan, t);
+  const claimable = todo.filter((t) => matchesMode(t) && unmetDeps(t, tasks).length === 0 && !openGateBlockers(t).length);
   const candidate = claimable.sort((a, b) => prio(a) - prio(b))[0];
 
   if (!candidate) {
@@ -1968,6 +2356,11 @@ function cmdNext(args) {
     for (const t of todoForMode) {
       const deps = unmetDeps(t, tasks);
       if (deps.length) console.log(`  [${t.id}] waiting on: ${deps.join(', ')}`);
+      for (const g of openGateBlockers(t)) {
+        const why = g.evaluated ? 'gate FAILING' : 'gate not verified — run `pb plan --layers --check-gates`';
+        console.log(`  [${t.id}] layer ${t.layer || '?'} held by layer ${g.layer}: ${why}`);
+        if (g.output) for (const l of g.output.split(/\r?\n/)) console.log(`        ${l}`);
+      }
     }
     return;
   }
@@ -2242,17 +2635,25 @@ function reconstructStateFromJournal({ strict = false, ids = null } = {}) {
       applied++;
       continue;
     }
+    // TERMINAL FIRST, action second. A row can carry both a lifecycle action and a
+    // terminal status — `pb record --action release --status blocked` is exactly that,
+    // and it is how a blocked task ends its iteration. Reading the action first
+    // replayed such a row as `todo`, so a task the journal plainly records as blocked
+    // came back as unclaimed work and `pb repair-state --check` reported drift on a
+    // healthy playbook (then offered a "repair" that resurrected finished work).
+    // A terminal status is the stronger, less recoverable fact: when the two
+    // disagree, the terminal one wins.
+    if (TERMINAL_ROW_STATUSES.has(row.status)) {
+      entry.status = row.status;
+      entry.updated_at = ts;
+      applied++;
+      continue;
+    }
     if (row.action === 'release') {
       entry.status = 'todo';
       for (const f of CLAIM_CLEAR_FIELDS) delete entry[f];
       entry.released_at = ts;
       entry.released_by = row.agent || row.agent_id;
-      entry.updated_at = ts;
-      applied++;
-      continue;
-    }
-    if (TERMINAL_ROW_STATUSES.has(row.status)) {
-      entry.status = row.status;
       entry.updated_at = ts;
       applied++;
       continue;
@@ -2399,9 +2800,156 @@ function nextPlanId() {
 //  plan — generate a backlog task from a goal. The agent (or human) refines the
 //  acceptance_checks; the command only formalizes the goal into the backlog.
 // ============================================================================
+// One definition of what a dry run's exit code means, shared by the text renderer
+// and `--json` so the two can never disagree about whether a plan is healthy:
+//   2 = the plan is structurally invalid (a cycle, an unknown layer, a task declared
+//       earlier than its dependencies) OR a checked layer gate is failing — the plan
+//       is not actionable, so a script must not proceed on 0;
+//   1 = the plan is sound but work remains, and --strict was asked to treat open work
+//       as a failure;
+//   0 = the plan is sound. `pb validate` is the structural gate for the repo; this is
+//       the plan's own verdict, and open work alone is never an error.
+function planVerdict(plan, { checkGates = false, strict = false } = {}) {
+  if (!plan.structurally_valid) return 2;
+  if (checkGates && Object.values(plan.gate_results).some((r) => !r.ok)) return 2;
+  if (strict && plan.tasks.some((t) => t.status !== 'done')) return 1;
+  return 0;
+}
+
+// `pb plan --layers` — the DRY RUN. Report the derived plan and stop: what layer a
+// task lands in, which layers are held back by which gates, what is claimable right
+// now, the order work would actually proceed in, and the critical path. It executes
+// nothing and writes nothing (gate commands run only under --check-gates, and only
+// after the caller has taken the snapshot it uses to prove nothing changed).
+function renderPlanLayers(plan, { checkGates = false, strict = false } = {}) {
+  const line = '─'.repeat(68);
+  console.log(`\n  ${line}`);
+  console.log(`  Layered plan${checkGates ? ' (gates checked)' : ' (gates NOT checked)'}`);
+  console.log(`  ${line}`);
+  const statusCount = (counts) => ['done', 'in_progress', 'blocked', 'todo']
+    .filter((s) => counts[s]).map((s) => `${counts[s]} ${s}`).join(' · ') || 'no tasks';
+
+  if (!plan.ordered) {
+    console.log('  No `layers` declared in the master — the backlog is a flat queue.');
+    console.log('  Declare them in playbook.yaml, then `pb plan --layers` becomes a plan:');
+    console.log('    layers:');
+    console.log('      - {id: L0, name: substrate, gate: "npm test"}');
+    console.log('      - {id: L1, name: data}');
+    console.log('');
+  } else {
+    for (const layer of plan.layers) {
+      const held = [];
+      const behind = plan.layers.filter((l) => l.position < layer.position && !l.counts.done);
+      if (behind.length) held.push(`waiting on lower layer(s): ${behind.map((l) => l.id).join(', ')}`);
+      const gateState = layer.gate
+        ? (layer.gate_result ? (layer.gate_result.ok ? 'gate PASS' : (layer.human ? 'gate BLOCKED (human)' : 'gate FAIL')) : (checkGates ? 'gate ?' : 'gate unchecked'))
+        : 'no gate';
+      console.log(`\n  ${layer.id}${layer.name ? ` (${layer.name})` : ''} — ${statusCount(layer.counts)} · ${gateState}`);
+      if (layer.gate) console.log(`      gate: $ ${layer.gate}`);
+      if (layer.about) console.log(`      about: ${layer.about}`);
+      if (layer.gate_result && !layer.gate_result.ok && layer.gate_result.output) {
+        for (const l of layer.gate_result.output.split(/\r?\n/)) console.log(`      ${l}`);
+      }
+      if (!layer.tasks.length) console.log('      (no tasks declared in this layer)');
+      for (const id of layer.tasks) console.log(`      [${id}]`);
+      if (held.length) console.log(`      ${held.join('; ')}`);
+      console.log(`      ready: ${layer.ready.length ? layer.ready.join(', ') : 'none'}`);
+    }
+    console.log('');
+  }
+
+  const open = plan.tasks.filter((t) => t.status !== 'done');
+  console.log(`  ready now (claimable): ${plan.ready.length ? plan.ready.join(', ') : 'none'}`);
+  if (plan.critical_path.head) {
+    const tail = plan.critical_path.head;
+    console.log(`  critical path: the longest open chain runs ${plan.critical_path.length} task(s) deep, through ${tail} — no shorter`);
+    console.log(`                 sequence of claims can finish these ${plan.critical_path.open_tasks} open task(s).`);
+  } else {
+    console.log('  critical path: none — nothing is open.');
+  }
+  // Unlayered tasks are unconstrained in BOTH directions: no gate holds them back,
+  // and they hold nothing back. That is the whole of the rule — there is deliberately
+  // no knob to "relax the partition", because the partition IS the claim being made.
+  // An earlier draft shipped a `layers_unlayered_loose` flag that was read and printed
+  // but never consulted, so it advertised a fast lane that did not exist; a switch that
+  // reports behavior it does not have is worse than no switch. `--force` (recorded on
+  // the journal row) remains the explicit escape hatch for a one-off override.
+  const unlayered = plan.tasks.filter((t) => t.unlayered);
+  if (unlayered.length) {
+    console.log(`  ${unlayered.length} task(s) declare no layer — no gate holds them back, and they hold nothing back.`);
+  }
+
+  if (plan.problems.length) {
+    console.log(`\n  ${line}`);
+    console.log(`  PLAN PROBLEMS (${plan.problems.length}) — these fail \`pb validate\`:`);
+    for (const p of plan.problems) console.log(`    ${p.task ? `[${p.task}] ` : ''}${p.message}`);
+  } else {
+    console.log(`\n  Plan is structurally valid: ${plan.layers.length} layer(s), ${plan.tasks.length} task(s), no cycles.`);
+  }
+
+  const gateFailed = Object.entries(plan.gate_results).filter(([, r]) => !r.ok).map(([id]) => id);
+  if (checkGates && gateFailed.length) {
+    console.log(`  Gates FAILING: ${gateFailed.join(', ')} — every layer above them is blocked.`);
+  }
+  // The batch. A red gate on a `human: true` layer is a question, not a retry: collect
+  // them all so ONE hand-off answers everything instead of the run stopping at the first.
+  if (checkGates && (plan.waiting_on_human.length || plan.waiting_on_agent.length)) {
+    if (plan.waiting_on_human.length) {
+      console.log(`\n  ${line}`);
+      console.log(`  WAITING ON A HUMAN (${plan.waiting_on_human.length}) — no agent retry turns these green:`);
+      for (const w of plan.waiting_on_human) {
+        console.log(`    · ${w.layer}${w.name ? ` (${w.name})` : ''}: ${w.blocked_tasks.length} task(s) blocked → ${w.blocked_tasks.join(', ') || 'none'}`);
+        console.log(`      needs: $ ${w.gate}`);
+      }
+      console.log(`  Answer these in one pass, then re-run \`pb plan --layers --check-gates\`.`);
+    }
+    if (plan.waiting_on_agent.length) {
+      console.log(`\n  BLOCKED ON AGENT WORK (${plan.waiting_on_agent.length}) — these gates go green when the layer below is finished:`);
+      for (const w of plan.waiting_on_agent) {
+        console.log(`    · ${w.layer}${w.name ? ` (${w.name})` : ''}: ${w.blocked_tasks.length} task(s) blocked → ${w.blocked_tasks.join(', ') || 'none'}`);
+      }
+    }
+  }
+  const verdict = planVerdict(plan, { checkGates, strict });
+  console.log(`  ${line}`);
+  console.log(`  exit ${verdict}: ${!plan.structurally_valid ? 'the plan is structurally invalid'
+    : (checkGates && Object.values(plan.gate_results).some((r) => !r.ok)) ? 'a layer gate is failing'
+      : (strict && open.length) ? `${open.length} task(s) still open`
+        : 'plan is valid but has open work'}`);
+  console.log(`  ${line}\n`);
+  return verdict;
+}
+
 function cmdPlan(args) {
+  // `--layers` is a DRY RUN of the whole plan, not a task generator: it reports the
+  // derived layer graph and exits. It is unambiguous (no --goal), and it must be
+  // able to run with no active loop and no cycle brief, because deciding whether the
+  // plan is sound is exactly what you do BEFORE opening a phase.
+  if (args.layers) {
+    // Proof of read-only: fingerprint the files a dry run must never touch, then
+    // compare after rendering. A dry run that mutates is the whole failure mode, so
+    // it is asserted rather than promised.
+    const guarded = [BACKLOG, BACKLOG_STATE, JOURNAL, p(CYCLE)].map((f) => {
+      const abs = f.startsWith(ROOT) ? f : p(f);
+      try { return { abs, before: existsSync(abs) ? statSync(abs).mtimeMs + ':' + statSync(abs).size : 'absent' }; }
+      catch { return { abs, before: 'unreadable' }; }
+    });
+    const plan = computeLayerPlan({ checkGates: !!args['check-gates'] });
+    const options = { checkGates: !!args['check-gates'], strict: !!args.strict };
+    const verdict = args.json ? (printJson(plan), planVerdict(plan, options)) : renderPlanLayers(plan, options);
+    const mutated = guarded.filter((g) => {
+      try { return (existsSync(g.abs) ? statSync(g.abs).mtimeMs + ':' + statSync(g.abs).size : 'absent') !== g.before; }
+      catch { return true; }
+    });
+    if (mutated.length) {
+      console.error(`ERROR: the dry run MODIFIED ${mutated.map((m) => m.abs).join(', ')} — a dry run must not write. This is a bug.`);
+      process.exit(3);
+    }
+    process.exit(verdict);
+  }
   if (!args.goal) {
-    console.error('Usage: pb plan --goal "..." [--skill <id>] [--priority <n>] [--check <cmd>] [--manual]');
+    console.error('Usage: pb plan --goal "..." [--skill <id>] [--priority <n>] [--check <cmd>] [--manual] [--layer <id>]');
+    console.error('       pb plan --layers [--check-gates] [--strict] [--json]   # DRY RUN: report the layered plan, write nothing');
     console.error('Pass --check multiple times to add multiple acceptance checks.');
     process.exit(1);
   }
@@ -2437,10 +2985,23 @@ function cmdPlan(args) {
     acceptance_checks: checks,
   };
   if (args.manual) task.manual = true;
+  // `--layer` stamps the task's stratum. `pb validate` then enforces that the layer
+  // is declared and that the task is not sitting earlier than its dependencies, so a
+  // typo or a stale layer becomes a guardrail failure rather than a silent mis-plan.
+  if (args.layer) {
+    const layerId = String(args.layer).trim();
+    const defs = readLayerDefs();
+    if (!defs.layers.some((l) => l.id === layerId)) {
+      console.error(`Unknown layer: ${layerId}. Declared layers: ${defs.layers.map((l) => l.id).join(', ') || '(none — add a \`layers\` list to the master)'}`);
+      process.exit(1);
+    }
+    task.layer = layerId;
+  }
   appendBacklogTask(task);
   console.log(`Planned [${task.id}] ${task.title}`);
   console.log(`  skill: ${skill}`);
   console.log(`  priority: ${priority}`);
+  if (task.layer) console.log(`  layer: ${task.layer}`);
   if (checks.length) {
     console.log('  acceptance_checks:');
     for (const c of checks) console.log(`    $ ${c}`);
@@ -2691,9 +3252,38 @@ function cmdLoopRunAuto(args) {
   while (tasksCompleted < maxTasks) {
     const tasks = backlogTasks();
     const todo = tasks.filter((t) => t.status === 'todo');
-    const claimable = todo.filter((t) => unmetDeps(t, tasks).length === 0).sort((a, b) => prio(a) - prio(b));
+    // Same two gates the interactive claim path applies: dependencies AND layer
+    // gates. An autonomous run must not be the one path that can jump a layer.
+    const autoPlan = computeLayerPlan({ checkGates: true, allTasks: tasks });
+    const claimable = todo
+      .filter((t) => unmetDeps(t, tasks).length === 0 && !gateBlockersFor(autoPlan, t).length)
+      .sort((a, b) => prio(a) - prio(b));
     const candidate = claimable[0];
     if (!candidate) {
+      // "Nothing claimable" is NOT "nothing to do". A failing layer gate filters work
+      // out of `claimable`, so the old message — "Autonomous run complete." — reported
+      // success while whole layers sat behind a red gate. Distinguish the two, and say
+      // what the human owes: every human-gated layer is a question, collected here in
+      // one batch rather than discovered one stop at a time.
+      const blockedByGate = autoPlan.tasks.filter((t) => t.status === 'todo' && gateBlockersFor(autoPlan, t).length);
+      if (blockedByGate.length) {
+        const human = autoPlan.waiting_on_human || [];
+        const agent = autoPlan.waiting_on_agent || [];
+        console.log(`\nNo claimable work — ${blockedByGate.length} task(s) sit behind an unmet layer gate:`);
+        for (const t of blockedByGate) {
+          const g = gateBlockersFor(autoPlan, t)[0];
+          console.log(`  [${t.id}] layer ${t.layer || '?'} blocked by ${g.layer}${g.human ? ' (human)' : ''}${g.evaluated ? '' : ' [gate not verified]'}`);
+        }
+        if (human.length) {
+          console.log(`\nWAITING ON A HUMAN (${human.length}) — no agent retry turns these green:`);
+          for (const w of human) console.log(`  · ${w.layer}: needs $ ${w.gate} → unblocks ${w.blocked_tasks.join(', ') || 'nothing'}`);
+          console.log('Answer these in one pass — the run does not need to stop for each one.');
+        }
+        const onAgent = agent.reduce((n, w) => n + w.blocked_tasks.length, 0);
+        if (onAgent) console.log(`\n${onAgent} further task(s) are blocked on AGENT work in a lower layer — finish that first (or run without --auto to claim it).`);
+        finalStatus = 'stalled';
+        break;
+      }
       console.log('No actionable tasks. Autonomous run complete.');
       break;
     }
@@ -4066,6 +4656,17 @@ function cmdHelp() {
                            Select the next task; --claim marks it in_progress. Claiming is
                            refused if there's no active loop or the cycle brief is missing/stale
                            (--force overrides, not recommended). A claim mints a CLAIM TOKEN.
+                           When the master declares 'layers', a task is also refused while a
+                           lower layer's gate fails, so layer order is enforced, not advisory.
+    plan --layers [--check-gates] [--strict] [--json]
+                           DRY RUN the layered plan and write nothing: each task's derived
+                           layer, which layers a gate is holding back, what is claimable now,
+                           the order work proceeds in, and the critical path. Gates are NOT
+                           executed unless --check-gates is passed (an unverified gate blocks
+                           a claim rather than being assumed green). Exit 2 = the plan is
+                           structurally invalid (cycle, unknown layer, layer earlier than a
+                           dependency) or a checked gate fails; 1 = --strict and work remains;
+                           0 = the plan is sound.
     release --task <id> [--token <t>] | --stale <minutes>
                            Give a claim back to the pool (holder, token, or delegation chain
                            must authorize it). --stale sweeps abandoned claims.
@@ -4161,6 +4762,9 @@ const api = {
   task: (id) => taskPayload(id),
   runcard: (id) => { const t = backlogTasks().find((x) => x.id === id); return t ? runCardForTask(t) : null; },
   nextClaimable: () => cmdNextPayload(),
+  // the layered plan, as a read-only projection a host can render (never runs gates:
+  // a host calling this is inspecting, not claiming)
+  planLayers: (opts = {}) => computeLayerPlan({ checkGates: !!opts.checkGates }),
   // records
   journal: (limit = null) => {
     const rows = readJournal();
@@ -4199,7 +4803,10 @@ const api = {
 function cmdNextPayload() {
   const tasks = backlogTasks();
   const todo = tasks.filter((t) => t.status === 'todo');
-  const claimable = todo.filter((t) => unmetDeps(t, tasks).length === 0);
+  // Mirrors cmdNext's selection rules exactly, including the layer gate, so a host
+  // previewing the next task cannot be told about work the CLI would refuse.
+  const plan = computeLayerPlan({ checkGates: true, allTasks: tasks });
+  const claimable = todo.filter((t) => unmetDeps(t, tasks).length === 0 && !gateBlockersFor(plan, t).length);
   const candidate = claimable.sort((a, b) => prio(a) - prio(b))[0] || null;
   if (!candidate) return { task: null, reason: todo.length ? 'blocked or mode-filtered' : 'empty' };
   const sk = candidate.skill ? skillForMode(candidate.skill, candidate.mode) : null;

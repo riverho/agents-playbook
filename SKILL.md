@@ -192,6 +192,88 @@ stay attributable. The playbook's own skills are exposed to the harness as `play
 > package is **not yet published** (0.6.0 shipped under the old singular spelling), so pin
 > `@^0.6.2` only once the release is on npm. `README.md` → "What's shipped" is the current state.
 
+## Layered planning (plan the repo, not just the next feature)
+
+`dependencies: [ids]` orders individual tasks. **Layers** are how you plan a whole repo:
+a layer is a named stratum (substrate → data → domain → interface), and a layer may carry a
+**gate** — a shell command that must pass before anything above it may start.
+
+```yaml
+# playbook.yaml
+layers:
+  - {id: L0, name: substrate, gate: "npm test"}
+  - {id: L1, name: data}
+  - {id: L2, name: domain, gate: "node scripts/check-domain.mjs"}
+```
+
+```yaml
+# memory/backlog.yaml
+- id: split-store
+  title: Extract the persistence port
+  layer: L1
+```
+
+Two rules keep layers from becoming a second, lying source of truth:
+
+1. **A layer is a projection of the dependency graph.** Each task's depth is *derived*
+   (1 + its deepest dependency), never trusted from the declaration.
+2. **A declared `layer:` is a constraint.** A task may not sit in an earlier layer than
+   something it depends on. Adding an edge that silently pushes work deeper becomes a
+   `pb validate` failure instead of a quiet contradiction.
+
+**The dry run:**
+
+```bash
+pb plan --layers                  # derived layers, gates, blockers, ready set, order, critical path
+pb plan --layers --check-gates    # also RUN each gate command (opt-in)
+pb plan --layers --json           # machine-readable, for a UI
+```
+
+A dry run **writes nothing and executes no acceptance check** — it fingerprints the backlog,
+journal, state and cycle brief before rendering and refuses (exit 3) if any of them changed.
+Exit codes: `0` = sound plan, `2` = structurally invalid (cycle, unknown layer, a layer earlier
+than its dependencies) **or a checked gate is failing**, `1` = `--strict` and work remains.
+
+**Gates are enforced, not advisory.** `pb next --claim` and `pb loop run --auto` refuse a task
+whose lower layer's gate fails, and an **unverified** gate blocks too (run `--check-gates` to
+verify it) — an unevaluated gate is not a passed gate. Layers are a hard partition: there is no
+switch that relaxes it, because the ordering *is* the claim the plan makes. Tasks with no
+`layer:` are unconstrained in both directions — no gate holds them back and they hold nothing
+back — so layers can be adopted incrementally. `--force` is the one-off escape hatch, and it is
+recorded on the journal row.
+
+> A finished layer whose gate is **red** still holds the layer above. Ticking off every task is
+> not the same claim as "this stratum is sound", and the gate is what makes the difference.
+
+### Human-gated layers, and the batch you answer once
+
+Some gates never go green on their own: buy the domain, provision the database, issue the
+credential. Declare that so the engine stops treating it as a failure to retry:
+
+```yaml
+layers:
+  - {id: L0, name: infra, human: true, gate: "curl -fsS $APP_URL/health && psql -c 'select 1' -h $DB_HOST"}
+  - {id: L1, name: data}
+```
+
+`human: true` changes **reporting and hand-off, never whether the gate gates** — the layer above is
+still blocked. What it buys you:
+
+- **A failing gate blocks only its branch.** Work *at* the gated layer, in unrelated layers, and
+  unlayered work all stay claimable. The tree does not freeze.
+- **Every human question is collected into one batch.** `pb plan --layers --check-gates` prints a
+  `WAITING ON A HUMAN` section naming each gate, the command that must pass, and **every** task it
+  blocks — so one hand-off answers all of them instead of the loop stopping at the first.
+- **The run no longer lies about finishing.** `pb loop run --auto` used to print *"Autonomous run
+  complete"* when the only work left sat above a red gate. It now names the blocked tasks, prints
+  the human batch, and ends `Status: stalled` — never `done`.
+
+The intended shape: run `--check-gates` **before** opening the loop to get the full blocker set,
+have the human clear it in one pass, re-run to confirm the gates are green, and only then let the
+autonomous run work. Provisioning blockers get batched; judgment blockers still surface mid-loop,
+and no pre-loop command can enumerate those. The blocker vocabulary is exactly what you modelled as
+`dependencies` + gates — an unmodelled requirement is invisible, and the plan will look confident.
+
 ## The phase loop (cycle → reflect)
 
 The task loop above runs *inside* a larger phase loop. The **North Star** (`north_star` in

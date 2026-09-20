@@ -13,7 +13,7 @@
 # ============================================================================
 
 name: agents-playbook
-version: 0.6.3
+version: 0.7.0
 description: >-
   A portable, agent-first playbook. Agents loop without friction: orient on the
   master, pick a task, run the matching skill/process, verify with executable
@@ -83,6 +83,41 @@ index:
     processes: memory/processes.ndjson         # tracked long-running processes by loop
   artifacts:
     reports: artifacts/reports                 # human-facing rollups (generated)
+
+# ----------------------------------------------------------------------------
+# layers — OPTIONAL. Plan the repo in strata instead of only ordering tasks.
+# A layer is a named altitude; its `gate` is a shell command that must exit 0
+# before any task in a HIGHER layer may be claimed. That is what turns "we do not
+# touch the domain while the data layer is red" into an enforced fact.
+#
+# A task opts in with `layer: <id>`. The layer a task LANDS in is DERIVED from its
+# dependencies (1 + its deepest dependency), and the declared value is a constraint:
+# `pb validate` fails if a task sits in an earlier layer than something it depends
+# on, or names a layer that is not declared here. Inspect it any time with
+#   pb plan --layers                     # dry run: gates/blockers/order/critical path
+#   pb plan --layers --check-gates       # same, and actually run the gate commands
+# Tasks with no `layer:` are unconstrained in BOTH directions — no gate holds them
+# back and they hold nothing back — so layers can be adopted incrementally.
+# There is deliberately no switch to relax the partition: the declared order IS the
+# claim the plan makes. `--force` is the explicit, recorded one-off escape hatch.
+#
+# This playbook ships with NO layers declared — the example is here to be copied,
+# and declaring `layers:` is the only step needed to turn the flat backlog into a plan.
+# layers:
+#   - {id: L0, name: substrate, about: "engine invariants: state, claims, checks", gate: "npm test"}
+#   - {id: L1, name: surfaces, about: "CLI/JSON/plugin surfaces on the engine"}
+#   - {id: L2, name: orchestration, about: "flows, modes, autonomous runs"}
+#
+# `human: true` on a layer declares that its gate fails until a PERSON acts (buy the
+# domain, provision the database) — never something an agent retry can clear:
+#   - {id: L0, name: infra, human: true, gate: "curl -fsS $APP_URL/health"}
+# It changes reporting and hand-off, never whether the gate gates. A failing gate
+# blocks only its own branch (work AT that layer and in unrelated branches stays
+# claimable), and `pb plan --layers --check-gates` collects every human-gated layer
+# into ONE batch — the gate command, and every task it holds up — so a single
+# hand-off answers them all instead of the loop stopping at the first. `pb loop run
+# --auto` reports that batch and ends `stalled` rather than claiming completion.
+# ----------------------------------------------------------------------------
 
 # ----------------------------------------------------------------------------
 # modes — persona packs mounted ON the invariant floor. A mode injects a
