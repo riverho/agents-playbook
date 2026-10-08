@@ -1,6 +1,8 @@
 # Agents-Playbook
 
-Current release: **v0.7.0** — **layered planning** with a provably read-only dry run,
+Current release: **v0.7.1** — a patch fixing the plugin's `@deepseek-ai/dsh*` peer range (which
+made it uninstallable on dsh `0.2.0-rc.2`) and a pack gate that had stopped checking, on top of
+**v0.7.0**: **layered planning** with a provably read-only dry run,
 **human-gated branches** that batch everything only a person can clear, **multi-agent leases**,
 complete **worktrees**, crash recovery, and the **DeepSeek Harness plugin**
 (`dsh-agents-playbook`). On npm as [`agents-playbook`](https://www.npmjs.com/package/agents-playbook)
@@ -461,9 +463,9 @@ Being explicit about what is shipped and what is not:
 
 | Artifact | State |
 | --- | --- |
-| Engine (`agents-playbook`) | **repo** `0.7.0` (unreleased, untagged); **npm latest is `0.6.3`** — the version bumped here is not published |
-| Git tags | `v0.1.0`, `v0.3`, `v0.3.2`, `v0.6.0`, `v0.6.1`, `v0.6.2`, `v0.6.3` |
-| Harness plugin (`dsh-agents-playbook`) | **repo** `0.7.0`; **npm latest is `0.6.3`**. Install `dsh plugin --profile <p> add dsh-agents-playbook@^0.6.3` (needs pnpm; plain `npm install` does **not** enable it) |
+| Engine (`agents-playbook`) | **repo** `0.7.1` (unreleased, untagged); **npm latest is `0.7.0`** |
+| Git tags | `v0.1.0`, `v0.3`, `v0.3.2`, `v0.6.0`, `v0.6.1`, `v0.6.2`, `v0.6.3`, `v0.7.0` |
+| Harness plugin (`dsh-agents-playbook`) | **repo** `0.7.1`; **npm latest is `0.7.0`**. Install `dsh plugin --profile <p> add dsh-agents-playbook@^0.7.1` (needs pnpm; plain `npm install` does **not** enable it). On dsh `0.2.0-rc.2` only `0.7.1` installs: `0.7.0` declares `^0.1.5-rc.2` peers, which that runtime's compatibility gate rejects |
 | Live in-harness verification | pending (a boot either serves the Web UI or runs an LLM task, so it stays a human step) |
 
 ## What was deliberately cut — and what came back differently

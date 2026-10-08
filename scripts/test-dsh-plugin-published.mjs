@@ -17,6 +17,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { firstPackedEntry } from './lib/npm-pack.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -43,7 +44,9 @@ let tarball = null;
   const r = spawnSync(npm[0], [npm[1], 'pack', '--json', '--pack-destination', work], { cwd: PLUGIN, encoding: 'utf8' });
   let info = null;
   try { info = JSON.parse(r.stdout); } catch { /* reported below */ }
-  tarball = info?.[0]?.filename ? join(work, info[0].filename) : null;
+  // npm 11 answers with an array, npm 12 with an object keyed by package name.
+  const packed = firstPackedEntry(info);
+  tarball = packed?.filename ? join(work, packed.filename) : null;
   ok('the plugin tarball builds', r.status === 0 && !!tarball, `exit=${r.status}\n${r.stdout}${r.stderr}`.slice(0, 500));
   if (!tarball) { console.log('\ntest-dsh-plugin-published: aborted'); process.exit(1); }
 }

@@ -5,6 +5,38 @@ makes the pair identifiable. `npm run check:version` guards the engine's own
 `package.json` ↔ `playbook.yaml` agreement, and `npm run pack:plugin` refuses to build a
 tarball whose plugin version differs from the engine it carries.
 
+## 0.7.1 — the peer range that locked the plugin out, and a gate that had stopped checking
+
+Patch. No engine behaviour changes; the playbook surface is identical to 0.7.0.
+
+### Fixed
+
+- **The plugin could not be installed into any profile on dsh `0.2.0-rc.2`.** Its three
+  `@deepseek-ai/dsh*` peers were caret ranges on a `0.x` line — `^0.1.5-rc.2` means
+  `>=0.1.5-rc.2 <0.2.0`, the same 0.x caret trap this repository already documents for profile
+  upgrades — and the runtime's compatibility gate compares those ranges against the **runtime**
+  version, not against the peer package's own version. So the install stopped with
+
+      dsh: installation rejected: Plugin dsh-agents-playbook@0.7.0 is incompatible with dsh 0.2.0-rc.2:
+      peerDependencies {"@deepseek-ai/dsh-llm":"^0.1.5-rc.2", ...}
+
+  The three ranges now span the supported lines explicitly (`>=0.1.5-rc.2 <0.3.0`), which
+  satisfies both `0.1.5-rc.2` and `0.2.0-rc.2`. Every API the plugin actually calls still exists
+  in the 0.2.0-rc.2 runtime — `defineTool` (dsh-tools), `createUserMessage` (dsh-llm), the
+  `agent/pre-step` and `agent/turn-stopping` hooks, `workspaceRegistry`, `skills.registerProvider`,
+  `agent.steer()` — so this was a stale declaration, not a real incompatibility. The range is
+  declaration only: profiles run with `autoInstallPeers: false`, so the harness supplies those
+  peers and nothing is installed from the range.
+- **`pack:plugin` had stopped checking whether the tarball carries the engine.** npm 11 answers
+  `npm pack --json` with an array; npm 12 answers with an object keyed by package name. The gate
+  read `parsed[0]`, so under npm 12 it fell through to a branch that printed the raw output and
+  exited 0 — a green result from a check that had quietly stopped running. The shape is now
+  decoded in one place (`scripts/lib/npm-pack.mjs`), and an unrecognized result is a hard failure
+  instead of a pass. The identical assumption aborted `test-dsh-plugin-published.mjs` — loudly,
+  which is how the silent one was found. Pinned by `scripts/test-npm-pack-shape.mjs` (11
+  assertions), which is mostly about the failure path: the happy path never noticed.
+- `package-lock.json` now carries the released version; the 0.7.0 release commit left it at 0.6.2.
+
 ## 0.7.0 — layered planning, human-gated branches, and two gates that could not be trusted
 
 Minor. New planning surface; existing playbooks that declare no `layers` behave exactly as before.

@@ -123,6 +123,32 @@ dsh plugin --profile <profile> add dsh-agents-playbook@^<version>
 pnpm may also record a `minimumReleaseAgeExclude` entry for a just-published version: that is
 its supply-chain guard noting a deliberate exception, not an error.
 
+### The same 0.x caret trap blocks the INSTALL, not just the upgrade
+
+A plugin's `@deepseek-ai/dsh*` peer ranges are checked against the **runtime** version
+(`evaluatePluginCompatibility` in `@deepseek-ai/dsh-app-boot`), not against the peer package's own
+version, and the check only looks at peers named `@deepseek-ai/dsh` or `@deepseek-ai/dsh-*`
+(`@deepseek-ai/cordis` and `schemastery` are not gated at all). `^0.1.5-rc.2` therefore means
+`>=0.1.5-rc.2 <0.2.0`, and dsh `0.2.0-rc.2` is rejected before anything installs:
+
+```
+dsh: installation rejected: Plugin dsh-agents-playbook@0.7.0 is incompatible with dsh 0.2.0-rc.2:
+peerDependencies {"@deepseek-ai/dsh-llm":"^0.1.5-rc.2", ...}
+```
+
+Declare the intended span explicitly (`>=0.1.5-rc.2 <0.3.0`) rather than a caret on a 0.x line.
+If a build still has to ship with a stale range, the runtime offers an exact-version exemption,
+stored per profile in `compatibility.json` and matched on an exact runtime version:
+
+```bash
+dsh plugin --profile <profile> allow-version <pkg>@<version> --dsh-version <exact> --accept-risk
+dsh plugin --profile <profile> version-exemptions
+dsh plugin --profile <profile> revoke-version <pkg>@<version> --dsh-version <exact>
+```
+
+Grant it only after checking that the APIs the plugin calls still exist in the running runtime:
+the exemption suppresses the gate, it does not make the plugin compatible.
+
 ## What the release does NOT claim
 
 - The plugin has not been exercised inside a **live** harness session. Four layers are

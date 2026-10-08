@@ -1,6 +1,6 @@
 {
   "name": "dsh-agents-playbook",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "DeepSeek Harness plugin for Agent-Playbook: multi-agent claims, isolated git worktrees, and enforced acceptance checks. \"Done\" is an exit code, not a claim.",
   "type": "module",
   "main": "index.js",
@@ -50,9 +50,9 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-agent": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-llm": "^0.1.5-rc.2",
-    "@deepseek-ai/dsh-tools": "^0.1.5-rc.2",
+    "@deepseek-ai/dsh-agent": ">=0.1.5-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.5-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.5-rc.2 <0.3.0",
     "@deepseek-ai/schemastery": "^3.18.2"
   },
   "engines": {

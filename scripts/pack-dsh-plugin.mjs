@@ -23,6 +23,7 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { firstPackedEntry } from './lib/npm-pack.mjs';
 
 const log = (...parts) => console.error(...parts);
 const emitJson = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
@@ -257,16 +258,22 @@ function runPack(dry) {
   });
   log(`\nnpm pack ${dry ? '(dry run) ' : ''}exit=${r.status}`);
   let parsed = null;
-  try { parsed = JSON.parse(r.stdout); } catch { /* printed below */ }
-  if (parsed && parsed[0]) {
-    const f = parsed[0];
-    log(`  tarball:   ${f.filename}`);
-    log(`  unpacked:  ${(f.unpackedSize / 1024).toFixed(0)} KiB across ${f.entryCount} files`);
-    const hasEngine = (f.files || []).some((x) => /^engine\/scripts\/pb\.mjs$/.test(x.path));
+  try { parsed = JSON.parse(r.stdout); } catch { /* reported below */ }
+  // npm 11 answers with an array, npm 12 with an object keyed by package name.
+  const packed = firstPackedEntry(parsed);
+  if (packed) {
+    log(`  tarball:   ${packed.filename}`);
+    log(`  unpacked:  ${(packed.unpackedSize / 1024).toFixed(0)} KiB across ${packed.entryCount} files`);
+    const hasEngine = (packed.files || []).some((x) => /^engine\/scripts\/pb\.mjs$/.test(x.path));
     log(`  engine in tarball: ${hasEngine ? 'yes' : 'NO — the published plugin would not work'}`);
     if (!hasEngine) process.exit(1);
   } else {
+    // NOT a soft landing. This branch used to print the raw output and exit 0, so the
+    // moment npm changed its JSON shape the engine-in-tarball assertion stopped running
+    // and the gate still reported success. An unreadable pack result is a failure.
+    log('  ERROR: could not read `npm pack --json` output — the engine-in-tarball check cannot run.');
     log(`${r.stdout || ''}${r.stderr || ''}`.trim().slice(0, 2000));
+    process.exit(1);
   }
   if (r.status !== 0) process.exit(r.status || 1);
 }
