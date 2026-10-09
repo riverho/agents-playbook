@@ -1473,6 +1473,23 @@ function runValidate() {
     if (t.manual !== undefined) {
       ok(typeof t.manual === 'boolean', `Task ${t.id} manual must be a boolean`);
     }
+    // `docs:` is the card's document association (design D6): the paths a human needs
+    // to read to judge this task. It earns its place because the CLI EXECUTES it here —
+    // every entry must be a playbook-root-relative file that exists. A missing document
+    // is a FAILURE, not a warning: a card pointing at a design no other agent can open
+    // is a broken association, and a design that moves must break the build loudly.
+    if (t.docs !== undefined) {
+      const docs = Array.isArray(t.docs) ? t.docs : null;
+      ok(docs && docs.every((d) => typeof d === 'string' && d.trim()),
+        `Task ${t.id} docs must be a list of playbook-root-relative file paths`);
+      for (const d of docs || []) {
+        if (typeof d !== 'string' || !d.trim()) continue;
+        const rel = d.trim();
+        ok(!/^([a-zA-Z]:[\\/]|[\\/])/.test(rel),
+          `Task ${t.id} docs path must be relative to the playbook root: ${rel}`);
+        ok(exists(rel), `Task ${t.id} docs path does not exist: ${rel}`);
+      }
+    }
   }
 
   // 6. structural guardrails for the layer/dependency graph. `pb validate` is the
@@ -1691,6 +1708,13 @@ function runCardForTask(task) {
     checker: state.checker || null,
     checks: taskChecks(task).map((command) => ({ command })),
     journal_range: journal.length ? { first_ts: journal[0].ts || null, last_ts: journal[journal.length - 1].ts || null, count: journal.length } : null,
+    // The per-task journal read path (design gap #1). `journal_range` already filtered
+    // the append-only file by task; the rows themselves were the only thing missing, so
+    // the fix is the same read path, not a second store and not a new verb: every
+    // consumer of a RunCard (including `pb graph`) gets the card's ordered, attributed
+    // history for free. Rows are emitted verbatim — a projection that renamed `notes`
+    // to something prettier would be inventing a field the journal does not have.
+    journal,
     updated_at: state.updated_at || null,
   };
 }
@@ -1807,6 +1831,257 @@ function cmdTask(args) {
   if (args.json) return printJson(payload);
   console.log(`[${payload.task.id}] ${payload.task.title}`);
   console.log(`status: ${payload.task.status}`);
+}
+
+// ============================================================================
+//  graph — one read-only projection for a graph UI (schema below).
+// ----------------------------------------------------------------------------
+// The room in artifacts/graph-flow-ui/DESIGN.md §4.1 is a picture OF a projection,
+// never a second orchestration brain. So every node is composed from readers the CLI
+// already exposes (runcard ∪ `task show` ∪ the state overlay), every edge names the
+// record that proves it, and NOTHING here writes state or executes a gate command.
+// The rule that decides the shape: a node's status comes from the state projection
+// (memory/backlog-state.json), NEVER from `status:` in backlog.yaml — on disk every
+// task says `todo`, so a UI reading the YAML would paint an entirely-todo graph.
+// ============================================================================
+const GRAPH_SCHEMA = 'agent-playbook.graph.v1';
+// The loop steps are the master's own declaration, not a constant: a playbook that
+// renames its steps gets its own rail. The fallback only covers a master with none.
+const GRAPH_STEP_FALLBACK = ['orient', 'select', 'act', 'verify', 'record', 'report'];
+function graphStepIds() {
+  const ids = (Array.isArray(master?.loop?.steps) ? master.loop.steps : [])
+    .map((s) => (s && s.id ? String(s.id) : null)).filter(Boolean);
+  return ids.length ? ids : GRAPH_STEP_FALLBACK;
+}
+// Journal action → the loop step it belongs to. This is a table, not a guess: deriving
+// it from the verb would file a `comment` under act and a `provider_rate_limit` under
+// nothing. An action the table does not know is work that happened — `act`.
+const GRAPH_STEP_ACTION = {
+  claim: 'select', release: 'select',
+  verify: 'verify', checker: 'verify',
+  record: 'record', comment: 'record', correct: 'record', provider_rate_limit: 'record',
+  reflect: 'report', report: 'report',
+};
+function graphStepForAction(action) {
+  return GRAPH_STEP_ACTION[action] || 'act';
+}
+// The card's cycle rail: which loop steps this task's journal rows show it passed
+// through, and the step of its most recent row. A step, never a percentage — the
+// engine has no completion fraction and must not grow one (rule 25).
+function cycleForJournal(journal) {
+  const steps = graphStepIds();
+  const filled = [];
+  for (const row of journal) {
+    const step = graphStepForAction(row.action);
+    if (!filled.includes(step)) filled.push(step);
+  }
+  const last = journal.length ? graphStepForAction(journal[journal.length - 1].action) : null;
+  const index = last ? steps.indexOf(last) : -1;
+  return { step: index >= 0 ? last : null, index: index >= 0 ? index : null, steps, filled };
+}
+function docsOfTask(task) {
+  return (Array.isArray(task.docs) ? task.docs : [])
+    .filter((d) => typeof d === 'string' && d.trim()).map((d) => d.trim());
+}
+function graphNodeFor(task, planned) {
+  const card = runCardForTask(task);
+  const state = taskState(task.id);
+  const gate = mergeReadyPayload(task);
+  const declared = planned?.layer || null;
+  const derived = planned && typeof planned.derived_layer === 'number' ? planned.derived_layer : null;
+  return {
+    id: task.id,
+    title: card.title,
+    status: card.status,                       // the state overlay — never backlog.yaml's `status:`
+    layer: declared || (derived === null ? null : `L${derived + 1}`),
+    declared_layer: declared,
+    derived_layer: derived,
+    priority: planned?.priority ?? prio(task),
+    skill: task.skill || null,
+    mode: card.mode,
+    checks: card.checks.length,
+    acceptance_checks: card.checks.map((c) => c.command),
+    gate_quality: planned?.gate_quality || gateQuality(task),
+    manual: !!task.manual,
+    claim: { by: card.agent, seq: typeof state.seq === 'number' ? state.seq : null, loop_id: card.loop_id },
+    checker: card.checker,
+    worker: card.worker ? {
+      branch: card.worker.branch || null,
+      status: card.worker.status || null,
+      worktree_path: card.worker.worktree_path || null,
+      merged_at: card.worker.merged_at || null,
+      merge_commit: card.worker.merge_commit || null,
+      merge_ready: gate.ready,
+    } : null,
+    // Fork/merge-back are WORKER facts, not task→task relations: PB models a branch as
+    // an attribute of the task that owns it (state.worker), so the honest place for them
+    // is here. A UI that needs them as edges has no endpoint the engine can name.
+    merge_ready: gate.ready,
+    merge_reasons: gate.reasons,
+    merge_warnings: gate.warnings,
+    cycle: cycleForJournal(card.journal),
+    docs: docsOfTask(task),
+    journal: card.journal,
+    updated_at: card.updated_at,
+  };
+}
+// Every edge is a relation a record proves, and `proven` says whether the engine can
+// show it as a FACT (true) or only as a CLAIM (false — the design draws those dashed,
+// and never solid). Endpoints are node ids plus the two bookends and the human batch:
+//   dep    a dependency, INVERTED from `plan --layers` (which maps task → prerequisites)
+//   spawn  `start` → task: the orchestrator started it. A journal `action: spawn` row is
+//          a fact; a plain claim row is a claim (proven:false, evidence:'claim').
+//   hil    task → `human`, only for a declared `manual: true` that is not done.
+function graphEdges(nodes, plan) {
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const edges = [];
+  for (const [taskId, deps] of Object.entries(plan.edges || {})) {
+    if (!nodeIds.has(taskId)) continue;
+    for (const dep of Array.isArray(deps) ? deps : []) {
+      if (!nodeIds.has(dep)) continue;
+      // `exited_zero` is the design's "done-through" treatment: the prerequisite only
+      // counts as passed when its last done record actually RAN its checks.
+      edges.push({ from: dep, to: taskId, kind: 'dep', proven: true, exited_zero: lastDoneEntry(dep)?.checks === 'passed' });
+    }
+  }
+  for (const node of nodes) {
+    const spawnRow = node.journal.find((r) => r.action === 'spawn') || null;
+    const claimRow = node.journal.find((r) => r.action === 'claim') || null;
+    const evidence = spawnRow || claimRow;
+    if (!evidence) continue;
+    const parent = spawnRow && typeof spawnRow.parent === 'string' && nodeIds.has(spawnRow.parent) ? spawnRow.parent : null;
+    edges.push({
+      from: parent || 'start',
+      to: node.id,
+      kind: 'spawn',
+      proven: !!(spawnRow || parent),
+      by: evidence.agent || evidence.claimed_by || null,
+      seq: typeof evidence.seq === 'number' ? evidence.seq : null,
+      loop: evidence.loop_id || null,
+      origin_runtime: evidence.origin_runtime || null,
+      evidence: spawnRow ? 'spawn' : 'claim',
+    });
+  }
+  for (const node of nodes) {
+    if (node.manual && node.status !== 'done') {
+      edges.push({ from: node.id, to: 'human', kind: 'hil', proven: true, reason: 'the task declares manual: true — only a person can close it' });
+    }
+  }
+  return edges;
+}
+// The human batch. Two kinds of "a person is needed" exist, and they do NOT have the
+// same evidential standing, so they are not in the same array:
+//   batch              — proven without side effects: `manual: true` and not done.
+//                        `loop run --auto` already defers exactly these, so this is a
+//                        projection of behaviour, not a new flag.
+//   unevaluated_gates  — a declared `human: true` layer gate. Gates are SHELL COMMANDS,
+//                        and a read-only projection must not run them. Rendering an
+//                        unevaluated gate inside `batch` would be the engine being
+//                        confidently wrong about needing a human; labelling it here is
+//                        the honest default the design's gap #5 asked for.
+function graphHumanBatch(nodes, plan) {
+  const batch = [];
+  for (const node of nodes) {
+    if (!node.manual || node.status === 'done') continue;
+    batch.push({
+      kind: 'manual',
+      gate: null,
+      command: node.acceptance_checks[0] || null,
+      commands: node.acceptance_checks,
+      tasks: [node.id],
+      task: node.id,
+      title: node.title,
+      status: node.status,
+      reason: 'the task declares manual: true — `pb loop run --auto` defers it, so this is a question for a person, not a retry',
+    });
+  }
+  const unevaluated = [];
+  const defs = readLayerDefs();
+  if (defs.declared && defs.layers.length) {
+    const order = defs.layers.map((l) => l.id);
+    for (const def of defs.layers) {
+      if (!def.human || !def.gate) continue;
+      const pos = order.indexOf(def.id);
+      const blocked = plan.tasks
+        .filter((t) => t.status !== 'done' && t.layer && order.indexOf(t.layer) > pos)
+        .map((t) => t.id);
+      if (!blocked.length) continue;
+      unevaluated.push({
+        kind: 'gate', layer: def.id, name: def.name || null, gate: def.gate, command: def.gate,
+        tasks: blocked, evaluated: false,
+        reason: 'layer gate was NOT executed — `pb graph` never runs gate commands; run `pb plan --layers --check-gates` to evaluate it',
+      });
+    }
+  }
+  return { batch, unevaluated };
+}
+// The two bookends. They are NOT task rows and must never become any: the start is the
+// loop epoch + cycle brief, the goal is the cycle's prose stop condition. Both already
+// belong to PB, so the graph composes them instead of inventing non-executable tasks.
+function graphStart(loop) {
+  const cyc = readCycle();
+  return {
+    id: 'start',
+    loop: loop?.id || null,
+    loop_status: loop?.status || null,
+    started_at: loop?.started_at || null,
+    phase: cyc.exists && cyc.phase !== undefined ? cyc.phase : null,
+    goal: (cyc.exists && cyc.goal) || loop?.goal || null,
+    stop: (cyc.exists && cyc.stop) || loop?.stop || null,
+    mode: loop?.mode || master?.default_mode || null,
+  };
+}
+function graphGoal(start) {
+  const stop = start.stop || null;
+  // The stop condition is prose and NOTHING exits 0 on it. The clauses are exposed so
+  // the end-goal card can render a checklist, but `met` stays null (unevaluated) for
+  // every one: the engine will not paint a goal as reached. A `met: true` here would be
+  // the exact "declares victory unchecked" failure the North Star forbids.
+  const conditions = stop
+    ? String(stop).split(/[;\n]+/).map((s) => s.trim()).filter(Boolean).map((text) => ({ text, met: null }))
+    : [];
+  return { id: 'goal', stop, north_star: master?.north_star || null, conditions, conditions_evaluated: false };
+}
+function graphPayload() {
+  const tasks = backlogTasks();
+  const plan = computeLayerPlan({ checkGates: false, allTasks: tasks });
+  const plannedById = new Map(plan.tasks.map((t) => [t.id, t]));
+  const nodes = tasks.map((t) => graphNodeFor(t, plannedById.get(t.id)));
+  const human = graphHumanBatch(nodes, plan);
+  const start = graphStart(activeLoop());
+  return {
+    schema: GRAPH_SCHEMA,
+    start,
+    goal: graphGoal(start),
+    nodes,
+    edges: graphEdges(nodes, plan),
+    human: {
+      id: 'human',
+      batch: human.batch,
+      unevaluated_gates: human.unevaluated,
+      gates_checked: false,
+      note: 'gate commands are never executed by `pb graph`; `unevaluated_gates` holds the declared human gates whose state is unknown',
+    },
+  };
+}
+function cmdGraph(args) {
+  const payload = graphPayload();
+  if (args.json) return printJson(payload);
+  const byStatus = {};
+  for (const n of payload.nodes) byStatus[n.status] = (byStatus[n.status] || 0) + 1;
+  const kinds = {};
+  for (const e of payload.edges) kinds[e.kind] = (kinds[e.kind] || 0) + 1;
+  console.log(`${GRAPH_SCHEMA} — ${payload.nodes.length} node(s), ${payload.edges.length} edge(s)`);
+  console.log(`loop ${payload.start.loop || '(none)'} · phase ${payload.start.phase ?? '(none)'}`);
+  console.log(`status: ${Object.entries(byStatus).map(([k, v]) => `${k}=${v}`).join(' ') || '(none)'}`);
+  console.log(`edges: ${Object.entries(kinds).map(([k, v]) => `${k}=${v}`).join(' ') || '(none)'}`);
+  if (payload.human.batch.length) {
+    console.log(`waiting on a human (${payload.human.batch.length}):`);
+    for (const b of payload.human.batch) console.log(`  ${b.kind} [${b.tasks.join(', ')}] ${b.command || ''}`.trimEnd());
+  } else {
+    console.log('waiting on a human: none provable without running a gate');
+  }
+  for (const g of payload.human.unevaluated_gates) console.log(`  unevaluated human gate [${g.layer}] ${g.gate} (not run)`);
 }
 function gitToplevel() {
   try {
@@ -2227,12 +2502,40 @@ function cmdWorker(args) {
       process.exit(1);
     }
     const head = gitIn(ROOT, ['rev-parse', 'HEAD']);
-    updateBacklogState(taskId, () => ({
-      worker: { ...(worker || {}), agent, branch, merged_at: nowISO(), merged_by: agent, merge_commit: head, status: 'merged' },
-      updated_at: nowISO(),
-    }), { agent });
+    const mergedAt = nowISO();
+    const workerRecord = { ...(worker || {}), agent, branch, merged_at: mergedAt, merged_by: agent, merge_commit: head, status: 'merged' };
+    // The merge now commits through commitIteration — the same one-transaction path
+    // `worker checker` and `record` use — instead of patching the projection alone.
+    // Before this, merge-back was the ONE fact the append-only journal did not carry,
+    // so `repair-state --strict` (which rebuilds from the journal) silently dropped it:
+    // an unproven merge. The row carries the worker record it committed, and the replay
+    // below models that record, so the merge survives a strict rebuild.
+    // `status: 'merged'` is deliberately not a task status: a merge is an event, and a
+    // row whose status were `done` would be picked up by `lastDoneEntry` as the latest
+    // completion record, poisoning the very merge gate that allowed it.
+    const claimState = taskState(taskId);
+    const mergeOwnership = verifyTaskClaim(taskId, args);
+    const mergeCommit = commitIteration(taskId, {
+      ts: mergedAt,
+      loop_id: activeLoop()?.id || 'legacy',
+      task: taskId,
+      agent,
+      agent_id: agent,
+      claimed_by: claimState.claimed_by || agent,
+      mode: claimState.mode || resolveModeId() || undefined,
+      ownership: mergeOwnership.status,
+      agent_chain: mergeOwnership.chain || undefined,
+      action: 'merge',
+      status: 'merged',
+      checks: 'none',
+      result: head,
+      files: [],
+      notes: `merged ${branch} into the root checkout at ${head}`,
+      worker: workerRecord,
+    }, () => ({ worker: workerRecord, updated_at: mergedAt }), { agent });
+    if (!mergeCommit) process.exit(1);
     if (args.json) {
-      printJson({ ...payload, merge_commit: head });
+      printJson({ ...payload, merge_commit: head, journal_seq: mergeCommit.seq });
       return;
     }
     console.log(`Merged "${branch}" into the root checkout at ${head}.`);
@@ -2624,6 +2927,11 @@ function reconstructStateFromJournal({ strict = false, ids = null } = {}) {
     // last belonged, which is what the projection stores.
     if (row.loop_id && row.loop_id !== 'legacy') entry.loop_id = row.loop_id;
     if (row.mode) entry.mode = row.mode;
+    // A row that carries the worker record it committed (the merge row does) is
+    // replayed as that record. Without this the journal could hold the merge and the
+    // strict rebuild would still drop it as "projection-only" — a fact recorded but
+    // not replayable, which is the same as not recorded.
+    if (row.worker && typeof row.worker === 'object') entry.worker = { ...(entry.worker || {}), ...row.worker };
     if (row.action === 'claim') {
       entry.status = 'in_progress';
       entry.claimed_at = ts;
@@ -3114,6 +3422,59 @@ function cmdRecord(args) {
   if (!commit) process.exit(1);
   console.log(`Recorded [${entry.task}] ${entry.action} → ${entry.status}${checksOutcome !== 'none' ? ` (checks: ${checksOutcome})` : ''} (seq ${commit.seq})`);
   if (endsIteration) console.log(`Backlog [${task.id}] → ${args.status}.`);
+}
+
+// ============================================================================
+//  comment — a steering note on a task, journal-native (design D5).
+// ----------------------------------------------------------------------------
+// Append-only and attributable: the row carries the writer, the claim ownership and
+// the delegation chain, so a steer survives compaction and is answerable after the
+// fact. It is constructed so that it CANNOT move the task's status: the row's `status`
+// is the task's CURRENT status (a non-terminal replay for any live task) and the
+// transaction patches nothing but the touch stamp. That property is pinned by
+// scripts/test-pb-graph.mjs — a "comment" that could close a task would be a status
+// change wearing a note's clothes.
+// ============================================================================
+function cmdComment(args) {
+  const taskId = typeof args.task === 'string' ? args.task.trim() : '';
+  const text = typeof args.text === 'string' ? args.text : '';
+  if (!taskId || !text.trim()) {
+    console.error('Usage: pb comment --task <id> --text "..." [--agent <name>] [--token <claim-token>] [--chain <a,b>]');
+    process.exit(1);
+  }
+  const task = backlogTasks().find((t) => t.id === taskId);
+  if (!task) { console.error(`Task not found in backlog: ${taskId}`); process.exit(1); }
+  const agent = resolveAgentId(args);
+  const claim = readBacklogState()[taskId] || {};
+  const ownership = verifyTaskClaim(taskId, args, readBacklogState());
+  if (!ownership.ok) {
+    console.error(`WARNING: [${taskId}] is held by "${ownership.holder}" but this writer (chain: ${ownership.chain.join(' → ') || agent}) cannot prove it holds it.`);
+    console.error('         Recording anyway, flagged as ownership=unproven. Pass --token <claim-token> or set PB_AGENT_CHAIN if this is a delegated write.');
+  }
+  const entry = {
+    ts: nowISO(),
+    loop_id: activeLoop()?.id || 'legacy',
+    task: taskId,
+    agent,
+    agent_id: agent,
+    claimed_by: claim.claimed_by || agent,
+    mode: claim.mode || resolveModeId() || undefined,
+    ownership: ownership.status,
+    // Always stamped, not only when the chain is what proved the claim: a steering
+    // row's delegation path is part of its attribution. (`record` stamps
+    // ownership.chain, which the token path leaves undefined — a comment carries the
+    // declared path unconditionally instead of inheriting that hole.)
+    agent_chain: resolveAgentChain(args),
+    action: 'comment',
+    status: task.status,          // current status, so a replay cannot move it
+    checks: 'none',
+    result: null,
+    files: [],
+    notes: text.trim(),
+  };
+  const commit = commitIteration(taskId, entry, () => ({}), { agent });
+  if (!commit) process.exit(1);
+  console.log(`Comment on [${taskId}] recorded (seq ${commit.seq}, ownership: ${entry.ownership}) — status unchanged (${task.status}).`);
 }
 
 // ============================================================================
@@ -4643,7 +5004,12 @@ function cmdHelp() {
     status [--json]        Orient: master summary, backlog, recent journal, guardrail state
     task show <id> [--json] Machine-readable task details and acceptance checks
     runcard list|show <id> [--json]
-                           Portable RunCard projection for UI/runtime integrations
+                           Portable RunCard projection for UI/runtime integrations, including
+                           the task's ordered journal rows (its steering thread and history)
+    graph [--json]         Read-only projection for a graph UI (schema agent-playbook.graph.v1):
+                           start/goal bookends, task nodes with cycle+provenance+worker truth,
+                           proven edges (dependencies inverted), and the human batch. Never
+                           writes, and never executes a layer gate command.
     worker create|status|exec|verify|merge|remove|checker|merge-ready|provider-rate-limit ...
                            Worker worktrees (dry-run; --execute to apply). create opens an
                            isolated slot (atomic: one winner per slot); status reports
@@ -4681,6 +5047,8 @@ function cmdHelp() {
     record --task <id> --action <a> --status <s> [--result <r>] [--files a,b] [--notes "..."] [--agent <n>] [--skip-checks]
                            Append a journal entry. Recording done RUNS the task's
                            acceptance_checks and refuses if they fail.
+    comment --task <id> --text "..."   Journal-native steering note (action: comment).
+                           Append-only and attributable; it cannot change task status.
     report [--since DATE]  Roll the journal up into ${REPORTS_DIR}/report-<date>.md
     plan --goal ".." [--skill <id>] [--priority <n>] [--check <cmd>] [--manual]
                           Convert a goal into a backlog task with acceptance_checks.
@@ -4854,8 +5222,10 @@ if (isMainModule) {
   case 'repair-state': cmdRepairState(args); break;
   case 'task': cmdTask(args); break;
   case 'runcard': cmdRunCard(args); break;
+  case 'graph': cmdGraph(args); break;
   case 'worker': cmdWorker(args); break;
   case 'record': cmdRecord(args); break;
+  case 'comment': cmdComment(args); break;
   case 'report': cmdReport(args); break;
   case 'plan': cmdPlan(args); break;
   case 'loop': cmdLoop(args); break;
