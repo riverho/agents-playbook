@@ -78,6 +78,34 @@ PB_AGENT_ID=sub-1 PB_PARENT_AGENT_ID=you PB_CLAIM_TOKEN=<token> node scripts/pb.
 - `pb unlock [--force]` clears a leaked lock. Locks are only auto-broken by age, never by a
   liveness probe — a lock held too long costs latency, a lock broken too early costs data.
 
+## Steering notes and the graph projection
+
+Two surfaces exist for a person (or a UI) watching the backlog:
+
+- **`pb comment --task <id> --text "..."`** appends `action: comment` to the journal with the writer,
+  the claim ownership and the delegation chain. It is a *note*, not a status change: the row replays
+  as a non-event, so `pb repair-state --check` still finds no drift and the task's status is
+  untouched. An unentitled writer is still recorded, flagged `ownership: unproven`, like every
+  other write.
+- **`pb graph --json`** (schema `agent-playbook.graph.v1`) is the one read-only projection a graph UI
+  needs. `start`/`goal` are bookends composed from the loop epoch and the cycle brief; each node is
+  composed from the RunCard + `task show` + the state projection, so a node's status **never** comes
+  from `status:` in `backlog.yaml` (on disk that field is stale for every task). Edges name their
+  evidence: `proven: true` is a fact the records show, `proven: false` is a claim to draw dashed.
+  It never writes and **never executes a layer gate** — a declared `human: true` gate whose state is
+  unknown is listed under `unevaluated_gates`, not folded into the human batch as if it were closed.
+  RunCards also carry their own `journal` rows, so a card's steering thread needs no second store.
+
+**`docs:` on a task** associates the documents a human needs in order to judge it:
+
+```yaml
+  - id: plan-20261009-004
+    docs: [artifacts/graph-flow-ui/DESIGN.md]
+```
+
+`pb validate` requires every entry to exist relative to the playbook root and **fails** (not warns)
+when one does not — a design that moves breaks the build loudly instead of vanishing from the card.
+
 ## Isolated work in a worktree
 
 When the work should not touch the root checkout — long refactors, risky edits, or several agents
