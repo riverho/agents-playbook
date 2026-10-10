@@ -267,7 +267,7 @@ describe("4 — the minimap matches the painted frame", () => {
     expect(FLOW_MINIMAP_TONE.done).toBe("rgba(17, 17, 17, 0.22)");
     expect(FLOW_MINIMAP_TONE.todo).toBe("rgba(17, 17, 17, 0.18)");
     expect(FLOW_MINIMAP_TONE.in_progress).toBe("var(--accent-teal)");
-    expect(FLOW_MINIMAP_TONE.blocked).toBe("var(--accent-rose)");
+    expect(FLOW_MINIMAP_TONE.blocked).toBe("var(--tone-risk)"); // v2: blocked is amber (C3)
     // The card tone for `done` is ink (#2f2f2f) — on the minimap that paints a
     // heavy black block, which is exactly what the live render exposed.
     expect(FLOW_MINIMAP_TONE.done).not.toBe(FLOW_TONE.done);

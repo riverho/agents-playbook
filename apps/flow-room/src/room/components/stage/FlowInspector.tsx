@@ -89,12 +89,12 @@ export function FlowInspector({
       {/* ① the card, opened */}
       <div className="flow-insp__head">
         <div className="flow-row">
-          <span className="flow-mono" style={{ fontSize: 9 }}>
+          <span className="flow-mono" style={{ fontSize: 12 }}>
             {node.id}
           </span>
           <span className="flex-1" />
           <span
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium"
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium"
             style={{
               background: TONE_WASH[human ? "block" : node.status === "done" ? "muted" : "ok"],
               color: TONE_COLOR[human ? "block" : node.status === "done" ? "muted" : "ok"],
@@ -123,7 +123,7 @@ export function FlowInspector({
           {node.layer.startsWith("L") && <span>· {node.layer}</span>}
           {node.provenance?.spawned_by && (
             <span
-              className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium"
+              className="inline-flex px-1.5 py-0.5 rounded text-[12px] font-medium"
               style={{ background: TONE_WASH.note, color: TONE_COLOR.note }}
             >
               spawned
@@ -131,7 +131,7 @@ export function FlowInspector({
           )}
           {isHollow(node) && (
             <span
-              className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium"
+              className="inline-flex px-1.5 py-0.5 rounded text-[12px] font-medium"
               style={{ background: TONE_WASH.risk, color: TONE_COLOR.risk }}
             >
               ⚠ hollow
@@ -142,7 +142,11 @@ export function FlowInspector({
 
       <div className="flow-insp__body">
         <Section title="① CYCLE · PB LOOP STEPS">
-          <div className="flow-cycle flow-cycle--big">
+          <div
+            className="flow-cycle flow-cycle--big"
+            data-step={rail.filled || undefined}
+            data-done={node.status === "done" ? "" : undefined}
+          >
             {[0, 1, 2, 3, 4, 5].map(segment => {
               const filled = segment < rail.filled;
               const active = filled && rail.pulsing && segment === rail.current - 1;
@@ -276,7 +280,7 @@ export function FlowInspector({
 
         <Section title="④ WORKTREE · CHECKER GATE">
           <Kv label="branch">
-            <span className="flow-mono" style={{ fontSize: 9.5 }}>
+            <span className="flow-mono" style={{ fontSize: 12 }}>
               {node.worker?.branch ?? "no worktree"}
               {node.worker?.status ? ` · ${node.worker.status}` : ""}
               {node.worker?.ahead !== undefined ? ` · ahead ${node.worker.ahead}` : ""}
@@ -287,7 +291,7 @@ export function FlowInspector({
           </Kv>
           <Kv label="merge-ready">
             <span
-              className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium"
+              className="inline-flex px-1.5 py-0.5 rounded text-[12px] font-medium"
               style={{
                 background: TONE_WASH[
                   node.worker?.merge_ready || node.merge_ready ? "ok" : "block"
@@ -343,7 +347,7 @@ export function FlowInspector({
               <div className="flow-msg" key={`${row.seq ?? row.ts ?? row.notes.slice(0, 12)}`}>
                 <div className="flow-msg__who">
                   <span
-                    className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium"
+                    className="inline-flex px-1.5 py-0.5 rounded text-[12px] font-medium"
                     style={{
                       background: TONE_WASH[row.agent === "you" ? "muted" : "note"],
                       color: TONE_COLOR[row.agent === "you" ? "muted" : "note"],

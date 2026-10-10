@@ -28,10 +28,37 @@
   --surface-1: #ffffff;
   --text-secondary: #5c5c5c;
   --surface-2: #eae7e3;
-  --text-tertiary: #9a9590;
+  --text-tertiary: #6b6660; /* was #9a9590 (2.97:1); 5.18:1 on surface-0 — contract C1 */
   --text-primary: #111111;
-  --accent-rose: #c24a4a;
   --surface-glass: rgba(255, 255, 255, 0.65);
+
+  /* ── v2 design contract tokens (artifacts/graph-flow-ui/v2/CONTRACT.md, D12–D20) ── */
+  /* type: one legible family and its mono; the only sizes allowed (T1, T2) */
+  --f-ui: "Atkinson Hyperlegible Next", "Segoe UI", system-ui, sans-serif;
+  --f-code: "Atkinson Hyperlegible Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --t-12: 12px;
+  --t-13: 13px;
+  --t-14: 14px;
+  --t-16: 16px;
+  --t-20: 20px;
+  --t-28: 28px;
+  /* text tones, each measured >= 4.5:1 on every painted surface (C1) */
+  --tone-ok: #006b5c;
+  --tone-risk: #8a5a00;
+  --tone-bad: #b3261e;
+  --tone-muted: #6b6660;
+  --tone-note: #5b3fc4;
+  --on-accent-teal: #ffffff;
+  /* needs a person — fuchsia, kept off the progress ramp (C3) */
+  --you: #b4167f;
+  --you-tint: rgba(180, 22, 127, 0.1);
+  /* the six loop steps, red (1) to green (6) (C5, D19) */
+  --s1: #d64541;
+  --s2: #e06a2e;
+  --s3: #d9921c;
+  --s4: #a9a21c;
+  --s5: #5fa03f;
+  --s6: #23955a;
 }
 
 /* ─── Flow room (playground) ───
@@ -93,6 +120,7 @@
 }
 
 .flow-room {
+  font-family: var(--f-ui);
   position: relative;
   flex: 1 1 0;
   min-height: 0;
@@ -205,9 +233,8 @@
   gap: 5px;
 }
 .flow-id {
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 9px;
-  letter-spacing: 0.03em;
+  font-family: var(--f-code);
+  font-size: 12px;
   color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -224,7 +251,7 @@
   color: var(--text-primary);
 }
 .flow-body {
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.45;
   color: var(--text-secondary);
   margin-top: 5px;
@@ -233,7 +260,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 9.5px;
+  font-size: 12px;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
   overflow: hidden;
@@ -245,9 +272,8 @@
   color: var(--text-secondary);
 }
 .flow-mono {
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 9.5px;
-  letter-spacing: 0.02em;
+  font-family: var(--f-ui);
+  font-size: 12px;
   color: var(--text-tertiary);
 }
 .flow-note {
@@ -257,7 +283,7 @@
 .flow-kv {
   display: flex;
   gap: 6px;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--text-secondary);
 }
@@ -268,8 +294,8 @@
   flex: none;
   width: 74px;
   color: var(--text-tertiary);
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-family: var(--f-ui);
+  font-size: 12px;
   font-weight: 400;
   padding-top: 1px;
 }
@@ -289,8 +315,14 @@
 .flow-cycle i.flow-cycle__on {
   background: var(--accent-teal);
 }
+.flow-cycle[data-step="1"] i.flow-cycle__on { background: var(--s1); }
+.flow-cycle[data-step="2"] i.flow-cycle__on { background: var(--s2); }
+.flow-cycle[data-step="3"] i.flow-cycle__on { background: var(--s3); }
+.flow-cycle[data-step="4"] i.flow-cycle__on { background: var(--s4); }
+.flow-cycle[data-step="5"] i.flow-cycle__on { background: var(--s5); }
+.flow-cycle[data-step="6"] i.flow-cycle__on { background: var(--s6); }
+.flow-cycle[data-done] i { background: var(--s6); }
 .flow-cycle i.flow-cycle__act {
-  background: var(--accent-teal);
   animation: flow-pulse 1.4s ease-in-out infinite;
 }
 .flow-cycle--big i {
@@ -300,12 +332,12 @@
 .flow-steplist {
   display: flex;
   justify-content: space-between;
-  font-size: 9px;
+  font-size: 12px;
   color: var(--text-tertiary);
 }
 .flow-steplist {
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 8.5px;
+  font-family: var(--f-ui);
+  font-size: 12px;
 }
 
 /* human-in-the-loop: rose pill + breathing halo (2.2 s, opacity .55 → 0) */
@@ -316,9 +348,9 @@
   gap: 4px;
   padding: 1px 6px 1px 5px;
   border-radius: 999px;
-  background: rgba(194, 74, 74, 0.1);
-  color: var(--accent-rose);
-  font-size: 9.5px;
+  background: var(--you-tint);
+  color: var(--you);
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -327,7 +359,7 @@
   position: absolute;
   inset: -3px;
   border-radius: 999px;
-  border: 1px solid var(--accent-rose);
+  border: 1px solid var(--you);
   opacity: 0.55;
   animation: flow-halo 2.2s ease-out infinite;
 }
@@ -361,17 +393,16 @@
   overflow: hidden;
 }
 .flow-bookend__kicker {
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 9px;
-  letter-spacing: 0.14em;
+  font-family: var(--f-ui);
+  font-size: 12px;
   color: var(--text-tertiary);
 }
 .flow-bookend__loop {
   margin-top: 4px;
 }
 .flow-bookend__title {
-  font-family: "Playfair Display", Georgia, serif;
-  font-size: 19px;
+  font-family: var(--f-ui);
+  font-size: 20px;
   font-weight: 600;
   line-height: 1.14;
   margin: 6px 0 8px;
@@ -381,7 +412,7 @@
   font-size: 20px;
 }
 .flow-bookend__body {
-  font-size: 10.5px;
+  font-size: 12px;
   line-height: 1.45;
   color: var(--text-secondary);
 }
@@ -404,7 +435,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 9.5px;
+  font-size: 12px;
   color: var(--text-secondary);
 }
 .flow-cronrow + .flow-cronrow {
@@ -416,7 +447,7 @@
 .flow-stoplist li {
   display: flex;
   gap: 6px;
-  font-size: 10.5px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--text-secondary);
 }
@@ -427,7 +458,7 @@
   width: 12px;
   flex: none;
   color: var(--accent-teal);
-  font-size: 10px;
+  font-size: 12px;
 }
 .flow-stoplist li.is-open .flow-stoplist__mark {
   color: var(--text-tertiary);
@@ -439,20 +470,20 @@
   padding: 7px 8px;
 }
 .flow-goaldiff__old {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-secondary);
   text-decoration: line-through;
-  text-decoration-color: var(--accent-rose);
+  text-decoration-color: var(--tone-bad);
 }
 .flow-goaldiff__new {
-  font-size: 10.5px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--accent-teal);
   margin-top: 3px;
 }
 .flow-goaldiff__when {
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-family: var(--f-ui);
+  font-size: 12px;
   color: var(--text-tertiary);
   margin-top: 4px;
 }
@@ -471,8 +502,8 @@
   border-radius: 999px;
   border: 1px dashed var(--surface-3);
   background: var(--surface-glass);
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 8.5px;
+  font-family: var(--f-ui);
+  font-size: 12px;
   color: var(--text-tertiary);
   white-space: nowrap;
 }
@@ -484,8 +515,8 @@
   border-radius: 999px;
   border: 1px solid var(--surface-3);
   background: var(--surface-1);
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 8.5px;
+  font-family: var(--f-ui);
+  font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
   pointer-events: none;
@@ -495,9 +526,9 @@
   color: var(--accent-teal);
   background: #f2fbf9;
 }
-.flow-edgepill--rose {
-  border-color: var(--accent-rose);
-  color: var(--accent-rose);
+.flow-edgepill--hil {
+  border-color: var(--you);
+  color: var(--you);
   background: #fdf5f5;
 }
 
@@ -511,7 +542,7 @@
   border-radius: 6px;
   border: 1px solid var(--surface-3);
   background: var(--surface-1);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
   cursor: pointer;
@@ -526,7 +557,7 @@
 .flow-btn--primary {
   background: var(--accent-teal);
   border-color: var(--accent-teal);
-  color: #fff;
+  color: var(--on-accent-teal);
   font-weight: 500;
 }
 .flow-btn--primary:hover {
@@ -544,7 +575,7 @@
   border: 1px solid var(--surface-3);
   border-radius: 5px;
   background: var(--surface-1);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
 }
@@ -553,10 +584,10 @@
   color: var(--accent-teal);
   background: rgba(0, 134, 115, 0.1);
 }
-.flow-chip--rose {
-  border-color: var(--accent-rose);
-  color: var(--accent-rose);
-  background: rgba(194, 74, 74, 0.1);
+.flow-chip--hil {
+  border-color: var(--you);
+  color: var(--you);
+  background: var(--you-tint);
 }
 .flow-chip--ghost {
   border-style: dashed;
@@ -598,16 +629,15 @@
   gap: 3px;
 }
 .flow-legend__h {
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 8.5px;
-  letter-spacing: 0.1em;
+  font-family: var(--f-ui);
+  font-size: 12px;
   color: var(--text-tertiary);
 }
 .flow-legend__row {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 9.5px;
+  font-size: 12px;
   color: var(--text-secondary);
   white-space: nowrap;
 }
@@ -648,7 +678,7 @@
   gap: 7px;
 }
 .flow-dock__title {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -661,7 +691,7 @@
   border-radius: 6px;
   background: #fcfbfa;
   padding: 6px 8px;
-  font-size: 11px;
+  font-size: 12px;
   font-family: inherit;
   color: var(--text-primary);
   resize: none;
@@ -677,8 +707,8 @@
   margin-top: 8px;
 }
 .flow-dock__plan {
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-family: var(--f-ui);
+  font-size: 12px;
   color: var(--accent-teal);
   white-space: nowrap;
 }
@@ -698,7 +728,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -709,7 +739,7 @@
 .flow-toast__list li {
   display: flex;
   gap: 6px;
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.45;
   color: var(--text-secondary);
 }
@@ -759,9 +789,8 @@
   margin-top: 11px;
 }
 .flow-sec__h {
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 8.5px;
-  letter-spacing: 0.12em;
+  font-family: var(--f-ui);
+  font-size: 12px;
   color: var(--text-tertiary);
   margin-bottom: 5px;
 }
@@ -769,8 +798,8 @@
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 9.5px;
+  font-family: var(--f-ui);
+  font-size: 12px;
   line-height: 1.45;
   padding: 4px 0;
 }
@@ -794,7 +823,7 @@
   border: 1px solid var(--surface-2);
   border-radius: 5px;
   background: #fcfbfa;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-secondary);
 }
 .flow-doc + .flow-doc {
@@ -802,8 +831,8 @@
 }
 .flow-doc__path {
   flex: 1;
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
-  font-size: 9px;
+  font-family: var(--f-code);
+  font-size: 12px;
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -820,12 +849,12 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 9px;
+  font-size: 12px;
   color: var(--text-tertiary);
-  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-family: var(--f-ui);
 }
 .flow-msg__text {
-  font-size: 10.5px;
+  font-size: 12px;
   line-height: 1.45;
   color: var(--text-secondary);
   margin-top: 2px;
@@ -842,7 +871,7 @@
   border-radius: 6px;
   background: var(--surface-1);
   padding: 0 8px;
-  font-size: 10.5px;
+  font-size: 12px;
   font-family: inherit;
   color: var(--text-primary);
   outline: none;
@@ -904,3 +933,9 @@
   }
 }
 
+
+/* v2 contract (T1, T4): code-like text takes the code token, never the browser's default mono. */
+code,
+.flow-panel__cmd {
+  font-family: var(--f-code);
+}

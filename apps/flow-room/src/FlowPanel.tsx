@@ -34,15 +34,14 @@ const PANEL: CSSProperties = {
   justifyContent: "center",
   gap: "0.75rem",
   padding: "2rem",
-  fontFamily: "Inter, system-ui, sans-serif",
+  fontFamily: "var(--f-ui)",
   color: "var(--text-primary, #111)",
   background: "var(--surface-0, #f6f4f2)",
   textAlign: "center",
 };
 
 const CODE: CSSProperties = {
-  fontFamily: "'JetBrains Mono', ui-monospace, monospace",
-  fontSize: "0.85rem",
+  fontSize: "13px",
   background: "var(--surface-2, #eae7e3)",
   border: "1px solid var(--surface-3, #d9d5cf)",
   borderRadius: "6px",
@@ -118,13 +117,13 @@ export default function FlowPanel({ apiBase = "", showFooter = true }: FlowPanel
   if (state.status === "no-engine") {
     return (
       <div style={PANEL}>
-        <h1 style={{ font: "600 20px/1.2 Inter, system-ui, sans-serif", margin: 0 }}>No local engine</h1>
+        <h1 style={{ fontFamily: "var(--f-ui)", fontSize: "20px", fontWeight: 600, lineHeight: 1.2, margin: 0 }}>No local engine</h1>
         <p style={{ margin: 0, maxWidth: "46ch", color: "var(--text-secondary, #5c5c5c)" }}>
           The room reads a playbook through its own server. Nothing answered at{" "}
           <code>{apiBase}/api/health</code>, so there is no graph to draw.
         </p>
-        <p style={{ ...CODE, margin: 0 }}>cd apps/flow-room &amp;&amp; node server.mjs</p>
-        <p style={{ margin: 0, maxWidth: "52ch", fontSize: "0.8rem", color: "var(--text-tertiary, #9a9590)" }}>
+        <p className="flow-panel__cmd" style={{ ...CODE, margin: 0 }}>cd apps/flow-room &amp;&amp; node server.mjs</p>
+        <p style={{ margin: 0, maxWidth: "52ch", fontSize: "12px", color: "var(--text-tertiary, #6b6660)" }}>
           {state.detail}
         </p>
         <button

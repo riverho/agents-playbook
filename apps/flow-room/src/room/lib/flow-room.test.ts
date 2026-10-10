@@ -207,7 +207,8 @@ describe("frame 1 (the labelled sample) — cards, edges and the honesty rules",
     expect(FLOW_EDGE_STYLE.fork.dash).toBe("2 3");
     expect(FLOW_EDGE_STYLE.merge.width).toBe(2.25);
     expect(FLOW_EDGE_STYLE.merge.double).toBe(true);
-    expect(FLOW_EDGE_STYLE.hil.stroke).toBe("var(--accent-rose)");
+    // v2 contract C3 (plan-20261010-028): the human gate is --you, never a failure red
+    expect(FLOW_EDGE_STYLE.hil.stroke).toBe("var(--you)");
     expect(FLOW_EDGE_STYLE.hil.dash).toBe("4 3");
     // A proven spawn is solid; a claim keeps the dash.
     expect(flowEdgeStyle("spawn", true).dash).toBeUndefined();
@@ -328,7 +329,8 @@ describe("the cycle rail is derived from journal rows, never hand-set", () => {
   it("keeps the five tones of the stage layer", () => {
     expect(FLOW_TONE.done).toBe("#2f2f2f");
     expect(FLOW_TONE.in_progress).toBe("var(--accent-teal)");
-    expect(FLOW_TONE.blocked).toBe("var(--accent-rose)");
+    // v2 contract: blocked is amber, the human colour is reserved for HIL (C3)
+    expect(FLOW_TONE.blocked).toBe("var(--tone-risk)");
     expect(FLOW_TONE.todo).toBe("var(--text-tertiary)");
   });
 });

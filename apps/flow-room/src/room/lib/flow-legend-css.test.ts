@@ -218,13 +218,13 @@ describe("the legend metrics agree with the CSS that draws the legend", () => {
     // group) IS the row's value; the budget must resolve the chain, not ignore it.
     expect(ANCESTORS[".flow-legend__row"]).toContain(".flow-legend");
     expect(ANCESTORS[".flow-legend__h"]).toContain(".flow-legend");
-    // Today: no line-height anywhere in the chain (either element), and the row
-    // inherits no letter-spacing. The header declares its own 0.1em, which the
-    // width budget above already covers.
+    // Today: no line-height anywhere in the chain (either element), and no
+    // letter-spacing on either: the v2 contract (T5, plan-20261010-028) removed the
+    // header's 0.1em tracking, so the budget is the plain glyph advance.
     expect(inherited(".flow-legend__row", "line-height")).toBeUndefined();
     expect(inherited(".flow-legend__h", "line-height")).toBeUndefined();
     expect(inherited(".flow-legend__row", "letter-spacing")).toBeUndefined();
-    expect(inherited(".flow-legend__h", "letter-spacing")).toBe("0.1em");
+    expect(inherited(".flow-legend__h", "letter-spacing")).toBeUndefined();
   });
 
   it("treats rem as a unit rather than as a unitless multiplier", () => {

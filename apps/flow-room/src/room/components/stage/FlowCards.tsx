@@ -53,7 +53,7 @@ function TonePill({
   return (
     <span
       title={title}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium tabular-nums whitespace-nowrap"
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium tabular-nums whitespace-nowrap"
       style={{ background: TONE_WASH[tone], color: TONE_COLOR[tone] }}
     >
       {children}
@@ -65,7 +65,7 @@ function TonePill({
 function InkPill({ children }: { children: React.ReactNode }) {
   return (
     <span
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium tabular-nums whitespace-nowrap"
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium tabular-nums whitespace-nowrap"
       style={{ background: "rgba(17,17,17,0.08)", color: "var(--text-primary)" }}
     >
       {children}
@@ -102,7 +102,12 @@ function CycleRail({ node }: { node: FlowNode }) {
   const label = flowStepLabel(node);
   return (
     <>
-      <div className="flow-cycle" aria-label={`cycle: ${rail.step ?? "not started"}`}>
+      <div
+        className="flow-cycle"
+        data-step={rail.filled || undefined}
+        data-done={node.status === "done" ? "" : undefined}
+        aria-label={`cycle: ${rail.step ?? "not started"}`}
+      >
         {[0, 1, 2, 3, 4, 5].map(segment => {
           const filled = segment < rail.filled;
           const active = filled && rail.pulsing && segment === rail.current - 1;
@@ -389,7 +394,7 @@ export function FlowBatchCard({ data }: NodeProps<FlowBatchNode>) {
   const declared = unevaluated ?? [];
   return (
     <div className="flow-card" style={{ width: data.width, height: data.height }}>
-      <span className="flow-card__bar" style={{ background: "var(--accent-rose)" }} />
+      <span className="flow-card__bar flow-batch__bar" style={{ background: "var(--you)" }} />
       <Handle type="target" position={Position.Left} className="flow-handle" />
       <div className="flow-row">
         <span className="flow-id">waiting on a human</span>

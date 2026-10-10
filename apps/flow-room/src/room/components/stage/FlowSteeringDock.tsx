@@ -46,7 +46,7 @@ export function FlowSteeringDock({
         {selection.map(node => (
           <span
             key={node.id}
-            className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+            className="inline-flex items-center px-1.5 py-0.5 rounded text-[12px] font-medium"
             style={{ background: TONE_WASH.muted, color: TONE_COLOR.muted }}
           >
             {node.id}
