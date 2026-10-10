@@ -35,8 +35,14 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // The pinned source. A commit SHA (a branch would move under us); override the
 // checkout location with PB_FLOW_SOURCE when the source lives elsewhere.
+//
+// This names Wenmei's MAIN checkout rather than the `graph-room` worktree the room was
+// extracted from: the pinned commit is merged into main and the worktree was cleared
+// afterwards. Had the default kept naming the worktree, tidying it would have silently
+// downgraded this gate to manifest-only checking (checks 2 and 3 are skipped when the source
+// is unreachable) — a gate that weakens because a directory was cleaned up is worse than none.
 const SOURCE_REPO =
-  process.env.PB_FLOW_SOURCE || 'D:\\HermesProjects\\Wenmei\\wenmei\\.worktrees\\graph-room';
+  process.env.PB_FLOW_SOURCE || 'D:\\HermesProjects\\Wenmei\\wenmei';
 const SOURCE_PREFIX = 'app_design/src';
 const SOURCE_COMMIT = '33fdcea43af6a47df6d40028e749118ca61a0dea';
 
