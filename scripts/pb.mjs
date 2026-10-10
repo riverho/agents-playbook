@@ -1389,6 +1389,38 @@ function resolveCheckTimeout(task) {
   }
   return { ms: DEFAULT_CHECK_TIMEOUT_MS, source: 'default', warnings };
 }
+// ── mode checks: the same contract, its own limit ─────────────────────────────
+//  A mode's kind:check principles are a DIFFERENT list from a task's acceptance_checks —
+//  a principle is typically the whole suite (`npm test`) — so it gets its own limit and its
+//  own env var: raising one must not silently move the other. Resolution mirrors
+//  resolveCheckTimeout (most specific first) and always reports its source, because "which
+//  limit fired" is the first question anyone asks when a check is killed.
+//
+//  This was a hard-coded `timeout: 120000` with piped stdio until now, which meant a green
+//  `npm test` taking 142s was printed as FAIL [tests_green] npm test with no hint that it
+//  had been killed rather than failed. A limit-shaped outcome is a NON-VERDICT, and saying
+//  "failed" about it is the same class of lie as claiming a write that never landed.
+const DEFAULT_MODE_CHECK_TIMEOUT_MS = DEFAULT_CHECK_TIMEOUT_MS;
+function resolveModeCheckTimeout(principle, doc) {
+  const warnings = [];
+  const attempt = (raw, source) => {
+    if (raw === undefined || raw === null || String(raw).trim() === '') return null;
+    const ms = asPositiveMs(raw);
+    if (ms === null) {
+      warnings.push(`${source} is not a positive number of milliseconds (${JSON.stringify(raw)}) — ignored`);
+      return null;
+    }
+    if (ms > MAX_CHECK_TIMEOUT_WARN_MS) {
+      warnings.push(`${source} is ${ms}ms — an unusually large limit; a hang will not surface for ${Math.round(ms / 60000)} minutes`);
+    }
+    return { ms, source, warnings };
+  };
+  return attempt(principle?.check_timeout_ms, `check_timeout_ms on principle [${principle?.id}]`)
+    ?? attempt(doc?.mode_check_timeout_ms, 'mode mode_check_timeout_ms')
+    ?? attempt(process.env.PB_MODE_CHECK_TIMEOUT_MS, 'env PB_MODE_CHECK_TIMEOUT_MS')
+    ?? attempt(process.env.PB_CHECK_TIMEOUT_MS, 'env PB_CHECK_TIMEOUT_MS')
+    ?? { ms: DEFAULT_MODE_CHECK_TIMEOUT_MS, source: 'default', warnings };
+}
 function checkLimitNote(task) {
   const { ms, source } = resolveCheckTimeout(task);
   return `limit ${ms}ms per check from ${source}`;
@@ -1513,21 +1545,67 @@ function runModeChecks(doc) {
   for (const pr of modeCheckPrinciples(doc)) {
     const parts = shellSplit(pr.check);
     if (!parts.length) continue;
-    const [file, ...argv] = parts;
-    try {
-      runCommandSync(file, argv, { cwd: ROOT, stdio: 'pipe', timeout: 120000 });
-      results.push({ id: pr.id, cmd: pr.check, ok: true });
-    } catch (e) {
-      const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
-      results.push({ id: pr.id, cmd: pr.check, ok: false, output: out.split(/\r?\n/).slice(-8).join('\n') });
-    }
+    const limit = resolveModeCheckTimeout(pr, doc);
+    for (const w of limit.warnings) console.error(`  ⚠ ${w}`);
+    console.log(
+      limit.source === 'default'
+        ? `  limit ${limit.ms}ms per mode check from default (override with check_timeout_ms on the principle or PB_MODE_CHECK_TIMEOUT_MS)`
+        : `  limit ${limit.ms}ms per mode check from ${limit.source}`
+    );
+    // The SAME runner as acceptance checks: explicit maxBuffer (so over-output is its own
+    // outcome, not an exception caught and called a failure) and a timer test that requires
+    // ETIMEDOUT (so ENOBUFS can never masquerade as a timeout).
+    const r = runOneCheck(pr.check, ROOT, limit);
+    if (r) results.push({ id: pr.id, ...r });
   }
   return results;
 }
 function printModeCheckResults(results) {
   for (const r of results) {
-    console.log(`  ${r.ok ? 'PASS' : 'FAIL'}  [${r.id}] ${r.cmd}`);
-    if (!r.ok && r.output) console.log(r.output.split(/\r?\n/).map((l) => `        ${l}`).join('\n'));
+    if (r.ok) {
+      console.log(`  PASS  [${r.id}] ${r.cmd} (${r.elapsed_ms}ms)`);
+      continue;
+    }
+    if (r.timedOut) {
+      console.log(`  TIMEOUT  [${r.id}] ${r.cmd}`);
+      console.log(`        timed out after ${r.elapsed_ms}ms (limit ${r.limit_ms}ms from ${r.limit_source}) — this is NOT a failing mode check.`);
+      console.log("        raise it with 'check_timeout_ms' on the principle, or PB_MODE_CHECK_TIMEOUT_MS=<ms>.");
+      continue;
+    }
+    if (r.overflow) {
+      console.log(`  OUTPUT-LIMIT  [${r.id}] ${r.cmd}`);
+      console.log(`        produced more output than the runner accepts (limit ${r.max_output_bytes} bytes, override with PB_CHECK_MAX_OUTPUT_BYTES) — the exit code was never read, so this is NOT a failing mode check.`);
+      continue;
+    }
+    console.log(`  FAIL  [${r.id}] ${r.cmd} (${r.elapsed_ms}ms)`);
+    if (r.output) console.log(r.output.split(/\r?\n/).map((l) => `        ${l}`).join('\n'));
+  }
+}
+// The verdict, in one place so both callers (`pb mode check` and `validate --mode`) agree.
+// A non-verdict must read as NEITHER a pass nor a failure: the mode was not verified, so the
+// exit code is non-zero, but the message says what actually happened and what to raise.
+function reportModeCheckVerdict(id, results) {
+  const failed = results.filter((r) => !r.ok && !r.timedOut && !r.overflow);
+  const timedOut = results.filter((r) => r.timedOut);
+  const overflowed = results.filter((r) => r.overflow);
+  const noVerdict = timedOut.length + overflowed.length;
+  const kinds = [
+    timedOut.length ? `${timedOut.length} TIMED OUT` : null,
+    overflowed.length ? `${overflowed.length} hit the output limit` : null,
+  ].filter(Boolean).join(' and ');
+  if (failed.length) {
+    console.error(`\nMode "${id}" check FAILED — ${failed.length} principle(s) exited non-zero.`);
+    // A mixed run must keep the two apart: the failures are failures, the rest are not.
+    if (noVerdict) {
+      console.error(`  Separately, ${noVerdict} reached NO VERDICT (${kinds}). Those are NOT failures: they never finished, so they are unverified.`);
+    }
+    process.exit(1);
+  }
+  if (noVerdict) {
+    console.error(`\nMode "${id}" check reached NO VERDICT — ${kinds}. These are NOT failures: the check never finished, so the mode is unverified.`);
+    if (timedOut.length) console.error(`  limit ${timedOut[0].limit_ms}ms from ${timedOut[0].limit_source}; raise it with check_timeout_ms on the principle, or PB_MODE_CHECK_TIMEOUT_MS=<ms>.`);
+    if (overflowed.length) console.error(`  output bound ${overflowed[0].max_output_bytes} bytes; raise it with PB_CHECK_MAX_OUTPUT_BYTES=<bytes>.`);
+    process.exit(1);
   }
 }
 
@@ -1779,7 +1857,7 @@ function cmdValidate(args) {
       console.log(`\nRunning ${checks.length} kind:check principle(s) for mode "${id}":`);
       const results = runModeChecks(doc);
       printModeCheckResults(results);
-      if (results.some((r) => !r.ok)) { console.error(`\nMode "${id}" check FAILED.`); process.exit(1); }
+      reportModeCheckVerdict(id, results);
     }
   }
 }
@@ -4837,10 +4915,7 @@ function cmdMode(args) {
     console.log(`Running ${checks.length} kind:check principle(s) for mode "${id}":`);
     const results = runModeChecks(doc);
     printModeCheckResults(results);
-    if (results.some((r) => !r.ok)) {
-      console.error(`\nMode "${id}" check FAILED.`);
-      process.exit(1);
-    }
+    reportModeCheckVerdict(id, results);
     console.log(`Mode "${id}" checks passed.`);
     return;
   }
@@ -5572,9 +5647,18 @@ function cmdHelp() {
     anchor [--brief]       Print the constitution to re-inject (keeps the playbook salient)
     checkpoint [--snapshot]  Heartbeat: re-anchor + detect drift; --snapshot writes memory/RESUME.md
     list [processes|skills|modes]  Print the indices ("list modes" prints the mode catalog)
-    mode [show|skills|processes] [<id>]
+    mode [show|skills|processes|check] [<id>]
                            The active mode, or a named mode's menu: its resolved skill+process
                            pairs, directive and principles (task.mode ?? loop.mode ?? default_mode).
+                           "mode check" (and "validate --mode") RUN its kind:check principles under
+                           the same limiter as acceptance_checks but with its OWN budget, because a
+                           principle is usually the whole suite: 600000 ms default, then
+                           check_timeout_ms on the principle, then the mode's mode_check_timeout_ms,
+                           then PB_MODE_CHECK_TIMEOUT_MS, then PB_CHECK_TIMEOUT_MS. A principle
+                           killed by that limit is TIMEOUT and one that out-prints the runner is
+                           OUTPUT-LIMIT — both are NON-VERDICTS, never "FAILED": the mode is
+                           unverified, the exit code is still non-zero, and the message names which
+                           limit fired and how to raise it.
     pack build <id> [--out <dir>] | pack install <file.pbpack> [--root <dir>] [--force]
                            Build a mode pack archive / install one into a playbook root
     update [--check] [--force] [--source <dir>] [--include-master]

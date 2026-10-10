@@ -70,10 +70,11 @@ Resolution order, most specific first:
 | `PB_CHECK_TIMEOUT_MS` | the environment | machine / CI override |
 | default | — | The default is 600000 ms (10 minutes). |
 
-The default is deliberately **bounded and generous**: ~5x this repo's full `npm test`
-(~112s), so a busy machine cannot kill a green suite, while a genuine hang still surfaces
-inside the iteration that started it. A nonsense value (zero, negative, non-numeric) is
-never allowed to disable the limit — it warns and falls through to the next source.
+The default is deliberately **bounded and generous**: ~4x this repo's full `npm test`
+(~142s, and growing as gates are added), so a busy machine cannot kill a green suite, while a
+genuine hang still surfaces inside the iteration that started it. A nonsense value (zero,
+negative, non-numeric) is never allowed to disable the limit — it warns and falls through to
+the next source.
 
 A killed check is recorded as `checks: timed-out` with a `check_timeouts` list (command,
 limit, elapsed, source), so "why did this block?" is answerable from the journal. When
@@ -94,6 +95,22 @@ than the runner captures is **not** a timeout and not a failure — it is `OUTPU
 The capture bound is **16 MiB** by default and overridable with `PB_CHECK_MAX_OUTPUT_BYTES`,
 so a legitimately chatty green check still records. Only `execFileSync`'s `ETIMEDOUT` counts
 as a timer kill; `ENOBUFS` (which also sets `SIGTERM`) must never be read as one.
+
+**The same contract covers mode checks, which are a different list with their own budget.**
+`pb mode check` and `validate --mode` run a mode's `kind:check` principles — usually the whole
+suite, `npm test` — under a limit resolved as: `check_timeout_ms` on the principle, then the
+mode's `mode_check_timeout_ms`, then `PB_MODE_CHECK_TIMEOUT_MS`, then `PB_CHECK_TIMEOUT_MS`,
+then the same 600000 ms default. A killed principle prints `TIMEOUT` and an over-printing one
+`OUTPUT-LIMIT`; both are **non-verdicts**, never "FAILED", and both still exit non-zero
+because the mode is unverified.
+
+This matters because the limits are separate on purpose — raising a task's check budget must
+not silently move the mode's — and because it was not always true: mode checks kept a
+hard-coded 120000 ms, so a green `npm test` taking 142 s was printed as
+`FAIL  [tests_green] npm test`, indistinguishable from a red suite. `evalLayerGate` (layer
+gates) still carries that old hard-coded limit and the same misclassification; it is filed,
+not fixed — so a slow or chatty **green** gate can still be reported as a failing one, and a
+failing gate partitions every stratum above it.
 
 Invalid limits are refused from **both** sources — `0`, negatives, booleans (`true` parses
 as a number in the old coercion) and non-numeric values all warn and fall through, because
