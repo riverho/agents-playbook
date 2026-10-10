@@ -17,6 +17,18 @@ $PKG = $pkg.name
 $VER = $pkg.version
 $BIN = ($pkg.bin.PSObject.Properties | Select-Object -First 1).Name
 
+# HARD GUARD. `Join-Path $GBIN $BIN` with an EMPTY $BIN returns $GBIN itself — the whole
+# global npm directory. The shim cleanup below then calls `Remove-Item -Force` on it: a
+# recursive delete of every global package on the machine, stopped only by whichever file
+# happens to be locked. Not hypothetical — it happened, and only a permission error stopped
+# it. So refuse to touch anything unless the manifest actually parsed.
+if (-not $PKG -or -not $VER -or -not $BIN) {
+  Write-Host "!! Refusing to run: could not read name/version/bin from package.json."
+  Write-Host "   parsed: PKG='$PKG' VER='$VER' BIN='$BIN'"
+  Write-Host "   Run from the repo root, against a package.json that has a 'bin' entry."
+  exit 1
+}
+
 Write-Host "==> agents-playbook local install  ($PKG@$VER, bin: $BIN)"
 Write-Host "==> repo: $PSScriptRoot"
 
@@ -30,9 +42,22 @@ npm rm -g $PKG 2>$null; $true   # || true equivalent
 
 $GBIN = npm prefix -g
 $shimBase = Join-Path $GBIN $BIN
+# Belt and braces: even with $BIN present, never remove a DIRECTORY or the global bin dir
+# itself. A shim is a FILE (`pb`, `pb.cmd`, `pb.ps1`). If this ever resolves to a folder,
+# stop instead of deleting it.
 foreach ($ext in @('', '.cmd', '.ps1')) {
     $f = "$shimBase$ext"
-    if (Test-Path $f) { Remove-Item -Force $f; Write-Host "==> removed stale shim: $f" }
+    if (-not (Test-Path $f)) { continue }
+    if ((Get-Item $f -Force).PSIsContainer) {
+      Write-Host "!! Refusing to remove a DIRECTORY at $f — that is not a shim."
+      exit 1
+    }
+    if ((Resolve-Path $f).Path -eq (Resolve-Path $GBIN).Path) {
+      Write-Host "!! Refusing to remove the global bin dir itself ($f)."
+      exit 1
+    }
+    Remove-Item -Force $f
+    Write-Host "==> removed stale shim: $f"
 }
 
 # 3. global link
