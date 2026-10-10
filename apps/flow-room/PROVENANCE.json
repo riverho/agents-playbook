@@ -1,0 +1,147 @@
+{
+  "schema": "agent-playbook.app-source-provenance.v1",
+  "source": {
+    "repo": "D:\\HermesProjects\\Wenmei\\wenmei\\.worktrees\\graph-room",
+    "path_prefix": "app_design/src",
+    "commit": "33fdcea43af6a47df6d40028e749118ca61a0dea"
+  },
+  "note": "Copied verbatim. `node scripts/check-app-source-provenance.mjs` re-verifies; --write re-pins.",
+  "files": {
+    "components/stage/FlowCards.tsx": {
+      "sha256": "1155858f8d665d25b88f15b1a41704cbc472387bed9e9b45406bdaae0c99e4f1",
+      "bytes": 19341,
+      "source_sha256": "1155858f8d665d25b88f15b1a41704cbc472387bed9e9b45406bdaae0c99e4f1",
+      "blob_sha256": "c758c23b317281950facf9ffbafa566ba8b99cc98e50a9a15b33645e5abce060"
+    },
+    "components/stage/FlowEdges.tsx": {
+      "sha256": "3b9365fef36b238ba1f6487f7b9a1af8aaf4871d717657c2032eec004bb1a819",
+      "bytes": 6914,
+      "source_sha256": "3b9365fef36b238ba1f6487f7b9a1af8aaf4871d717657c2032eec004bb1a819",
+      "blob_sha256": "3b9365fef36b238ba1f6487f7b9a1af8aaf4871d717657c2032eec004bb1a819"
+    },
+    "components/stage/FlowInspector.tsx": {
+      "sha256": "8dfaf467fe0923cef987f8ba5515c28c1c93514a3494a095daa4e6b0cf4e3403",
+      "bytes": 15294,
+      "source_sha256": "8dfaf467fe0923cef987f8ba5515c28c1c93514a3494a095daa4e6b0cf4e3403",
+      "blob_sha256": "8dfaf467fe0923cef987f8ba5515c28c1c93514a3494a095daa4e6b0cf4e3403"
+    },
+    "components/stage/FlowRoom.tsx": {
+      "sha256": "8fa9eaba959ea95af4ec2dd4abb129c15da3fdf2503ce4c0d35fb4db77d849c5",
+      "bytes": 17474,
+      "source_sha256": "8fa9eaba959ea95af4ec2dd4abb129c15da3fdf2503ce4c0d35fb4db77d849c5",
+      "blob_sha256": "d02f2a512ed860ac4736fb4e40c506944ffcc59fc34f7682465f9f43f7faaf95"
+    },
+    "components/stage/FlowSteeringDock.tsx": {
+      "sha256": "77e44a1a7985187a6303ee5f6d06e643aabc86227d92513e9102b2e75efb39c0",
+      "bytes": 4464,
+      "source_sha256": "77e44a1a7985187a6303ee5f6d06e643aabc86227d92513e9102b2e75efb39c0",
+      "blob_sha256": "77e44a1a7985187a6303ee5f6d06e643aabc86227d92513e9102b2e75efb39c0"
+    },
+    "lib/flow-adapter.ts": {
+      "sha256": "7b7cabee3149eedffab14a00e413d4ce7976019a61f352858c6d275a14edef86",
+      "bytes": 17075,
+      "source_sha256": "7b7cabee3149eedffab14a00e413d4ce7976019a61f352858c6d275a14edef86",
+      "blob_sha256": "7b7cabee3149eedffab14a00e413d4ce7976019a61f352858c6d275a14edef86"
+    },
+    "lib/flow-derive.ts": {
+      "sha256": "7aca175ab415ecabfeba34a115bf6623296e6bb2e958510e0b9fe14f58490b65",
+      "bytes": 19437,
+      "source_sha256": "7aca175ab415ecabfeba34a115bf6623296e6bb2e958510e0b9fe14f58490b65",
+      "blob_sha256": "7aca175ab415ecabfeba34a115bf6623296e6bb2e958510e0b9fe14f58490b65"
+    },
+    "lib/flow-geometry.test.ts": {
+      "sha256": "39f38c8dd8f91484c04d6d4dec2d2163b19bc95a55f54aa63e1128f5457353f0",
+      "bytes": 14299,
+      "source_sha256": "39f38c8dd8f91484c04d6d4dec2d2163b19bc95a55f54aa63e1128f5457353f0",
+      "blob_sha256": "39f38c8dd8f91484c04d6d4dec2d2163b19bc95a55f54aa63e1128f5457353f0"
+    },
+    "lib/flow-legend-css.test.ts": {
+      "sha256": "c1d538e888a6474c46c1fd1a3592a064fe5cb0d4afeb4c89ab2bfee39b5e4a81",
+      "bytes": 11303,
+      "source_sha256": "c1d538e888a6474c46c1fd1a3592a064fe5cb0d4afeb4c89ab2bfee39b5e4a81",
+      "blob_sha256": "c1d538e888a6474c46c1fd1a3592a064fe5cb0d4afeb4c89ab2bfee39b5e4a81"
+    },
+    "lib/flow-layout.ts": {
+      "sha256": "820468439ee525eb4ba93be26534c09a13da3f5b67ab3afaf5d958f41ded8128",
+      "bytes": 23688,
+      "source_sha256": "820468439ee525eb4ba93be26534c09a13da3f5b67ab3afaf5d958f41ded8128",
+      "blob_sha256": "820468439ee525eb4ba93be26534c09a13da3f5b67ab3afaf5d958f41ded8128"
+    },
+    "lib/flow-projection.ts": {
+      "sha256": "ebfaa57902730d46e42b75d8bce67c9661a985eff72c3815219eb2fe6ef78d75",
+      "bytes": 8036,
+      "source_sha256": "ebfaa57902730d46e42b75d8bce67c9661a985eff72c3815219eb2fe6ef78d75",
+      "blob_sha256": "ebfaa57902730d46e42b75d8bce67c9661a985eff72c3815219eb2fe6ef78d75"
+    },
+    "lib/flow-room.test.ts": {
+      "sha256": "f9581c77b55f13ed5b403b249bd8c0699d1af2872a9b6029de440c681f60c40f",
+      "bytes": 20316,
+      "source_sha256": "f9581c77b55f13ed5b403b249bd8c0699d1af2872a9b6029de440c681f60c40f",
+      "blob_sha256": "f9581c77b55f13ed5b403b249bd8c0699d1af2872a9b6029de440c681f60c40f"
+    },
+    "lib/flow-types.ts": {
+      "sha256": "21e87b935b016c9950945a36feb2ac0cb433b53979016c730ea8e5ff6e0c7fec",
+      "bytes": 12569,
+      "source_sha256": "21e87b935b016c9950945a36feb2ac0cb433b53979016c730ea8e5ff6e0c7fec",
+      "blob_sha256": "21e87b935b016c9950945a36feb2ac0cb433b53979016c730ea8e5ff6e0c7fec"
+    },
+    "lib/flow-view.ts": {
+      "sha256": "cd346a1350b891da13edc63667e4694e68836a216bc204abc66c286e8749f34a",
+      "bytes": 1047,
+      "source_sha256": "cd346a1350b891da13edc63667e4694e68836a216bc204abc66c286e8749f34a",
+      "blob_sha256": "cd346a1350b891da13edc63667e4694e68836a216bc204abc66c286e8749f34a"
+    },
+    "lib/stage-escape.ts": {
+      "sha256": "f954525f3a6b4e7443709de83e4d7591d1cfdaa1149ab99d592df98960442934",
+      "bytes": 952,
+      "source_sha256": "f954525f3a6b4e7443709de83e4d7591d1cfdaa1149ab99d592df98960442934",
+      "blob_sha256": "730cc9c1db7b61f8340b3cddcec0681beb0edc4a91a834f8215ded6c6b9d1ff0"
+    },
+    "lib/stage-tokens.ts": {
+      "sha256": "bb18b77727410bd78987ddd87c85dc9cc94915c5baabc854a4b25a9c5f8d0933",
+      "bytes": 793,
+      "source_sha256": "bb18b77727410bd78987ddd87c85dc9cc94915c5baabc854a4b25a9c5f8d0933",
+      "blob_sha256": "d77cf06efe3c67d9668efa6577c09d964d0e15ad3c5943d88973e3fe79826fb9"
+    },
+    "lib/use-prefers-reduced-motion.ts": {
+      "sha256": "8710f167e9f0286c870c624725e18a9481c9e553e2f01cb6c8c7d8722fdd898f",
+      "bytes": 1258,
+      "source_sha256": "8710f167e9f0286c870c624725e18a9481c9e553e2f01cb6c8c7d8722fdd898f",
+      "blob_sha256": "8710f167e9f0286c870c624725e18a9481c9e553e2f01cb6c8c7d8722fdd898f"
+    },
+    "mocks/flow-graph-live.ts": {
+      "sha256": "3789ec41d2d6a0d5e9edae1e310bfe4fca7306164defc84d234fc813bd1b7298",
+      "bytes": 136077,
+      "source_sha256": "3789ec41d2d6a0d5e9edae1e310bfe4fca7306164defc84d234fc813bd1b7298",
+      "blob_sha256": "8dde60f8a7caa770d94555bb28148d54bce24cbfe47d111ea535c27fd7ce5836"
+    },
+    "mocks/flow-sample-layered.ts": {
+      "sha256": "a19591ea90966f38949c6917876d584ad23a2a3566833257abcf54775521e3dc",
+      "bytes": 15988,
+      "source_sha256": "a19591ea90966f38949c6917876d584ad23a2a3566833257abcf54775521e3dc",
+      "blob_sha256": "a19591ea90966f38949c6917876d584ad23a2a3566833257abcf54775521e3dc"
+    }
+  },
+  "local_edits": {
+    "lib/flow-adapter.ts": {
+      "sha256": "0828537b950b2c3b4e60aea5d655f8ddc6ab5dc142979d1661efd1630c573c77",
+      "reason": "plan-20261010-023: applySteering may return a promise (a live write is async) and FlowSteeringResult gained an optional note so a refusal explains itself",
+      "recorded": "2026-10-10T07:36:14.141Z"
+    },
+    "components/stage/FlowRoom.tsx": {
+      "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
+      "reason": "plan-20261010-023: both steering submit paths await the adapter and pass its note through to the toast",
+      "recorded": "2026-10-10T07:36:14.212Z"
+    },
+    "components/stage/FlowSteeringDock.tsx": {
+      "sha256": "5bd55bde1dde74b05893b38caa7919a0e3f3ff110a80942f0257b42c4cda9f50",
+      "reason": "plan-20261010-023: the toast headline and its first two claims branch on persisted, so no line asserts a write that did not happen",
+      "recorded": "2026-10-10T07:36:14.276Z"
+    },
+    "lib/flow-room.test.ts": {
+      "sha256": "d93d250cf4a305c2a3a5a2ac0d0a6a996352f77a8cd995ecb95cf19799771979",
+      "reason": "plan-20261010-023: the fixture-write test awaits the now-async seam and pins the adapter's note; every original assertion kept",
+      "recorded": "2026-10-10T07:36:14.350Z"
+    }
+  }
+}

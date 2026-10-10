@@ -7,12 +7,14 @@
   "exports": {
     ".": "./index.js",
     "./core": "./core.mjs",
+    "./client": "./client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
     "core.mjs",
+    "client.js",
     "cordis.patch.yml",
     "README.md",
     "engine/"
@@ -40,6 +42,11 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
     }
   },
   "scripts": {

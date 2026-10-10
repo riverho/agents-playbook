@@ -1,0 +1,35 @@
+{
+  "name": "@agents-playbook/flow-room",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The Agent-Playbook Flow room: a React Flow view of `pb graph --json` — backlog cards, proven edges, bookends, inspector and steering dock. Derived from the Wenmei playground room, copied verbatim and now decoupled from it.",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "vite",
+    "api": "node server.mjs --api-only --port 4319",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "tsc -b",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "^3.1.1",
+    "@xyflow/react": "^12.12.0",
+    "lucide-react": "^0.562.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.5",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "autoprefixer": "^10.4.23",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.19",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4",
+    "vitest": "^4.0.16"
+  }
+}

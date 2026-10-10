@@ -19,6 +19,11 @@ dist/
 # the tree, free to drift from the one that is actually tested.
 dsh-plugin/engine/
 
+# The DSH Client plugin bundle (the Flow room as a Harness panel) is GENERATED too, from
+# apps/flow-room/src/dsh/client.ts by `npm run build:client` (also run by dsh-plugin's
+# prepack). Same reason as engine/: a committed bundle is a second copy free to drift.
+dsh-plugin/client.js
+
 # The bundle's content stamp: records WHICH sources produced the current bundle so a source
 # edit without a version bump rebuilds instead of shipping stale files. Generated, and kept
 # outside engine/ so it is never published.

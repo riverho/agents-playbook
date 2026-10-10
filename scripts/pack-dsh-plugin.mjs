@@ -230,6 +230,17 @@ function checkManifest(builtVersion) {
   if (!pluginPkg.scripts || pluginPkg.scripts.prepack !== 'node ../scripts/pack-dsh-plugin.mjs') {
     problems.push('no `prepack` hook — publishing would ship whatever bundle happened to be on disk');
   }
+  // The Flow room's Harness panel is GENERATED, and this script generates it, so the
+  // manifest must both carry it and declare it. (`files` is a whitelist: a bundle that is
+  // built but unlisted ships nothing, which looks like the panel simply never appears.)
+  if (!existsSync(join(PLUGIN, 'client.js'))) {
+    problems.push('no client.js — the Harness panel bundle is missing; this script builds it at pack time');
+  } else if (!Array.isArray(pluginPkg.files) || !pluginPkg.files.includes('client.js')) {
+    problems.push('client.js exists but `files` does not include it — the panel would not ship');
+  }
+  if (pluginPkg.dsh?.client?.platform !== 'web') {
+    problems.push('`dsh.client.platform` is not "web" — the Harness would not load the panel in the browser');
+  }
   // A package that depends on itself. Nothing in the source tree looks wrong when this
   // happens, which is why it needs a gate rather than care: running `npm install <own-name>`
   // from inside the package folder adds it and rewrites the manifest. That shipped once —
@@ -310,6 +321,20 @@ if (upToDate) {
   }
   built = build();
 }
+// The Flow room's Harness panel bundle is generated exactly like the engine: at pack time,
+// from the app source, staleness-aware. Doing it here (rather than in the package's own
+// prepack) keeps the invariant checkManifest enforces — prepack IS this script — and gives
+// one place that owns every artifact a consumer receives.
+const clientBuild = spawnSync(process.execPath, [join(ROOT, 'scripts', 'build-dsh-client.mjs')], {
+  encoding: 'utf8',
+});
+if (clientBuild.stdout) process.stderr.write(clientBuild.stdout);
+if (clientBuild.stderr) process.stderr.write(clientBuild.stderr);
+if (clientBuild.status !== 0) {
+  log('the DSH client build failed — refusing to pack a plugin with a stale or missing panel');
+  process.exit(1);
+}
+
 checkManifest(built.version);
 
 if (args.includes('--pack')) runPack(args.includes('--dry-run'));

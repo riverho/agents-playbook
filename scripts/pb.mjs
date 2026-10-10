@@ -653,19 +653,32 @@ function backlogTasks() {
   });
 }
 
+/**
+ * The backlog file's text — ONE header and ONE serializer, shared by writeBacklog and
+ * by cmdScaffold. Scaffold used to copy the source playbook's backlog file verbatim,
+ * which seeded every new workspace with another project's tasks (and with
+ * acceptance_checks naming scripts scaffold does not copy). Seeding an EMPTY backlog
+ * through this same function is what keeps a new workspace's state genuinely its own.
+ */
+function backlogText(obj) {
+  return (
+    `# ${BACKLOG} — the task queue the loop pulls from.\n` +
+    '# Managed by `pb` (next --claim / record). Edit by hand to add tasks.\n' +
+    `# status: ${ALLOWED_STATUSES.join(' | ')}   priority: 1 = highest\n` +
+    '# acceptance_checks: shell commands that must exit 0 before `record --status done` succeeds.\n' +
+    yaml.dump(obj, { lineWidth: 100 })
+  );
+}
+
 function writeBacklog(obj) {
   if (BACKLOG.endsWith('.json')) {
     atomicReplace(p(BACKLOG), JSON.stringify(obj, null, 2) + '\n');
     return;
   }
-  const header =
-    `# ${BACKLOG} — the task queue the loop pulls from.\n` +
-    '# Managed by `pb` (next --claim / record). Edit by hand to add tasks.\n' +
-    `# status: ${ALLOWED_STATUSES.join(' | ')}   priority: 1 = highest\n` +
-    '# acceptance_checks: shell commands that must exit 0 before `record --status done` succeeds.\n';
+  const text = backlogText(obj);
   // If the backlog file does not exist yet, seed it wholesale (bootstrap/init).
   if (!existsSync(p(BACKLOG))) {
-    writeFileSync(p(BACKLOG), header + yaml.dump(obj, { lineWidth: 100 }), 'utf8');
+    writeFileSync(p(BACKLOG), text, 'utf8');
     return;
   }
   // If the task list is being explicitly reset to empty (e.g. loop new --fresh),
@@ -673,7 +686,7 @@ function writeBacklog(obj) {
   // concurrent reader never sees a half-cleared state object.
   const emptying = Array.isArray(obj.tasks) && obj.tasks.length === 0;
   if (emptying) {
-    writeFileSync(p(BACKLOG), header + yaml.dump(obj, { lineWidth: 100 }), 'utf8');
+    writeFileSync(p(BACKLOG), text, 'utf8');
     withStateTxn((draft) => { for (const k of Object.keys(draft)) delete draft[k]; }, { agent: resolveAgentId({}) });
     return;
   }
@@ -4969,6 +4982,60 @@ function cmdReflect(args) {
 //  (except scripts/pb.mjs, which is the engine and should refresh). Whatever it
 //  skips is reported so the caller knows what to bridge by hand/agent.
 // ============================================================================
+// ============================================================================
+//  ui — serve the Flow room app for a playbook (the engine + its prebuilt app)
+// ----------------------------------------------------------------------------
+//  Decision D8: the app belongs to the INSTALL, not to each workspace. It ships as
+//  built output plus a zero-dependency server, so `pb ui` needs nothing beyond the
+//  engine itself. Resolution order for the app directory:
+//      1. --app <dir>      2. $PB_APP_DIR      3. <engine>/apps/flow-room
+//
+//  It serves the playbook you are STANDING IN (found by walking up from cwd), not the
+//  engine's own template playbook — so `pb ui` from a workspace shows that workspace's
+//  backlog while the app itself lives in the installed engine. A `--with-ui` scaffold
+//  puts the app in the workspace, which is the other supported arrangement.
+// ============================================================================
+function findPlaybookAbove(start) {
+  let dir = resolve(start);
+  for (let i = 0; i < 50; i += 1) {
+    if (existsSync(join(dir, 'playbook.yaml')) || existsSync(join(dir, 'playbook.json'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+function cmdUi(args) {
+  const candidates = [args.app, process.env.PB_APP_DIR, join(ROOT, 'apps', 'flow-room')].filter(Boolean);
+  const app = candidates.find((dir) => existsSync(join(dir, 'server.mjs')));
+  if (!app) {
+    console.error('pb ui — no Flow room app found.');
+    for (const dir of candidates) console.error(`  looked in: ${dir}`);
+    console.error('\nThe app ships with the engine as built output. If you are running a scaffolded');
+    console.error('workspace copy of the engine, either run the installed `pb ui`, or scaffold with the');
+    console.error('app included: `pb scaffold --target <dir> --with-ui`.');
+    process.exit(1);
+  }
+  const built = join(app, 'dist', 'index.html');
+  if (!existsSync(built)) {
+    console.error(`pb ui — the app is present but has no build: ${built}`);
+    console.error('  build it: node scripts/build-app.mjs');
+    process.exit(1);
+  }
+  const playbook = findPlaybookAbove(process.cwd()) || ROOT;
+  const port = Number(args.port || 4317);
+  console.log('pb ui — Flow room');
+  console.log(`  playbook : ${playbook}`);
+  console.log(`  app      : ${app}`);
+  const child = spawn(
+    process.execPath,
+    [join(app, 'server.mjs'), '--root', playbook, '--port', String(port)],
+    { stdio: 'inherit' }
+  );
+  child.on('exit', (code) => process.exit(code ?? 0));
+}
+
 function cmdScaffold(args) {
   const target = args.target || args._[0] || '.';
   const targetAbs = resolve(process.cwd(), target);
@@ -5024,6 +5091,9 @@ function cmdScaffold(args) {
         status: 'node scripts/pb.mjs status', next: 'node scripts/pb.mjs next',
         validate: 'node scripts/pb.mjs validate', report: 'node scripts/pb.mjs report',
         list: 'node scripts/pb.mjs list',
+        // `pb ui` serves the Flow room for THIS workspace. Without --with-ui the app is
+        // resolved from the installed engine; with it, from apps/flow-room here.
+        ui: 'node scripts/pb.mjs ui',
       },
       dependencies: { 'js-yaml': '^4.1.0' },
       engines: { node: '>=18' },
@@ -5034,19 +5104,60 @@ function cmdScaffold(args) {
     skipped.push('package.json (present — add js-yaml + pb scripts by hand)');
   }
 
-  // runtime files
+  // runtime files — a NEW workspace's state is its own, never the source's.
+  // This used to `copyFileSync` the source playbook's memory/backlog.yaml here, which
+  // seeded every scaffolded workspace with the engine repo's tasks: another project's
+  // work, and acceptance_checks naming scripts scaffold does not ship (so every
+  // inherited task was unverifiable by construction). memory/ is runtime state; the
+  // repo's own .gitignore excludes it for exactly that reason. Pinned by
+  // scripts/test-scaffold-no-backlog-copy.mjs.
   if (!tHas('memory/journal.ndjson')) { writeFileSync(tp('memory/journal.ndjson'), '', 'utf8'); created.push('memory/journal.ndjson'); }
-  if (existsSync(p('memory/backlog.yaml')) && !tHas('memory/backlog.yaml')) { copyFileSync(p('memory/backlog.yaml'), tp('memory/backlog.yaml')); created.push('memory/backlog.yaml'); }
+  if (!tHas('memory/backlog.yaml')) { writeFileSync(tp('memory/backlog.yaml'), backlogText({ tasks: [] }), 'utf8'); created.push('memory/backlog.yaml (empty — plan your own tasks)'); }
   if (!tHas('artifacts/reports/.gitkeep')) { writeFileSync(tp('artifacts/reports/.gitkeep'), '', 'utf8'); created.push('artifacts/reports/.gitkeep'); }
+
+  // --with-ui (decision D8): copy the PREBUILT app into the workspace so the folder is
+  // carry-on on its own. The default is NOT to — the app belongs to the install and
+  // `pb ui` serves it from there — so this is an explicit, paid-for choice (~600 KB).
+  // Built output only: no src, no node_modules. Generated, never hand-maintained (rule 24).
+  if (args['with-ui'] !== undefined && args['with-ui'] !== false) {
+    const appSrc = typeof args['with-ui'] === 'string' && args['with-ui'] !== true
+      ? resolve(args['with-ui'])
+      : join(ROOT, 'apps', 'flow-room');
+    const missing = ['server.mjs', join('dist', 'index.html')].filter((f) => !existsSync(join(appSrc, f)));
+    if (missing.length) {
+      console.error(`--with-ui: the app at ${appSrc} is not built (missing ${missing.join(', ')}).`);
+      console.error('  build it first: node scripts/build-app.mjs');
+      process.exit(1);
+    }
+    ensureT('apps/flow-room/dist');
+    copyFileSync(join(appSrc, 'server.mjs'), tp('apps/flow-room/server.mjs'));
+    copyFileSync(join(appSrc, 'package.json'), tp('apps/flow-room/package.json'));
+    cpSync(join(appSrc, 'dist'), tp('apps/flow-room/dist'), { recursive: true });
+    created.push('apps/flow-room/ (prebuilt app + zero-dep server — `npm run ui`)');
+  }
 
   console.log(`\nScaffolded Agent-Playbook into: ${targetAbs}`);
   if (created.length) console.log('  created:  ' + created.join(', '));
   if (skipped.length) console.log('  skipped:  ' + skipped.join(', '));
-  console.log('\nNext (the judgment steps — see the install skill):');
-  console.log('  1. If processes/skills/memory already existed, bridge them: edit the target');
-  console.log('     playbook.yaml `index`/`paths` to point at the existing files (don\'t use the templates).');
-  console.log(`  2. cd "${target}" && npm install   # pulls js-yaml (skip if nested in a repo that already has it)`);
-  console.log('  3. node scripts/pb.mjs init && node scripts/pb.mjs validate\n');
+  // The REAL first-run sequence. This guidance used to print "init && validate" and stop,
+  // which dead-ends twice: `pb plan` refuses without an active loop, and then refuses again
+  // until the cycle brief's Q5 placeholder is answered — and no command answers it, so the
+  // brief has to be edited by hand. Instructions an agent follows literally must be true.
+  // Pinned by scripts/test-lifecycle-first-run.mjs.
+  console.log('\nNext (the real first-run sequence — see the install skill):');
+  if (skipped.some((s) => /^(processes|skills|modes)\//.test(s))) {
+    console.log('  0. Bridge what already existed: point the target playbook.yaml `index`/`paths`');
+    console.log('     at your own files rather than the templates.');
+  }
+  console.log(`  1. cd "${target}" && npm install      # js-yaml — nothing runs before this`);
+  console.log('  2. node scripts/pb.mjs loop new        # REQUIRED: plan refuses without an active loop');
+  console.log('  3. node scripts/pb.mjs cycle --new --goal "..." --stop "..."');
+  console.log('     then answer the brief five questions in memory/cycle.md — Q5 gates planning and');
+  console.log('     NO COMMAND FILLS IT IN YET, so plan keeps refusing until that file is edited');
+  console.log('  4. node scripts/pb.mjs plan --goal "..." --check "<a command that exits 0>"');
+  console.log('  5. node scripts/pb.mjs validate        # init already ran here: journal + reports exist');
+  console.log('  6. see it: `pb ui` from the installed engine — or `npm run ui` in this workspace if you');
+  console.log('     scaffolded with --with-ui, since a plain scaffold carries the engine, not the app\n');
 }
 
 // ============================================================================
@@ -5282,6 +5393,11 @@ function cmdHelp() {
     update [--check] [--force] [--source <dir>] [--include-master]
                            Self-update: pull the latest engine from GitHub (update.repo) and
                            overlay engine files; preserves memory/ + artifacts/. --check dry-runs.
+    ui [--port N] [--app <dir>]
+                           Serve the Flow room app (the graph UI) for the playbook you are
+                           standing in. The app ships with the engine as built output plus a
+                           zero-dependency server, so no install is needed beyond the engine.
+                           Resolution: --app, then $PB_APP_DIR, then <engine>/apps/flow-room.
     scaffold --target <dir>  Copy this engine into another repo (copy-don't-clobber)
     init                   Create any missing runtime files (safe; never overwrites)
     bootstrap              Seed missing minimal process/skill files, then init (safe; never overwrites)
@@ -5446,6 +5562,7 @@ if (isMainModule) {
   case 'reflect': cmdReflect(args); break;
   case 'list': cmdList(args); break;
   case 'update': cmdUpdate(args); break;
+  case 'ui': cmdUi(args); break;
   case 'scaffold': cmdScaffold(args); break;
   case 'init': cmdInit(); break;
   case 'bootstrap': cmdBootstrap(); break;

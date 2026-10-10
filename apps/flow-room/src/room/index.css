@@ -1,0 +1,906 @@
+/* ─── Flow room — app styles ───
+ *
+ * The token layer below is the SUBSET of Wenmei's theme that this room reads
+ * (computed by transitively resolving every `var(--…)` in the room's CSS and
+ * components). The section after it is Wenmei's `/* ─── Flow room (playground) ─── *`
+ * section verbatim.
+ *
+ * Source: agent_design/src/index.css @ 33fdcea — tokens from lines 1-117, room
+ * section from line 394 to EOF. Copied, not depended on: this app has no Wenmei
+ * import and no Wenmei runtime. Verified by src/lib/flow-legend-css.test.ts.
+ *
+ * The @tailwind directives below were MISSING from the first version of this file: the
+ * generator that composed it walked declaration blocks and so dropped these three
+ * at-rules, which meant every Tailwind utility class in the room's JSX was inert
+ * (.inline-flex, .items-center, .tabular-nums … all absent from the built CSS). The room
+ * still looked broadly right because its own .flow-* rules do the heavy lifting, which is
+ * exactly why a structure-only render gate did not notice. Do not remove them.
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --surface-0: #f6f4f2;
+  --accent-teal: #008673;
+  --surface-3: #d9d5cf;
+  --surface-1: #ffffff;
+  --text-secondary: #5c5c5c;
+  --surface-2: #eae7e3;
+  --text-tertiary: #9a9590;
+  --text-primary: #111111;
+  --accent-rose: #c24a4a;
+  --surface-glass: rgba(255, 255, 255, 0.65);
+}
+
+/* ─── Flow room (playground) ───
+   Values measured from the approved frames (artifacts/graph-flow-ui/frames/
+   flow.css): card 236×104 / radius 8, 3 px tone bar, 6-segment cycle rail,
+   the five edge kinds' dash patterns, the HIL halo. Motion is CSS + SVG/SMIL
+   only and every animated class is switched off below. */
+
+@keyframes flow-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes flow-halo {
+  0% {
+    transform: scale(0.94);
+    opacity: 0.55;
+  }
+  70% {
+    transform: scale(1.16);
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes flow-popin {
+  from {
+    transform: scale(0.86);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes flow-ripp {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(2.1);
+    opacity: 0;
+  }
+}
+
+@keyframes flow-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.flow-room {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+  background: var(--surface-0);
+}
+
+.flow-room .react-flow__node {
+  cursor: pointer;
+  font-family: inherit;
+}
+.flow-room .react-flow__node:focus,
+.flow-room .react-flow__node:focus-visible {
+  outline: none;
+}
+
+.flow-handle {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  background: transparent;
+  opacity: 0;
+}
+
+/* the frame's rubber band: dashed teal + teal wash */
+.flow-room .react-flow__selection,
+.flow-room .react-flow__nodesselection-rect {
+  background: rgba(0, 134, 115, 0.06);
+  border: 1px dashed var(--accent-teal);
+  border-radius: 4px;
+}
+
+/* the zoom cluster, matching the LoopCanvas cluster */
+.flow-room .react-flow__controls {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  border: 1px solid var(--surface-3);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.flow-room .react-flow__controls-button {
+  width: 26px;
+  height: 24px;
+  background: var(--surface-1);
+  border: none;
+  border-bottom: 1px solid var(--surface-3);
+  color: var(--text-secondary);
+}
+.flow-room .react-flow__controls-button:last-child {
+  border-bottom: none;
+}
+.flow-room .react-flow__controls-button:hover {
+  background: var(--surface-2);
+}
+.flow-room .react-flow__controls-button svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+.flow-room .react-flow__minimap {
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+/* ── cards ── */
+.flow-card {
+  position: relative;
+  border-radius: 8px;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-3);
+  padding: 8px 9px 8px 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  transition:
+    transform 150ms,
+    box-shadow 150ms,
+    border-color 150ms;
+}
+.flow-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+}
+.flow-card__bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 8px 0 0 8px;
+}
+.flow-card--selected {
+  border-color: var(--accent-teal);
+  box-shadow:
+    0 0 0 1.5px var(--accent-teal),
+    0 2px 10px rgba(0, 0, 0, 0.08);
+}
+.flow-card--fork {
+  border-style: dashed;
+  background: #fcfbfa;
+}
+.flow-card--steered {
+  border-color: var(--accent-teal);
+}
+
+.flow-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.flow-id {
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+}
+.flow-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.22;
+  margin-top: 4px;
+  max-height: 30px;
+  overflow: hidden;
+  color: var(--text-primary);
+}
+.flow-body {
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  margin-top: 5px;
+}
+.flow-micro {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  white-space: nowrap;
+  margin-top: 5px;
+}
+.flow-micro b {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.flow-mono {
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+}
+.flow-note {
+  margin-top: 5px;
+  line-height: 1.45;
+}
+.flow-kv {
+  display: flex;
+  gap: 6px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.flow-kv + .flow-kv {
+  margin-top: 3px;
+}
+.flow-kv b {
+  flex: none;
+  width: 74px;
+  color: var(--text-tertiary);
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 9px;
+  font-weight: 400;
+  padding-top: 1px;
+}
+
+/* the 6-segment cycle rail — derived from journal rows, never hand-set */
+.flow-cycle {
+  display: flex;
+  gap: 2px;
+  margin: 6px 0 5px;
+}
+.flow-cycle i {
+  height: 3px;
+  flex: 1;
+  border-radius: 2px;
+  background: var(--surface-2);
+}
+.flow-cycle i.flow-cycle__on {
+  background: var(--accent-teal);
+}
+.flow-cycle i.flow-cycle__act {
+  background: var(--accent-teal);
+  animation: flow-pulse 1.4s ease-in-out infinite;
+}
+.flow-cycle--big i {
+  height: 5px;
+}
+.flow-cycle-lbl,
+.flow-steplist {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--text-tertiary);
+}
+.flow-steplist {
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 8.5px;
+}
+
+/* human-in-the-loop: rose pill + breathing halo (2.2 s, opacity .55 → 0) */
+.flow-hil {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px 1px 5px;
+  border-radius: 999px;
+  background: rgba(194, 74, 74, 0.1);
+  color: var(--accent-rose);
+  font-size: 9.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.flow-hil::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-rose);
+  opacity: 0.55;
+  animation: flow-halo 2.2s ease-out infinite;
+}
+.flow-hil--quiet::after {
+  animation: none;
+  opacity: 0.4;
+}
+
+/* fork progress */
+.flow-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--surface-2);
+  overflow: hidden;
+  margin: 7px 0 6px;
+}
+.flow-progress > i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+}
+
+/* ── bookends ── */
+.flow-bookend {
+  position: relative;
+  border-radius: 8px;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-3);
+  padding: 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+}
+.flow-bookend__kicker {
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--text-tertiary);
+}
+.flow-bookend__loop {
+  margin-top: 4px;
+}
+.flow-bookend__title {
+  font-family: "Playfair Display", Georgia, serif;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.14;
+  margin: 6px 0 8px;
+  color: var(--text-primary);
+}
+.flow-bookend[data-kind="goal"] .flow-bookend__title {
+  font-size: 20px;
+}
+.flow-bookend__body {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.flow-bookend__note {
+  margin-top: 8px;
+  line-height: 1.4;
+}
+.flow-hr {
+  height: 1px;
+  background: var(--surface-2);
+  margin: 9px 0;
+}
+.flow-cronbox {
+  border: 1px solid var(--surface-3);
+  border-radius: 6px;
+  padding: 7px 8px;
+  background: #fbfaf9;
+}
+.flow-cronrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  color: var(--text-secondary);
+}
+.flow-cronrow + .flow-cronrow {
+  margin-top: 4px;
+}
+.flow-stoplist {
+  list-style: none;
+}
+.flow-stoplist li {
+  display: flex;
+  gap: 6px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.flow-stoplist li + li {
+  margin-top: 3px;
+}
+.flow-stoplist__mark {
+  width: 12px;
+  flex: none;
+  color: var(--accent-teal);
+  font-size: 10px;
+}
+.flow-stoplist li.is-open .flow-stoplist__mark {
+  color: var(--text-tertiary);
+}
+.flow-goaldiff {
+  border: 1px solid var(--accent-teal);
+  border-radius: 6px;
+  background: rgba(0, 134, 115, 0.1);
+  padding: 7px 8px;
+}
+.flow-goaldiff__old {
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-decoration: line-through;
+  text-decoration-color: var(--accent-rose);
+}
+.flow-goaldiff__new {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent-teal);
+  margin-top: 3px;
+}
+.flow-goaldiff__when {
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 9px;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+}
+
+/* ── gate posts ── */
+.flow-gatepost {
+  position: relative;
+  overflow: visible;
+}
+.flow-gatepill {
+  position: absolute;
+  top: -2px;
+  left: 0;
+  transform: translateX(-50%);
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px dashed var(--surface-3);
+  background: var(--surface-glass);
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 8.5px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+/* ── edge labels ── */
+.flow-edgepill {
+  position: absolute;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--surface-3);
+  background: var(--surface-1);
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 8.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  pointer-events: none;
+}
+.flow-edgepill--teal {
+  border-color: var(--accent-teal);
+  color: var(--accent-teal);
+  background: #f2fbf9;
+}
+.flow-edgepill--rose {
+  border-color: var(--accent-rose);
+  color: var(--accent-rose);
+  background: #fdf5f5;
+}
+
+/* ── buttons / chips ── */
+.flow-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 6px;
+  border: 1px solid var(--surface-3);
+  background: var(--surface-1);
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    transform 150ms,
+    background 150ms;
+}
+.flow-btn:hover {
+  background: var(--surface-2);
+  transform: translateY(-1px);
+}
+.flow-btn--primary {
+  background: var(--accent-teal);
+  border-color: var(--accent-teal);
+  color: #fff;
+  font-weight: 500;
+}
+.flow-btn--primary:hover {
+  background: var(--accent-teal);
+}
+.flow-btn--ghost {
+  border-style: dashed;
+}
+.flow-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--surface-3);
+  border-radius: 5px;
+  background: var(--surface-1);
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.flow-chip--on {
+  border-color: var(--accent-teal);
+  color: var(--accent-teal);
+  background: rgba(0, 134, 115, 0.1);
+}
+.flow-chip--rose {
+  border-color: var(--accent-rose);
+  color: var(--accent-rose);
+  background: rgba(194, 74, 74, 0.1);
+}
+.flow-chip--ghost {
+  border-style: dashed;
+  background: transparent;
+}
+.flow-chipbar {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── legend (bottom-left, the frame's panel) ── */
+.flow-legend {
+  position: absolute;
+  left: 60px;
+  bottom: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+  max-width: 700px;
+  padding: 8px 10px;
+  border: 1px solid var(--surface-3);
+  border-radius: 6px;
+  background: var(--surface-glass);
+  backdrop-filter: blur(4px);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  /* Rows beyond the panel are CLIPPED, not spilled — which is why the reserve the
+     layout derives from FLOW_LEGEND_METRICS must cover the drawn content. */
+  overflow: hidden;
+}
+.flow-legend__grp {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.flow-legend__h {
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-tertiary);
+}
+.flow-legend__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.flow-legend__row i {
+  width: 26px;
+  height: 0;
+  border-top-width: 1.5px;
+  border-top-style: solid;
+  border-top-color: var(--surface-3);
+}
+.flow-legend__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex: none;
+}
+.flow-legend__dot--live {
+  animation: flow-pulse 1.5s ease-in-out infinite;
+}
+
+/* ── the steering dock + toast (frame 3) ── */
+.flow-dock {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  height: 116px;
+  z-index: 6;
+  border: 1px solid var(--surface-3);
+  border-radius: 8px;
+  background: var(--surface-1);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
+  padding: 10px 12px;
+}
+.flow-dock__top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.flow-dock__title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.flow-dock__prompt {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  height: 40px;
+  border: 1px solid var(--surface-3);
+  border-radius: 6px;
+  background: #fcfbfa;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text-primary);
+  resize: none;
+  outline: none;
+}
+.flow-dock__prompt:focus {
+  border-color: var(--accent-teal);
+}
+.flow-dock__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.flow-dock__plan {
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 9px;
+  color: var(--accent-teal);
+  white-space: nowrap;
+}
+.flow-toast {
+  position: absolute;
+  left: 14px;
+  top: 12px;
+  width: 272px;
+  z-index: 7;
+  border: 1px solid var(--surface-3);
+  border-radius: 8px;
+  background: var(--surface-1);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 10px;
+}
+.flow-toast__h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.flow-toast__list {
+  margin-top: 7px;
+  list-style: none;
+}
+.flow-toast__list li {
+  display: flex;
+  gap: 6px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.flow-toast__list li + li {
+  margin-top: 4px;
+}
+
+/* ── the card inspector (frame 2) ── */
+.flow-inspector {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 380px;
+  z-index: 8;
+  background: var(--surface-1);
+  border-left: 1px solid var(--surface-3);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+}
+.flow-insp__head {
+  padding: 11px 13px 9px;
+  border-bottom: 1px solid var(--surface-2);
+  flex: none;
+}
+.flow-insp__title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 5px;
+  color: var(--text-primary);
+}
+.flow-insp__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 13px 10px;
+}
+.flow-insp__foot {
+  flex: none;
+  border-top: 1px solid var(--surface-3);
+  padding: 9px 13px;
+  background: #fbfaf9;
+}
+.flow-sec {
+  margin-top: 11px;
+}
+.flow-sec__h {
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 8.5px;
+  letter-spacing: 0.12em;
+  color: var(--text-tertiary);
+  margin-bottom: 5px;
+}
+.flow-checkrow {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 9.5px;
+  line-height: 1.45;
+  padding: 4px 0;
+}
+.flow-checkrow + .flow-checkrow {
+  border-top: 1px solid var(--surface-2);
+}
+.flow-checkrow__code {
+  flex: 1;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+.flow-checkrow__verdict {
+  flex: none;
+  font-weight: 600;
+}
+.flow-doc {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 7px;
+  border: 1px solid var(--surface-2);
+  border-radius: 5px;
+  background: #fcfbfa;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.flow-doc + .flow-doc {
+  margin-top: 5px;
+}
+.flow-doc__path {
+  flex: 1;
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+  font-size: 9px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flow-thread {
+  border-left: 2px solid var(--surface-2);
+  padding-left: 8px;
+}
+.flow-msg + .flow-msg {
+  margin-top: 8px;
+}
+.flow-msg__who {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9px;
+  color: var(--text-tertiary);
+  font-family: "Geist Mono", "JetBrains Mono", monospace;
+}
+.flow-msg__text {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.flow-composer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.flow-input {
+  flex: 1;
+  height: 28px;
+  border: 1px solid var(--surface-3);
+  border-radius: 6px;
+  background: var(--surface-1);
+  padding: 0 8px;
+  font-size: 10.5px;
+  font-family: inherit;
+  color: var(--text-primary);
+  outline: none;
+}
+.flow-input::placeholder {
+  color: var(--text-tertiary);
+}
+.flow-input:focus {
+  border-color: var(--accent-teal);
+}
+
+/* ── effects (frame 4): spawn pop-in, HIL halo, cron ripple ── */
+.flow-popin {
+  animation: flow-popin 0.28s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.flow-ripple {
+  position: absolute;
+  right: -6px;
+  top: -6px;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--accent-teal);
+  border-radius: 999px;
+  pointer-events: none;
+  animation: flow-ripp 2.4s ease-out infinite;
+}
+
+@media (max-width: 767px) {
+  /* the inspector becomes a bottom sheet, exactly like the shared one */
+  .flow-inspector {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 0;
+    width: 100%;
+    height: 45%;
+    border-left: none;
+  }
+  .flow-legend,
+  .flow-chipbar {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-plate,
+  .stage-layer-enter,
+  .stage-body-enter {
+    animation-duration: 1ms;
+  }
+  /* the Flow room: every effect off, every state still legible (frame 4) */
+  .flow-popin,
+  .flow-ripple,
+  .flow-hil::after,
+  .flow-cycle i.flow-cycle__act,
+  .flow-legend__dot--live {
+    animation: none !important;
+  }
+}
+
