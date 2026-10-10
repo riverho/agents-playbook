@@ -103,13 +103,18 @@ index:
 #
 # This playbook DECLARES layers (adopted 2026-10-10, phase 42). Three strata, each with a gate
 # that the claim path and `pb plan --layers --check-gates` execute. The gates are deliberately
-# FAST: a slow gate runs on every claim, and an unverified gate blocks a claim, so a gate that
-# costs two minutes of suite time would tax the loop it is meant to protect.
+# FAST and DETERMINISTIC: a gate runs on every claim, an unverified gate blocks a claim, and a
+# gate that fails transiently freezes every stratum above it. The first L0 gate chosen here was
+# `test-concurrency-state.mjs`, a timing-sensitive stress suite — GREEN standalone (29/29), RED
+# under concurrent build load, which silently made L1 unclaimable and sent a teammate to the wrong
+# task. A flaky gate is worse than a weaker deterministic one: it teaches everyone to distrust red.
+# The stress suite still runs inside `npm test`, where a transient failure is visible without
+# partitioning the plan.
 #   L0 substrate   — state, locks, claims, journal replay, gate machinery
 #   L1 surfaces    — CLI/JSON/plugin/adapter surfaces built on that substrate
 #   L2 orchestration — flows, modes, autonomous runs, release and cross-repo work
 layers:
-  - {id: L0, name: substrate, about: "state, locks, claims, journal replay, gate machinery", gate: "node scripts/test-concurrency-state.mjs"}
+  - {id: L0, name: substrate, about: "state, locks, claims, journal replay, gate machinery", gate: "node scripts/test-repair-terminal-release.mjs"}
   - {id: L1, name: surfaces, about: "CLI, JSON, plugin and adapter surfaces on the engine", gate: "node scripts/pb.mjs validate"}
   - {id: L2, name: orchestration, about: "flows, modes, autonomous runs, release and cross-repo work"}
 
