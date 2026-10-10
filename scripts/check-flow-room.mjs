@@ -85,10 +85,15 @@ check("the isolated worktree exists", () => {
     return "not a git checkout — branch check skipped";
   }
   const branch = (head.stdout ?? "").trim();
-  if (branch !== "agent/graph-room") {
-    throw new Error(`worktree is on "${branch}", expected agent/graph-room`);
+  // The invariant is "a linked worktree, never the main checkout" — not a frozen
+  // branch name, which would rot with every fresh worktree.
+  if (!/[\\/]\.worktrees[\\/]/.test(WORKTREE)) {
+    throw new Error(`the path is not a linked worktree: ${WORKTREE}`);
   }
-  return branch;
+  if (branch === "main" || branch === "master" || branch === "") {
+    throw new Error(`worktree is on "${branch}" — refusing to check the main checkout`);
+  }
+  return `${branch} (linked worktree)`;
 });
 
 // ── 2. the room is REGISTERED (the 4-edit change; tsc enforces no default) ─
@@ -482,6 +487,32 @@ check("the live payload is engine-shaped and the room's invariants hold", () => 
   }`;
 });
 
+check("the room fits the layout rect, so the legend is on screen", () => {
+  // The claimed defect: the room used React Flow's `fitView` (the NODES' box) while
+  // the legend lives in a reserved band below the content, so at fit the legend sat
+  // off-viewport with only its top sliver showing.
+  const room = read("components/stage/FlowRoom.tsx");
+  must(room, "fitBounds(flowFitBounds(layout)", "the room does not fit the layout rect");
+  must(room, "FLOW_FIT_PADDING", "the fit does not use the shared padding");
+  if (/^\s*fitView\s*$/m.test(room)) {
+    throw new Error(
+      "the room still passes the `fitView` prop (that fits the node box, not the legend band)"
+    );
+  }
+  const layout = read("lib/flow-layout.ts");
+  must(layout, "export function flowFitBounds", "no flowFitBounds helper");
+  must(layout, "export function legendInsideFitBounds", "no containment helper to assert");
+  mustMatch(
+    layout,
+    /flowFitBounds\(layout: FlowLayoutResult\): FlowRect \{\s*return \{ x: 0, y: 0, width: layout\.width, height: layout\.height \};/,
+    "flowFitBounds no longer returns the layout's own rect (legend reserve included)"
+  );
+  const geometry = read("lib/flow-geometry.test.ts");
+  must(geometry, "legend lies inside the rect the room fits", "no legend-inside-fit assertion");
+  must(geometry, "maps the whole legend, not a sliver", "no viewport-mapping assertion");
+  return "fitBounds(layout rect) · legend inside the fit · no `fitView` prop";
+});
+
 check("the four render defects are pinned by executable geometry assertions", () => {
   const geometry = read("lib/flow-geometry.test.ts");
   const required = [
@@ -636,6 +667,8 @@ function runGeometryProof() {
       ["reserves at least the legend's own drawn content", "3 · legend sized from content"],
       ["uses the light grey + accent tones", "4 · minimap tones"],
       ["legend metrics agree with the CSS", "5 · metrics ↔ CSS"],
+      ["legend lies inside the rect the room fits", "6 · legend inside the fit"],
+      ["maps the whole legend, not a sliver", "6 · legend on screen, not a sliver"],
     ];
     for (const [needle, label] of wanted) {
       const hit = results.find(entry =>
