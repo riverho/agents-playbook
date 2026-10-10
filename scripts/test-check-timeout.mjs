@@ -56,6 +56,8 @@ const readJournal = (root) => readFileSync(join(root, 'memory/journal.ndjson'), 
 // one-liner is a fixture bug waiting to happen (measured: `=>` becomes a redirect).
 const SLOW_JS = 'setTimeout(() => {}, Number(process.argv[2] || 0));\n';
 const FAIL_JS = 'process.exit(3);\n';
+// Exits 0 but prints 2 MiB: more than the old 1 MiB pipe default, less than the new bound.
+const CHATTY_JS = "process.stdout.write('x'.repeat(2 * 1024 * 1024));\n";
 
 function makeFixture({ tasks }) {
   const root = mkdtempSync(join(tmpdir(), 'pbtimeout-'));
@@ -67,6 +69,7 @@ function makeFixture({ tasks }) {
   copyFileSync(resolve('SKILL.md'), join(root, 'SKILL.md'));
   writeFileSync(join(root, 'slow.js'), SLOW_JS);
   writeFileSync(join(root, 'fail.js'), FAIL_JS);
+  writeFileSync(join(root, 'chatty.js'), CHATTY_JS);
   writeFileSync(join(root, 'skills/index.yaml'), 'skills:\n  - {id: run-task, file: skills/run-task/SKILL.md, process: run-task}\n');
   writeFileSync(join(root, 'skills/run-task/SKILL.md'), '# run-task\n');
   writeFileSync(join(root, 'processes/index.yaml'), 'processes:\n  - {id: run-task, file: processes/run-task.yaml}\n');
@@ -97,7 +100,13 @@ const TASKS = 'tasks:\n' +
   task('t-over-env', ', acceptance_checks: ["node slow.js 1500"]') +
   task('t-field-beats-env', ', check_timeout_ms: 5000, acceptance_checks: ["node slow.js 900"]') +
   task('t-fails', ', acceptance_checks: ["node fail.js"]') +
-  task('t-bad-field', ', check_timeout_ms: soon, acceptance_checks: ["node slow.js 250"]');
+  task('t-bad-field', ', check_timeout_ms: soon, acceptance_checks: ["node slow.js 250"]') +
+  task('t-chatty', ', acceptance_checks: ["node chatty.js"]') +
+  task('t-mixed', ', check_timeout_ms: 400, acceptance_checks: ["node fail.js", "node slow.js 1500"]') +
+  task('t-field-zero', ', check_timeout_ms: 0, acceptance_checks: ["node slow.js 250"]') +
+  task('t-field-neg', ', check_timeout_ms: -5, acceptance_checks: ["node slow.js 250"]') +
+  task('t-field-bool', ', check_timeout_ms: true, acceptance_checks: ["node slow.js 250"]') +
+  task('t-field-huge', ', check_timeout_ms: 999999999, acceptance_checks: ["node slow.js 250"]');
 const LIMIT_RE = /limit (\d+)ms per check from ([^)\n]+)/;
 
 // ============================================================================
@@ -225,6 +234,95 @@ let documented = null;
     bad.code === 0 && /check_timeout_ms/.test(bad.combined) && /not a positive number/.test(bad.combined) &&
     /from default/.test(bad.combined),
     bad.combined.slice(0, 500));
+}
+
+// ============================================================================
+//  I. a CHATTY but GREEN check: output volume is not a timeout
+//  (this is the checker's defect: ENOBUFS also carries signal SIGTERM, so a check
+//   that exited 0 was reported as a timeout and became unrecordable)
+// ============================================================================
+{
+  const chatty = fx.pb(['validate', '--task', 't-chatty']);
+  ok('a check that prints 2 MiB and exits 0 is GREEN — a buffer overflow is not a timeout',
+    chatty.code === 0 && /PASS\s+node chatty\.js/.test(chatty.combined) && !/TIMEOUT/.test(chatty.combined),
+    `exit=${chatty.code}\n${chatty.combined.slice(0, 400)}`);
+  const rec = fx.pb(['record', '--task', 't-chatty', '--action', 'execute', '--status', 'done', '--notes', 'chatty green']);
+  ok('a chatty green check is RECORDABLE as done (volume must not make green unrecordable)',
+    rec.code === 0 && /checks: passed/.test(rec.combined) && !/TIMEOUT/.test(rec.combined),
+    `exit=${rec.code}\n${rec.combined.slice(0, 400)}`);
+  const overflow = fx.pb(['validate', '--task', 't-chatty'], { env: { PB_CHECK_MAX_OUTPUT_BYTES: '1024' } });
+  ok('output past the buffer gets its OWN outcome (OUTPUT-LIMIT) — never TIMEOUT, never FAIL',
+    overflow.code === 1 && /OUTPUT-LIMIT\s+node chatty\.js/.test(overflow.combined) &&
+    !/TIMEOUT/.test(overflow.combined) && !/FAIL\s+node chatty\.js/.test(overflow.combined),
+    overflow.combined.slice(0, 500));
+  ok('the over-limit outcome says what happened and how to raise the bound',
+    /more output than the runner accepts/.test(overflow.combined) && /PB_CHECK_MAX_OUTPUT_BYTES/.test(overflow.combined),
+    overflow.combined.slice(0, 700));
+}
+
+// ============================================================================
+//  J. a mixed red + timed-out refusal must not call the failure "not a failed check"
+// ============================================================================
+{
+  const mixed = fx.pb(['record', '--task', 't-mixed', '--action', 'execute', '--status', 'done', '--notes', 'x']);
+  ok('a red + timed-out record is refused and names BOTH kinds',
+    mixed.code === 1 && /1 check\(s\) FAILED and 1 reached no verdict/.test(mixed.combined) &&
+    /TIMED OUT/.test(mixed.combined) && /FAIL\s+node fail\.js/.test(mixed.combined),
+    mixed.combined.slice(0, 700));
+  ok('the mixed refusal separates them: the TIMED OUT one did not fail, the FAILED one did',
+    /are NOT — no verdict was reached for them/.test(mixed.combined), mixed.combined.slice(0, 700));
+  ok('the mixed refusal never claims the whole refusal is "NOT a failed check"',
+    !/No verdict was reached; this is NOT a failed check\./.test(mixed.combined), mixed.combined.slice(0, 700));
+}
+
+// ============================================================================
+//  K. 0 / negative / boolean / huge in the TASK FIELD, and 0 / negative / non-numeric
+//     in the ENV — a value that would disable the limit is refused, warned, and ignored
+// ============================================================================
+{
+  for (const id of ['t-field-zero', 't-field-neg', 't-field-bool']) {
+    const r = fx.pb(['validate', '--task', id]);
+    const m = LIMIT_RE.exec(r.combined);
+    ok(`${id}: an unusable limit warns, falls through to the default, and never disables the limit`,
+      r.code === 0 && /not a positive number/.test(r.combined) && /check_timeout_ms/.test(r.combined) &&
+      /PASS\s+node slow\.js 250/.test(r.combined) &&
+      !!m && Number(m[1]) === documented && Number(m[1]) > 0 && /default/.test(m[2]),
+      `exit=${r.code} ${JSON.stringify(m)}\n${r.combined.slice(0, 400)}`);
+  }
+  const huge = fx.pb(['validate', '--task', 't-field-huge']);
+  const hm = LIMIT_RE.exec(huge.combined);
+  ok('t-field-huge: an absurdly large limit is WARNED about, not silently accepted',
+    huge.code === 0 && /unusually large/.test(huge.combined) && !!hm && Number(hm[1]) === 999999999,
+    huge.combined.slice(0, 400));
+
+  for (const bad of ['0', '-5', 'abc', 'true']) {
+    const r = fx.pb(['validate', '--task', 't-over-env'], { env: { PB_CHECK_TIMEOUT_MS: bad } });
+    const m = LIMIT_RE.exec(r.combined);
+    ok(`PB_CHECK_TIMEOUT_MS=${bad}: warned, ignored, and the default (never 0=unlimited) is used`,
+      r.code === 0 && /not a positive number/.test(r.combined) && /PB_CHECK_TIMEOUT_MS/.test(r.combined) &&
+      /PASS\s+node slow\.js 1500/.test(r.combined) &&
+      !!m && Number(m[1]) === documented && Number(m[1]) > 0 && /default/.test(m[2]),
+      `exit=${r.code} ${JSON.stringify(m)}\n${r.combined.slice(0, 400)}`);
+  }
+}
+
+// ============================================================================
+//  L. a timed-out `commands:` entry is classified like a check timeout
+// ============================================================================
+{
+  const auto = makeFixture({
+    tasks: 'tasks:\n' + task('auto-cmd-timeout',
+      ', check_timeout_ms: 400, commands: ["node slow.js 1500"], acceptance_checks: ["node slow.js 10"]'),
+  });
+  const run = auto.pb(['loop', 'run', '--auto', '--max-tasks', '1', '--retry', '0']);
+  ok('a timed-out command is printed as TIMEOUT, not as "command failed"',
+    /TIMEOUT\s+node slow\.js 1500/.test(run.combined) && !/command failed/.test(run.combined),
+    run.combined.slice(0, 700));
+  const row = auto.journal().filter((r) => r.task === 'auto-cmd-timeout' && r.action === 'auto-execute').pop();
+  ok('the journal row for a timed-out command says timed-out (not checks: none + "command failed")',
+    !!row && row.status === 'blocked' && row.checks === 'timed-out' &&
+    row.check_timeouts?.[0]?.kind === 'command' && row.check_timeouts[0].limit_ms === 400,
+    JSON.stringify(row));
 }
 
 console.log(`\ntest-check-timeout: ${pass} pass, ${fail} fail`);
