@@ -1929,8 +1929,12 @@ function graphNodeFor(task, planned) {
 // show it as a FACT (true) or only as a CLAIM (false — the design draws those dashed,
 // and never solid). Endpoints are node ids plus the two bookends and the human batch:
 //   dep    a dependency, INVERTED from `plan --layers` (which maps task → prerequisites)
-//   spawn  `start` → task: the orchestrator started it. A journal `action: spawn` row is
-//          a fact; a plain claim row is a claim (proven:false, evidence:'claim').
+//   spawn  origin → task: the orchestrator started it. The origin is the spawn row's
+//          `origin_task` — the task that was in flight when `pb plan` created this one —
+//          falling back to `parent` (the alias DESIGN.md named) and then to `start` when
+//          the row names no task this backlog carries. A journal `action: spawn` row is
+//          a FACT (proven:true, evidence:'spawn'); a plain claim row is a claim
+//          (proven:false, evidence:'claim') — the two are never the same ink.
 //   hil    task → `human`, only for a declared `manual: true` that is not done.
 function graphEdges(nodes, plan) {
   const nodeIds = new Set(nodes.map((n) => n.id));
@@ -1949,7 +1953,12 @@ function graphEdges(nodes, plan) {
     const claimRow = node.journal.find((r) => r.action === 'claim') || null;
     const evidence = spawnRow || claimRow;
     if (!evidence) continue;
-    const parent = spawnRow && typeof spawnRow.parent === 'string' && nodeIds.has(spawnRow.parent) ? spawnRow.parent : null;
+    const origin = spawnRow
+      ? (typeof spawnRow.origin_task === 'string' && spawnRow.origin_task
+        ? spawnRow.origin_task
+        : (typeof spawnRow.parent === 'string' ? spawnRow.parent : null))
+      : null;
+    const parent = origin && nodeIds.has(origin) ? origin : null;
     edges.push({
       from: parent || 'start',
       to: node.id,
@@ -3256,9 +3265,11 @@ function cmdPlan(args) {
     process.exit(verdict);
   }
   if (!args.goal) {
-    console.error('Usage: pb plan --goal "..." [--skill <id>] [--priority <n>] [--check <cmd>] [--manual] [--layer <id>]');
+    console.error('Usage: pb plan --goal "..." [--skill <id>] [--priority <n>] [--check <cmd>] [--dep <task-id>] [--manual] [--layer <id>]');
     console.error('       pb plan --layers [--check-gates] [--strict] [--json]   # DRY RUN: report the layered plan, write nothing');
     console.error('Pass --check multiple times to add multiple acceptance checks.');
+    console.error('Pass --dep multiple times to declare dependencies AT BIRTH: the order the claim path');
+    console.error('enforces and the edges `pb graph` draws are fixed when the task is created, not later.');
     process.exit(1);
   }
   const loop = activeLoop();
@@ -3283,8 +3294,40 @@ function cmdPlan(args) {
   const checksRaw = args.check || [];
   const checks = (Array.isArray(checksRaw) ? checksRaw : (checksRaw === true ? [] : [checksRaw]))
     .map((s) => String(s).trim()).filter(Boolean);
+  // `--dep` at BIRTH. `dependencies:` already orders tasks and already gates the claim
+  // path, but until now the only way to get an edge was to hand-edit `backlog.yaml`
+  // after the fact — so every scaffolded task was born unlinked and the graph had
+  // nothing to draw. Resolving the flag here fixes that at the source.
+  //
+  // Every refusal happens BEFORE anything is written. A task born with a broken edge is
+  // worse than no task: `pb validate` would be red and `pb graph` would have an edge to
+  // a card that does not exist.
+  const knownIds = new Set(backlogTasks().map((t) => t.id));
+  const depRaw = args.dep === undefined ? [] : (Array.isArray(args.dep) ? args.dep : [args.dep]);
+  const depIds = [];
+  const taskId = nextPlanId();
+  for (const raw of depRaw) {
+    const dep = String(raw).trim();
+    if (!dep) {
+      console.error('Refusing to plan — --dep needs a task id (e.g. --dep plan-20261010-001). Nothing was written.');
+      process.exit(1);
+    }
+    if (dep === taskId) {
+      console.error(`Refusing to plan — ${taskId} cannot depend on itself: no order can satisfy that. Nothing was written.`);
+      process.exit(1);
+    }
+    if (!knownIds.has(dep)) {
+      console.error(`Refusing to plan — dependency "${dep}" is not in the backlog. Name an existing task, or plan it first. Nothing was written.`);
+      process.exit(1);
+    }
+    if (depIds.includes(dep)) {
+      console.error(`Refusing to plan — dependency "${dep}" was given more than once. Nothing was written.`);
+      process.exit(1);
+    }
+    depIds.push(dep);
+  }
   const task = {
-    id: nextPlanId(),
+    id: taskId,
     title: String(args.goal).trim(),
     status: 'todo',
     skill,
@@ -3292,6 +3335,7 @@ function cmdPlan(args) {
     priority,
     acceptance_checks: checks,
   };
+  if (depIds.length) task.dependencies = depIds;
   if (args.manual) task.manual = true;
   // `--layer` stamps the task's stratum. `pb validate` then enforces that the layer
   // is declared and that the task is not sitting earlier than its dependencies, so a
@@ -3305,16 +3349,69 @@ function cmdPlan(args) {
     }
     task.layer = layerId;
   }
+  // Structural probe: the SAME rules `pb validate` and `plan --layers` run, applied to
+  // the CANDIDATE before it exists on disk. `--dep` plus `--layer` can describe a task
+  // validate would reject (a dependency from the same or a later layer, a task declared
+  // earlier than its dependencies). Refusing it here is the difference between a CLI
+  // that cannot write a broken task and one that writes it and blames the gate.
+  // checkGates:false — planning never runs a gate command.
+  if (depIds.length || task.layer) {
+    const probe = computeLayerPlan({ allTasks: [...backlogTasks(), task] });
+    const mine = probe.problems.filter((p) => p.task === task.id);
+    if (mine.length) {
+      console.error(`Refusing to plan [${task.id}] — it would make the plan invalid (\`pb validate\` would fail):`);
+      for (const p of mine) console.error(`  ! ${p.message}`);
+      console.error('Nothing was written.');
+      process.exit(1);
+    }
+  }
   appendBacklogTask(task);
   console.log(`Planned [${task.id}] ${task.title}`);
   console.log(`  skill: ${skill}`);
   console.log(`  priority: ${priority}`);
   if (task.layer) console.log(`  layer: ${task.layer}`);
+  if (depIds.length) {
+    console.log('  dependencies (declared at birth — the claim path enforces them and `pb graph` draws them):');
+    for (const d of depIds) console.log(`    ← ${d}`);
+  }
   if (checks.length) {
     console.log('  acceptance_checks:');
     for (const c of checks) console.log(`    $ ${c}`);
   } else {
     console.log('  acceptance_checks: none — add executable checks before auto-executing.');
+  }
+  // --- spawn provenance: which task this one was born UNDER --------------------
+  // An agent that plans a task while it is executing another is the origin of that task,
+  // and the journal — not the graph's inference — is where that belongs. `origin_task`
+  // makes `pb graph` draw a task→task `spawn` edge (proven: an explicit action:spawn row
+  // is the proof) instead of hanging the new card off `start`. No task in flight ⇒ no
+  // spawn row: the card is a plain unclaimed todo, exactly as before.
+  const agentId = resolveAgentId(args);
+  const origin = backlogTasks().find((t) => t.status === 'in_progress' && taskHolder(t) === agentId) || null;
+  if (origin) {
+    const ownership = verifyTaskClaim(task.id, args, readBacklogState());
+    const entry = {
+      ts: nowISO(),
+      loop_id: loop.id,
+      task: task.id,
+      agent: agentId,
+      agent_id: agentId,
+      claimed_by: agentId,
+      mode,
+      ownership: ownership.status,
+      action: 'spawn',
+      // The truth at birth: the task is `todo`. A spawn row is non-terminal to the
+      // replay, so this can never move the task's status — asserted in the test suite.
+      status: 'todo',
+      checks: 'none',
+      result: null,
+      files: [],
+      notes: `spawned while executing [${origin.id}]`,
+      origin_task: origin.id,
+    };
+    const commit = commitIteration(task.id, entry, () => ({ updated_at: entry.ts }), { agent: agentId });
+    if (!commit) process.exit(1);
+    console.log(`  spawn: journal seq ${commit.seq} records origin_task ${origin.id} — \`pb graph\` now draws ${origin.id} → ${task.id}`);
   }
 }
 
@@ -5008,8 +5105,9 @@ function cmdHelp() {
                            the task's ordered journal rows (its steering thread and history)
     graph [--json]         Read-only projection for a graph UI (schema agent-playbook.graph.v1):
                            start/goal bookends, task nodes with cycle+provenance+worker truth,
-                           proven edges (dependencies inverted), and the human batch. Never
-                           writes, and never executes a layer gate command.
+                           proven edges (dependencies inverted; a spawn comes from the row's
+                           origin_task, i.e. the task that was in flight when it was planned),
+                           and the human batch. Never writes, and never executes a layer gate command.
     worker create|status|exec|verify|merge|remove|checker|merge-ready|provider-rate-limit ...
                            Worker worktrees (dry-run; --execute to apply). create opens an
                            isolated slot (atomic: one winner per slot); status reports
@@ -5050,9 +5148,14 @@ function cmdHelp() {
     comment --task <id> --text "..."   Journal-native steering note (action: comment).
                            Append-only and attributable; it cannot change task status.
     report [--since DATE]  Roll the journal up into ${REPORTS_DIR}/report-<date>.md
-    plan --goal ".." [--skill <id>] [--priority <n>] [--check <cmd>] [--manual]
+    plan --goal ".." [--skill <id>] [--priority <n>] [--check <cmd>] [--dep <task-id>] [--manual] [--layer <id>]
                           Convert a goal into a backlog task with acceptance_checks.
-                          Pass --check multiple times. Set --manual to require human approval.
+                          Pass --check multiple times. Pass --dep multiple times to declare the
+                          task's dependencies AT BIRTH: an unknown id, a self-dependency or an
+                          ordering pb validate would reject is refused and nothing is written.
+                          When this agent is already executing a task, the task's journal spawn
+                          row records origin_task=<that task>, so pb graph draws the spawn edge
+                          from the card that created it instead of from start.
     loop new [--goal ".."] [--stop ".."] [--from-lessons] [--fresh]  Open a durable loop epoch.
                           Default continues from the existing backlog. --fresh archives the
                           current backlog (nothing lost) and resets it to empty for a ground-up

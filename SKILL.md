@@ -96,6 +96,22 @@ Two surfaces exist for a person (or a UI) watching the backlog:
   unknown is listed under `unevaluated_gates`, not folded into the human batch as if it were closed.
   RunCards also carry their own `journal` rows, so a card's steering thread needs no second store.
 
+**An edge is born with the task, not added later.** `pb plan --dep <task-id>` (repeatable)
+declares a task's dependencies at creation, so the order the claim path enforces and the
+edges that `pb plan --layers` / `pb graph` draw exist at the first render:
+
+```bash
+pb plan --goal "wire the adapter" --check "npm test" --dep plan-20261010-001   # repeat --dep to add more
+```
+
+An unknown id, a self-dependency, a duplicate, or a `--dep`/`--layer` pair that `pb validate`
+would reject is refused **before anything is written** — `plan` cannot create a task that turns
+the guardrail red. A task planned while this agent is executing another also gets an
+`action: spawn` journal row carrying `origin_task: <the task in flight>`; `pb graph` turns that
+into a task→task `spawn` edge (`proven: true`, `evidence: 'spawn'`) instead of hanging the new
+card off `start`. A bare claim stays a claim (`proven: false`, `evidence: 'claim'`) — the two
+are never the same ink.
+
 **`docs:` on a task** associates the documents a human needs in order to judge it:
 
 ```yaml
@@ -222,7 +238,9 @@ stay attributable. The playbook's own skills are exposed to the harness as `play
 
 ## Layered planning (plan the repo, not just the next feature)
 
-`dependencies: [ids]` orders individual tasks. **Layers** are how you plan a whole repo:
+`dependencies: [ids]` orders individual tasks — declare them at creation with
+`pb plan --dep <id>` (repeatable) instead of hand-editing the backlog afterwards.
+**Layers** are how you plan a whole repo:
 a layer is a named stratum (substrate → data → domain → interface), and a layer may carry a
 **gate** — a shell command that must pass before anything above it may start.
 
