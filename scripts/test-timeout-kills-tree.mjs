@@ -65,6 +65,10 @@ const FIXTURES = {
   'grandchild.cjs': `const { spawn } = require('child_process'); spawn(process.execPath, ['writer.cjs', ${JSON.stringify(marker('grandchild'))}], { stdio: 'inherit' }); setTimeout(() => process.exit(0), ${LATE_MS + 2000});`,
   // the check starts a writer, then out-prints the output bound
   'overflow.cjs': `const { spawn } = require('child_process'); spawn(process.execPath, ['writer.cjs', ${JSON.stringify(marker('overflow'))}], { stdio: 'inherit' }); for (let i = 0; i < 400; i += 1) console.log('y'.repeat(1024)); setTimeout(() => process.exit(0), ${LATE_MS + 2000});`,
+  // each stream stays under the bound, the TOTAL goes over it (checker finding 1, seq 145)
+  'split.cjs': `const { spawn } = require('child_process'); spawn(process.execPath, ['writer.cjs', ${JSON.stringify(marker('split'))}], { stdio: 'inherit' }); process.stdout.write('o'.repeat(700)); process.stderr.write('e'.repeat(700)); setTimeout(() => process.exit(0), ${LATE_MS + 2000});`,
+  // a green check that needs longer than the timer resolution trap (finding 2)
+  'sleep.cjs': `setTimeout(() => process.exit(0), 300);`,
   'linger.cjs': `setTimeout(() => process.exit(0), ${LINGER_MS});`,
   'green.cjs': `console.log('green-output-7f3a'); process.exit(0);`,
   'red.cjs': `console.error('red-detail-9c1e'); process.exit(3);`,
@@ -102,6 +106,10 @@ try {
   for (const dep of ['js-yaml', 'argparse']) {
     cpSync(join(ROOT, 'node_modules', dep), join(pbRoot, 'node_modules', dep), { recursive: true });
   }
+  // scaffold copies memory/project-memory.md from the source playbook, and that file is
+  // gitignored: in a fresh clone there is none, and every command then refuses (finding 4).
+  const memory = join(pbRoot, 'memory', 'project-memory.md');
+  if (!existsSync(memory)) writeFileSync(memory, '# fixture memory\n', 'utf8');
   pb(['loop', 'new']);
   // `pb plan` refuses without a phase brief whose Q5 is answered — and no command answers it.
   pb(['cycle', '--new', '--goal', 'probe the tree kill', '--stop', 'the probes ran']);
@@ -110,9 +118,17 @@ try {
   for (const [file, body] of Object.entries(FIXTURES)) writeFileSync(join(pbRoot, file), `${body}\n`, 'utf8');
 
   // ── the kill paths ─────────────────────────────────────────────────────────
-  await killedCase('direct', 'direct.cjs', /TIMEOUT/);
-  await killedCase('grandchild', 'grandchild.cjs', /TIMEOUT/);
-  await killedCase('overflow', 'overflow.cjs', /OUTPUT-LIMIT/, { PB_CHECK_TIMEOUT_MS: '30000', PB_CHECK_MAX_OUTPUT_BYTES: '1000' });
+  // Anchored on the outcome LINE: a bare /TIMEOUT/ also matched the header that names
+  // PB_CHECK_TIMEOUT_MS, so a FAIL passed this assertion (checker finding 3, seq 145).
+  await killedCase('direct', 'direct.cjs', /^\s*TIMEOUT {2}node direct\.cjs/m);
+  await killedCase('grandchild', 'grandchild.cjs', /^\s*TIMEOUT {2}node grandchild\.cjs/m);
+  await killedCase('overflow', 'overflow.cjs', /^\s*OUTPUT-LIMIT {2}node overflow\.cjs/m, { PB_CHECK_TIMEOUT_MS: '30000', PB_CHECK_MAX_OUTPUT_BYTES: '1000' });
+  await killedCase('split', 'split.cjs', /^\s*OUTPUT-LIMIT {2}node split\.cjs/m, { PB_CHECK_TIMEOUT_MS: '30000', PB_CHECK_MAX_OUTPUT_BYTES: '1000' });
+
+  // ── a huge limit is a huge limit, not an instant timeout (finding 2) ──────
+  const hugeId = addTask('tree-kill probe: huge limit', 'sleep.cjs');
+  const huge = pb(['validate', '--task', hugeId], { PB_CHECK_TIMEOUT_MS: '3000000000' });
+  check(huge.code === 0 && /PASS {2}node sleep\.cjs/.test(huge.out), `a 3e9 ms limit did not let a 300 ms green check pass:\n${huge.out}`);
 
   // ── the launcher must be invisible to a check that runs normally ──────────
   const greenId = addTask('tree-kill probe: green', 'green.cjs');
@@ -147,7 +163,7 @@ try {
 
 console.log('Killed checks — the whole process tree dies with the kill');
 console.log(`  platform : ${process.platform} (${process.platform === 'win32' ? 'taskkill /T /F' : 'process-group kill'})`);
-console.log('  kills    : timer (direct + grandchild) and output-limit; no marker lands while the engine carries on');
+console.log('  kills    : timer (direct + grandchild), output-limit, split stdout+stderr overflow; no marker lands while the engine carries on');
 console.log('  fidelity : green passes, red fails with its stderr shown, no status file left behind');
 
 if (problems.length) {

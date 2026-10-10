@@ -103,6 +103,10 @@ engine reports `TIMEOUT` or `OUTPUT-LIMIT`. Before this, a kill reached only the
 direct child: on Windows the `cmd.exe` shim died and the real check kept running, so work
 could land after the engine had declared no verdict. `scripts/test-timeout-kills-tree.mjs`
 pins it; the POSIX branch is written but unverified on the Windows machine that built it.
+The output bound counts stdout and stderr **together**, as it always did. What the kill cannot
+reach: a process the check deliberately detaches (`start /b`, a daemon) after its parent has
+exited is outside any tree `taskkill /T` can walk. A kill that fails is written to the check's
+stderr rather than swallowed. Each check costs one extra Node process (about 0.1 s).
 
 **The same contract covers mode checks, which are a different list with their own budget.**
 `pb mode check` and `validate --mode` run a mode's `kind:check` principles — usually the whole

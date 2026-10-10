@@ -1466,26 +1466,39 @@ function isOutputOverflow(e) {
 //  The launcher is inline (`node -e`) so it ships inside this file: nothing to scaffold,
 //  pack or bundle. It forwards stdout/stderr unchanged (piped and counted on Windows, whose
 //  pipe writes are synchronous; inherited on POSIX) and exits with the child's code, so a
-//  check's output and verdict are unchanged. Cost: one Node process per check, ~+59 ms.
+//  check's output and verdict are unchanged. Cost: one Node process per check, measured at
+//  +59 ms (Lead) and +95 ms (checker, `cmd /c exit 0`, N=15) — call it ~0.1 s per check.
+//
+//  Limits, stated so they are not over-claimed:
+//    · output is counted as stdout + stderr TOGETHER, the same budget the engine's own buffer
+//      enforced before this change (a per-stream count let a split overflow leak the tree);
+//    · a time limit above 2^31-1 ms is clamped (Node's timer would otherwise fire at once);
+//    · the kill reaches what is still in `cmd.exe`'s tree. A process the check deliberately
+//      detaches (`start /b`, a daemon) and whose parent has exited is outside any tree that
+//      `taskkill /T` can walk — that was true before and is still true;
+//    · a failed kill is written to the check's stderr, never swallowed.
 //
 //  POSIX: the child leads its own process group (`detached`, which keeps stdio there), the
 //  timer kills the group, and the timer's SIGTERM from the engine backstop does the same.
+//  Two side effects of the new group, both accepted: a SIGKILL sent to the ENGINE's process
+//  group no longer reaches the check, and the check has no controlling tty.
 //  Output volume on POSIX is still bounded by the engine's buffer. The POSIX branch CANNOT
 //  be exercised on the Windows machine this was built on: it is unverified.
 const CHECK_LAUNCHER_SRC = [
   "const { spawn, execFileSync } = require('child_process');",
   "const fs = require('fs');",
   'const [statusFile, limitRaw, maxRaw, file, ...argv] = process.argv.slice(1);',
-  'const limit = Number(limitRaw), max = Number(maxRaw);',
+  'const limit = Math.min(Number(limitRaw), 2147483647), max = Number(maxRaw);',
   "const win = process.platform === 'win32';",
   "const child = win ? spawn('cmd.exe', ['/d', '/c', file, ...argv], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })",
   "  : spawn(file, argv, { stdio: 'inherit', detached: true });",
   'let done = false;',
-  "const killTree = () => { try { if (win) execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); else process.kill(-child.pid, 'SIGKILL'); } catch (e) {} };",
+  "const taskkill = require('path').join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');",
+  "const killTree = () => { try { if (win) execFileSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); else process.kill(-child.pid, 'SIGKILL'); } catch (e) { process.stderr.write('pb: could not kill the check process tree (pid ' + child.pid + '): ' + String((e && e.message) || e).split(String.fromCharCode(10))[0] + String.fromCharCode(10)); } };",
   'const stop = (why, code) => { if (done) return; done = true; try { fs.writeFileSync(statusFile, why); } catch (e) {} killTree(); process.exit(code); };',
   "child.on('error', (e) => { process.stderr.write(String((e && e.message) || e) + String.fromCharCode(10)); process.exit(127); });",
   "const timer = setTimeout(() => stop('timeout', 124), limit);",
-  "if (win) { let out = 0, err = 0; child.stdout.on('data', (d) => { out += d.length; process.stdout.write(d); if (out > max) stop('output-limit', 125); }); child.stderr.on('data', (d) => { err += d.length; process.stderr.write(d); if (err > max) stop('output-limit', 125); }); }",
+  "if (win) { let total = 0; const feed = (sink) => (d) => { total += d.length; sink.write(d); if (total > max) stop('output-limit', 125); }; child.stdout.on('data', feed(process.stdout)); child.stderr.on('data', feed(process.stderr)); }",
   "if (!win) { for (const sig of ['SIGTERM', 'SIGHUP']) process.on(sig, () => stop('killed', 1)); process.on('SIGINT', () => { try { process.kill(-child.pid, 'SIGINT'); } catch (e) {} }); }",
   "child.on('close', (code) => { if (done) return; clearTimeout(timer); process.exit(code === null ? 1 : code); });",
 ].join(' ');
