@@ -50,6 +50,58 @@ A task's `acceptance_checks` are **shell commands** (cwd = playbook root, exit 0
 - A task without checks is verified on your honor only. When you write a task, give it
   executable checks whenever possible — exit codes, not prose.
 
+### Acceptance-check timeouts
+
+Every check runs under a bounded limit, because a check that hangs must not hang the loop —
+but a limit that is too tight is worse than useless: it turns a GREEN suite into a refusal.
+The limit is **not** a verdict, and the engine never reports it as one:
+
+```
+  TIMEOUT  node scripts/slow-suite.mjs
+        timed out after 400ms (limit 400ms from task check_timeout_ms, override with
+        check_timeout_ms on the task or PB_CHECK_TIMEOUT_MS) — this is NOT a failing check.
+```
+
+Resolution order, most specific first:
+
+| Source | Where | Notes |
+| --- | --- | --- |
+| `check_timeout_ms` on the task | `memory/backlog.yaml` | the command's own budget; wins over everything |
+| `PB_CHECK_TIMEOUT_MS` | the environment | machine / CI override |
+| default | — | The default is 600000 ms (10 minutes). |
+
+The default is deliberately **bounded and generous**: ~5x this repo's full `npm test`
+(~112s), so a busy machine cannot kill a green suite, while a genuine hang still surfaces
+inside the iteration that started it. A nonsense value (zero, negative, non-numeric) is
+never allowed to disable the limit — it warns and falls through to the next source.
+
+A killed check is recorded as `checks: timed-out` with a `check_timeouts` list (command,
+limit, elapsed, source), so "why did this block?" is answerable from the journal. When
+`pb record --status done` hits a timeout it refuses **without writing a row**, exactly as
+it does for a red check — neither one is a `done`.
+
+**A timer kill and a full pipe are different events.** A check that exits 0 but prints more
+than the runner captures is **not** a timeout and not a failure — it is `OUTPUT-LIMIT`
+(the exit code was never read, so there is no verdict):
+
+```
+  OUTPUT-LIMIT  node scripts/very-chatty.mjs
+        the check produced more output than the runner accepts (limit 16777216 bytes,
+        override with PB_CHECK_MAX_OUTPUT_BYTES) — the exit code was never read, so this
+        is NOT a failing check.
+```
+
+The capture bound is **16 MiB** by default and overridable with `PB_CHECK_MAX_OUTPUT_BYTES`,
+so a legitimately chatty green check still records. Only `execFileSync`'s `ETIMEDOUT` counts
+as a timer kill; `ENOBUFS` (which also sets `SIGTERM`) must never be read as one.
+
+Invalid limits are refused from **both** sources — `0`, negatives, booleans (`true` parses
+as a number in the old coercion) and non-numeric values all warn and fall through, because
+`timeout: 0` means "never time out" to Node and would silently disable the guarantee. An
+explicitly huge limit is honoured but warned about, since a hang then stays hidden. When a
+refusal mixes a real failure with a limit-shaped outcome, the message names both and says
+which is which — a failure is never called "not a failed check".
+
 ## Working with other agents
 
 One backlog is shared. `pb next --claim` gives you a task **and a claim token** — that token is

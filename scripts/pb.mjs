@@ -327,7 +327,7 @@ function trackedStateWarnings() {
   } catch { /* journal may not exist yet */ }
   return warnings;
 }
-function recordAuto(loop, task, status, checksOutcome, notes, { agent = 'auto', claimToken = null } = {}) {
+function recordAuto(loop, task, status, checksOutcome, notes, { agent = 'auto', claimToken = null, checkTimeouts = null, checkOutputLimits = null } = {}) {
   const ownership = verifyTaskClaim(task.id, { agent, token: claimToken });
   const entry = {
     ts: nowISO(),
@@ -344,6 +344,11 @@ function recordAuto(loop, task, status, checksOutcome, notes, { agent = 'auto', 
     files: [],
     notes,
   };
+  // A killed (or over-printed) check is a recorded fact too, and it must survive into the
+  // journal: the row says the limit, the elapsed time and the command, so "why did this
+  // block?" is answerable without re-running anything.
+  if (Array.isArray(checkTimeouts) && checkTimeouts.length) entry.check_timeouts = checkTimeouts;
+  if (Array.isArray(checkOutputLimits) && checkOutputLimits.length) entry.check_output_limits = checkOutputLimits;
   if (!ownership.ok) {
     entry.ownership_violation = true;
     console.error(`WARNING: [${task.id}] is held by "${ownership.holder}" but the auto runner (agent ${agent}) cannot prove ownership — recording anyway, flagged ownership=unproven.`);
@@ -1317,55 +1322,181 @@ function checkPathWarnings(checks) {
   const needle = new RegExp(`(^|[\\s'"\`(])${PLAYBOOK_DIR.replace(/[.]/g, '\\.')}[\\\\/]`);
   return checks.filter((c) => needle.test(c));
 }
+// --- acceptance-check timeouts + output bounds -------------------------------
+// "Done" means a check exited 0. A check KILLED BY A TIMER is neither a pass nor a
+// failure — it is an unanswered question, and the two must never share ink. The old
+// hard-coded 120000ms sat ~8s under this repo's own `npm test` (~112s), so a busy
+// machine turned a GREEN suite into a refused record, and a killed check looked exactly
+// like a red one — which is why it stayed invisible.
+//
+// Resolution order, most specific first:
+//   1. task.check_timeout_ms      the command's own budget (declare it on the task)
+//   2. PB_CHECK_TIMEOUT_MS        the machine / CI override
+//   3. DEFAULT_CHECK_TIMEOUT_MS   bounded on purpose: a limit that never fires hides a
+//                                 hang forever, while one that is too tight kills green
+//                                 work. 10 minutes is ~5x this repo's measured full-suite
+//                                 time, so load has room and a real hang still surfaces
+//                                 inside the iteration that started it.
+// A value that would DISABLE the limit (0, negative, boolean, non-numeric) is never
+// accepted from either source: it warns and falls through to the next one. An absurdly
+// large explicit value is honoured but warned about, because a hang then stays hidden.
+//
+// Output volume is a THIRD outcome, not a timeout. `execFileSync` throws ENOBUFS (with
+// `signal: 'SIGTERM'` set) when a check out-prints `maxBuffer` — so a check that exited 0
+// used to be reported as TIMEOUT and became unrecordable, with "raise the limit" advice
+// that could not work. Only `code === 'ETIMEDOUT'` is a timer kill; ENOBUFS gets its own
+// name (OUTPUT-LIMIT) and the buffer is generous (16 MiB) and overridable, so a
+// legitimately chatty green check still records.
+const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60_000;
+const MAX_CHECK_TIMEOUT_WARN_MS = 60 * 60_000;                 // warn above an hour
+const DEFAULT_CHECK_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;       // 16 MiB
+// Rejects booleans, 0, negatives and non-numerics — the values that would silently turn
+// a bounded limit into no limit at all (`timeout: 0` means "never time out" to Node).
+function asPositiveMs(v) {
+  if (typeof v === 'boolean' || v === null || v === undefined) return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? Math.floor(v) : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+  }
+  return null;
+}
+function resolveCheckTimeout(task) {
+  const declared = task?.check_timeout_ms;
+  const hasDeclared = declared !== undefined && declared !== null && String(declared).trim() !== '';
+  const warnings = [];
+  if (hasDeclared) {
+    const ms = asPositiveMs(declared);
+    if (ms !== null) {
+      if (ms > MAX_CHECK_TIMEOUT_WARN_MS) {
+        warnings.push(`check_timeout_ms on [${task?.id}] is ${ms}ms — an unusually large limit; a hang will not surface for ${Math.round(ms / 60000)} minutes`);
+        return { ms, source: 'task check_timeout_ms', warnings };
+      }
+      return { ms, source: 'task check_timeout_ms', warnings };
+    }
+    warnings.push(`check_timeout_ms on [${task?.id}] is not a positive number of milliseconds (${JSON.stringify(declared)})`);
+  }
+  const envRaw = process.env.PB_CHECK_TIMEOUT_MS;
+  if (envRaw !== undefined && String(envRaw).trim() !== '') {
+    const ms = asPositiveMs(envRaw);
+    if (ms !== null) {
+      if (ms > MAX_CHECK_TIMEOUT_WARN_MS) {
+        warnings.push(`PB_CHECK_TIMEOUT_MS is ${ms}ms — an unusually large limit; a hang will not surface for ${Math.round(ms / 60000)} minutes`);
+      }
+      return { ms, source: 'env PB_CHECK_TIMEOUT_MS', warnings };
+    }
+    warnings.push(`PB_CHECK_TIMEOUT_MS is not a positive number of milliseconds (${JSON.stringify(envRaw)})`);
+  }
+  return { ms: DEFAULT_CHECK_TIMEOUT_MS, source: 'default', warnings };
+}
+function checkLimitNote(task) {
+  const { ms, source } = resolveCheckTimeout(task);
+  return `limit ${ms}ms per check from ${source}`;
+}
+function resolveMaxOutputBytes() {
+  const raw = process.env.PB_CHECK_MAX_OUTPUT_BYTES;
+  if (raw === undefined || String(raw).trim() === '') return DEFAULT_CHECK_MAX_OUTPUT_BYTES;
+  const n = asPositiveMs(raw);
+  if (n === null) {
+    console.error(`  ⚠ PB_CHECK_MAX_OUTPUT_BYTES is not a positive number (${JSON.stringify(raw)}) — using ${DEFAULT_CHECK_MAX_OUTPUT_BYTES} bytes.`);
+    return DEFAULT_CHECK_MAX_OUTPUT_BYTES;
+  }
+  return n;
+}
+// ONLY the timer. `signal: 'SIGTERM'` alone is NOT enough: ENOBUFS carries it too, and
+// treating that as a timeout is exactly the defect this comment exists to prevent.
+function isCheckTimeout(e) {
+  return e?.code === 'ETIMEDOUT';
+}
+function isOutputOverflow(e) {
+  return e?.code === 'ENOBUFS';
+}
+function runOneCheck(cmd, cwd, limit) {
+  const parts = shellSplit(cmd);
+  if (!parts.length) return null;
+  const [file, ...argv] = parts;
+  const maxOutput = resolveMaxOutputBytes();
+  const started = Date.now();
+  try {
+    runCommandSync(file, argv, { cwd, stdio: 'pipe', timeout: limit.ms, maxBuffer: maxOutput });
+    return { cmd, ok: true, elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput };
+  } catch (e) {
+    const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
+    return {
+      cmd, ok: false, timedOut: isCheckTimeout(e), overflow: isOutputOverflow(e),
+      elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput,
+      output: out ? out.split(/\r?\n/).slice(-8).join('\n') : '',
+    };
+  }
+}
+// The structured, journal-ready record of a timer kill / output overflow: answerable
+// after the fact, and tagged with which list the command came from (checks or commands).
+function noVerdictDetail(results, kind, outcome) {
+  return results.filter((r) => (outcome === 'timed-out' ? r.timedOut : r.overflow))
+    .map((r) => ({
+      kind, outcome,
+      cmd: r.cmd,
+      limit_ms: r.limit_ms,
+      elapsed_ms: r.elapsed_ms,
+      limit_source: r.limit_source,
+      ...(outcome === 'output-limit' ? { limit_bytes: r.max_output_bytes } : {}),
+    }));
+}
+function timeoutDetail(results, kind = 'check') {
+  return noVerdictDetail(results, kind, 'timed-out');
+}
+function overflowDetail(results, kind = 'check') {
+  return noVerdictDetail(results, kind, 'output-limit');
+}
+function warnCheckLimit(limit) {
+  for (const w of limit.warnings || []) console.error(`  ⚠ ${w} — using ${limit.ms}ms from ${limit.source}.`);
+}
+function printResultOutcome(r, { okLabel, noun }) {
+  if (r.ok) { console.log(`  ${okLabel}  ${r.cmd}`); return; }
+  if (r.timedOut) {
+    console.log(`  TIMEOUT  ${r.cmd}`);
+    console.log(`        timed out after ${r.elapsed_ms}ms (limit ${r.limit_ms}ms from ${r.limit_source}, override with check_timeout_ms on the task or PB_CHECK_TIMEOUT_MS) — this is NOT a failing ${noun}.`);
+    return;
+  }
+  if (r.overflow) {
+    console.log(`  OUTPUT-LIMIT  ${r.cmd}`);
+    console.log(`        the ${noun} produced more output than the runner accepts (limit ${r.max_output_bytes} bytes, override with PB_CHECK_MAX_OUTPUT_BYTES) — the exit code was never read, so this is NOT a failing ${noun}.`);
+    return;
+  }
+  console.log(`  FAIL  ${r.cmd}`);
+  if (r.output) console.log(r.output.split(/\r?\n/).map((l) => `        ${l}`).join('\n'));
+}
 // `cwd` defaults to the playbook root — the contract checks were written against.
 // Worker verification passes a worktree instead, so an isolated candidate is
 // judged in ITS OWN tree rather than against the root checkout (which is the whole
 // point of running the work in a worktree).
 function runChecks(task, cwd = ROOT) {
   const checks = taskChecks(task);
+  const limit = resolveCheckTimeout(task);
+  warnCheckLimit(limit);
   const results = [];
   for (const cmd of checks) {
-    const parts = shellSplit(cmd);
-    if (!parts.length) continue;
-    const [file, ...argv] = parts;
-    try {
-      runCommandSync(file, argv, { cwd, stdio: 'pipe', timeout: 120000 });
-      results.push({ cmd, ok: true });
-    } catch (e) {
-      const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
-      results.push({ cmd, ok: false, output: out.split(/\r?\n/).slice(-8).join('\n') });
-    }
+    const r = runOneCheck(cmd, cwd, limit);
+    if (r) results.push(r);
   }
   return results;
 }
 function printCheckResults(results) {
-  for (const r of results) {
-    console.log(`  ${r.ok ? 'PASS' : 'FAIL'}  ${r.cmd}`);
-    if (!r.ok && r.output) console.log(r.output.split(/\r?\n/).map((l) => `        ${l}`).join('\n'));
-  }
+  for (const r of results) printResultOutcome(r, { okLabel: 'PASS', noun: 'check' });
 }
 function runCommands(task, cwd = ROOT) {
   const cmds = taskCommands(task);
+  const limit = resolveCheckTimeout(task);
+  warnCheckLimit(limit);
   const results = [];
   for (const cmd of cmds) {
-    const parts = shellSplit(cmd);
-    if (!parts.length) continue;
-    const [file, ...argv] = parts;
-    try {
-      runCommandSync(file, argv, { cwd, stdio: 'pipe', timeout: 120000 });
-      results.push({ cmd, ok: true });
-    } catch (e) {
-      const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
-      results.push({ cmd, ok: false, output: out.split(/\r?\n/).slice(-8).join('\n') });
-    }
+    const r = runOneCheck(cmd, cwd, limit);
+    if (r) results.push(r);
   }
   return results;
 }
 function printCommandResults(results) {
-  for (const r of results) {
-    console.log(`  ${r.ok ? 'OK' : 'FAIL'}  ${r.cmd}`);
-    if (!r.ok && r.output) console.log(r.output.split(/\r?\n/).map((l) => `        ${l}`).join('\n'));
-  }
+  for (const r of results) printResultOutcome(r, { okLabel: 'OK', noun: 'command' });
 }
 
 // --- mode principle checks -------------------------------------------------
@@ -1599,7 +1730,7 @@ function cmdValidate(args) {
       for (const c of suspect) console.log(`    ⚠  ${c}`);
       console.log('');
     }
-    console.log(`Running ${checks.length} acceptance check(s) for [${task.id}] (cwd: playbook root):`);
+    console.log(`Running ${checks.length} acceptance check(s) for [${task.id}] (cwd: playbook root, ${checkLimitNote(task)}):`);
     const results = runChecks(task);
     printCheckResults(results);
     if (results.some((r) => !r.ok)) process.exit(1);
@@ -3565,11 +3696,30 @@ function cmdRecord(args) {
       checksOutcome = 'skipped';
       console.log(`WARNING: recording done with ${checks.length} acceptance check(s) SKIPPED. The journal will say so.`);
     } else if (checks.length) {
-      console.log(`Running ${checks.length} acceptance check(s) for [${task.id}] before recording done${checkDir === ROOT ? '' : ` in ${checkDir}`}:`);
+      console.log(`Running ${checks.length} acceptance check(s) for [${task.id}] before recording done${checkDir === ROOT ? '' : ` in ${checkDir}`} (${checkLimitNote(task)}):`);
       const results = runChecks(task, checkDir);
       printCheckResults(results);
       if (results.some((r) => !r.ok)) {
-        console.error(`\nRefusing to record [${task.id}] as done — acceptance checks failed.`);
+        const reds = results.filter((r) => !r.timedOut && !r.overflow);
+        const timeouts = results.filter((r) => r.timedOut);
+        const overflows = results.filter((r) => r.overflow);
+        const noVerdict = [...timeouts, ...overflows];
+        if (!reds.length) {
+          // Nothing failed; a limit or the buffer stopped the run. Say WHICH, and how to raise it.
+          const what = timeouts.length ? 'TIMED OUT' : 'exceeded the output limit';
+          console.error(`\nRefusing to record [${task.id}] as done — ${noVerdict.length} acceptance check(s) ${what}.`);
+          console.error('No verdict was reached; this is NOT a failed check.');
+          console.error(`  limit ${noVerdict[0].limit_ms}ms from ${noVerdict[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
+          if (overflows.length) console.error(`  output bound ${overflows[0].max_output_bytes} bytes; raise it with PB_CHECK_MAX_OUTPUT_BYTES=<bytes>.`);
+        } else if (!noVerdict.length) {
+          console.error(`\nRefusing to record [${task.id}] as done — acceptance checks failed.`);
+        } else {
+          // Mixed: the failures are failures; the limit-shaped outcomes are not. Never let
+          // one sentence call the whole refusal "not a failed check".
+          console.error(`\nRefusing to record [${task.id}] as done — ${reds.length} check(s) FAILED and ${noVerdict.length} reached no verdict${timeouts.length ? ` (${timeouts.length} TIMED OUT)` : ''}${overflows.length ? ` (${overflows.length} output-limit)` : ''}.`);
+          console.error('The FAILED check(s) above are failures; the TIMED OUT / OUTPUT-LIMIT check(s) are NOT — no verdict was reached for them.');
+          console.error(`  limit ${noVerdict[0].limit_ms}ms from ${noVerdict[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
+        }
         console.error('Fix the work, or record --status blocked with notes. (--skip-checks overrides, and is stamped on the entry.)');
         process.exit(1);
       }
@@ -3899,9 +4049,25 @@ function cmdLoopRunAuto(args) {
       printCommandResults(cmdResults);
     }
     if (cmdResults.some((r) => !r.ok)) {
-      const failed = cmdResults.find((r) => !r.ok);
-      recordAuto(loop, candidate, 'blocked', 'none', `Auto-run command failed: ${failed.cmd}`, { agent: autoAgent, claimToken: autoToken });
-      console.error(`[${candidate.id}] → blocked (command failed)`);
+      // A timed-out or over-limit command is classified exactly like a check: it reached
+      // no verdict, so it must not be journalled as "command failed" with checks: none.
+      const cmdTimeouts = cmdResults.filter((r) => r.timedOut);
+      const cmdOverflows = cmdResults.filter((r) => r.overflow);
+      if (cmdTimeouts.length) {
+        recordAuto(loop, candidate, 'blocked', 'timed-out',
+          `Auto-run command TIMED OUT: ${cmdTimeouts[0].cmd} (limit ${cmdTimeouts[0].limit_ms}ms from ${cmdTimeouts[0].limit_source}). Raise it with check_timeout_ms on the task or PB_CHECK_TIMEOUT_MS.`,
+          { agent: autoAgent, claimToken: autoToken, checkTimeouts: timeoutDetail(cmdResults, 'command') });
+        console.error(`[${candidate.id}] → blocked (command TIMED OUT after ${cmdTimeouts[0].elapsed_ms}ms, limit ${cmdTimeouts[0].limit_ms}ms)`);
+      } else if (cmdOverflows.length) {
+        recordAuto(loop, candidate, 'blocked', 'output-limit',
+          `Auto-run command produced more output than the runner accepts: ${cmdOverflows[0].cmd} (limit ${cmdOverflows[0].max_output_bytes} bytes). Raise it with PB_CHECK_MAX_OUTPUT_BYTES.`,
+          { agent: autoAgent, claimToken: autoToken, checkOutputLimits: overflowDetail(cmdResults, 'command') });
+        console.error(`[${candidate.id}] → blocked (command exceeded the output limit, ${cmdOverflows[0].max_output_bytes} bytes)`);
+      } else {
+        const failed = cmdResults.find((r) => !r.ok);
+        recordAuto(loop, candidate, 'blocked', 'none', `Auto-run command failed: ${failed.cmd}`, { agent: autoAgent, claimToken: autoToken });
+        console.error(`[${candidate.id}] → blocked (command failed)`);
+      }
       if (defer) { deferred++; continue; }
       finalStatus = 'blocked';
       break;
@@ -3919,8 +4085,22 @@ function cmdLoopRunAuto(args) {
       console.log(`[${candidate.id}] → done`);
       tasksCompleted++;
     } else {
-      recordAuto(loop, candidate, 'blocked', 'failed', `Auto-run acceptance checks failed after ${retry} retries.`, { agent: autoAgent, claimToken: autoToken });
-      console.error(`[${candidate.id}] → blocked (checks failed)`);
+      const timeouts = checkResults.filter((r) => r.timedOut);
+      const overflows = checkResults.filter((r) => r.overflow);
+      if (timeouts.length || overflows.length) {
+        const first = timeouts[0] || overflows[0];
+        recordAuto(loop, candidate, 'blocked', timeouts.length ? 'timed-out' : 'output-limit',
+          timeouts.length
+            ? `Auto-run acceptance check TIMED OUT: ${first.cmd} (limit ${first.limit_ms}ms from ${first.limit_source}). Raise it with check_timeout_ms on the task or PB_CHECK_TIMEOUT_MS.`
+            : `Auto-run acceptance check produced more output than the runner accepts: ${first.cmd} (limit ${first.max_output_bytes} bytes). Raise it with PB_CHECK_MAX_OUTPUT_BYTES.`,
+          { agent: autoAgent, claimToken: autoToken, checkTimeouts: timeoutDetail(checkResults), checkOutputLimits: overflowDetail(checkResults) });
+        console.error(timeouts.length
+          ? `[${candidate.id}] → blocked (check TIMED OUT after ${first.elapsed_ms}ms, limit ${first.limit_ms}ms)`
+          : `[${candidate.id}] → blocked (check exceeded the output limit, ${first.max_output_bytes} bytes)`);
+      } else {
+        recordAuto(loop, candidate, 'blocked', 'failed', `Auto-run acceptance checks failed after ${retry} retries.`, { agent: autoAgent, claimToken: autoToken });
+        console.error(`[${candidate.id}] → blocked (checks failed)`);
+      }
       if (defer) { deferred++; continue; }
       finalStatus = 'blocked';
       break;
@@ -5347,7 +5527,13 @@ function cmdHelp() {
                            (worker/checker/provider) instead of preserving them.
     record --task <id> --action <a> --status <s> [--result <r>] [--files a,b] [--notes "..."] [--agent <n>] [--skip-checks]
                            Append a journal entry. Recording done RUNS the task's
-                           acceptance_checks and refuses if they fail.
+                           acceptance_checks and refuses if they fail. Each check runs under
+                           a bounded limiter — check timeout: 600000 ms default, raised by
+                           "check_timeout_ms: <ms>" on the task, then PB_CHECK_TIMEOUT_MS.
+                           A check KILLED by that limit is reported as TIMEOUT, never as a
+                           failed check: done still means an exit code 0. A check that
+                           out-prints the runner (16 MiB, PB_CHECK_MAX_OUTPUT_BYTES) is
+                           OUTPUT-LIMIT, a third outcome — not a timeout, not a failure.
     comment --task <id> --text "..."   Journal-native steering note (action: comment).
                            Append-only and attributable; it cannot change task status.
     report [--since DATE]  Roll the journal up into ${REPORTS_DIR}/report-<date>.md
@@ -5381,7 +5567,8 @@ function cmdHelp() {
     cycle [--new [--force] --goal ".." --stop ".."]  Forward half of the phase loop: the cycle brief (4+1 Qs). No args prints it.
     reflect [--notes ".."] Backward half: review done-since-last-reflect vs North Star; --notes records it
     validate               Structural guardrails (exit 1 on failure)
-    validate --task <id>   Run that task's executable acceptance_checks
+    validate --task <id>   Run that task's executable acceptance_checks (same bounded check
+                           timeout: 600000 ms default, then check_timeout_ms, then PB_CHECK_TIMEOUT_MS)
     anchor [--brief]       Print the constitution to re-inject (keeps the playbook salient)
     checkpoint [--snapshot]  Heartbeat: re-anchor + detect drift; --snapshot writes memory/RESUME.md
     list [processes|skills|modes]  Print the indices ("list modes" prints the mode catalog)
