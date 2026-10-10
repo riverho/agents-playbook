@@ -327,7 +327,7 @@ function trackedStateWarnings() {
   } catch { /* journal may not exist yet */ }
   return warnings;
 }
-function recordAuto(loop, task, status, checksOutcome, notes, { agent = 'auto', claimToken = null } = {}) {
+function recordAuto(loop, task, status, checksOutcome, notes, { agent = 'auto', claimToken = null, checkTimeouts = null } = {}) {
   const ownership = verifyTaskClaim(task.id, { agent, token: claimToken });
   const entry = {
     ts: nowISO(),
@@ -344,6 +344,10 @@ function recordAuto(loop, task, status, checksOutcome, notes, { agent = 'auto', 
     files: [],
     notes,
   };
+  // A killed check is a recorded fact too, and it must survive into the journal: the
+  // row says the limit, the elapsed time and the command, so "why did this block?"
+  // is answerable without re-running anything.
+  if (Array.isArray(checkTimeouts) && checkTimeouts.length) entry.check_timeouts = checkTimeouts;
   if (!ownership.ok) {
     entry.ownership_violation = true;
     console.error(`WARNING: [${task.id}] is held by "${ownership.holder}" but the auto runner (agent ${agent}) cannot prove ownership — recording anyway, flagged ownership=unproven.`);
@@ -1304,54 +1308,120 @@ function checkPathWarnings(checks) {
   const needle = new RegExp(`(^|[\\s'"\`(])${PLAYBOOK_DIR.replace(/[.]/g, '\\.')}[\\\\/]`);
   return checks.filter((c) => needle.test(c));
 }
+// --- acceptance-check timeouts ----------------------------------------------
+// "Done" means a check exited 0. A check KILLED BY A TIMER is neither a pass nor a
+// failure — it is an unanswered question, and the two must never share ink. The old
+// hard-coded 120000ms sat ~8s under this repo's own `npm test` (~112s), so a busy
+// machine turned a GREEN suite into a refused record, and a killed check looked exactly
+// like a red one — which is why it stayed invisible.
+//
+// Resolution order, most specific first:
+//   1. task.check_timeout_ms      the command's own budget (declare it on the task)
+//   2. PB_CHECK_TIMEOUT_MS        the machine / CI override
+//   3. DEFAULT_CHECK_TIMEOUT_MS   bounded on purpose: a limit that never fires hides a
+//                                 hang forever, while one that is too tight kills green
+//                                 work. 10 minutes is ~5x this repo's measured full-suite
+//                                 time, so load has room and a real hang still surfaces
+//                                 inside the iteration that started it.
+// A nonsense value is never allowed to disable the limit: it warns and falls through.
+const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60_000;
+function resolveCheckTimeout(task) {
+  const declared = task?.check_timeout_ms;
+  const hasDeclared = declared !== undefined && declared !== null && String(declared).trim() !== '';
+  const fromTask = Number(declared);
+  if (hasDeclared && Number.isFinite(fromTask) && fromTask > 0) {
+    return { ms: Math.floor(fromTask), source: 'task check_timeout_ms', invalid_declaration: null };
+  }
+  const fromEnv = Number(process.env.PB_CHECK_TIMEOUT_MS);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) {
+    return { ms: Math.floor(fromEnv), source: 'env PB_CHECK_TIMEOUT_MS', invalid_declaration: hasDeclared ? declared : null };
+  }
+  return { ms: DEFAULT_CHECK_TIMEOUT_MS, source: 'default', invalid_declaration: hasDeclared ? declared : null };
+}
+function checkLimitNote(task) {
+  const { ms, source } = resolveCheckTimeout(task);
+  return `limit ${ms}ms per check from ${source}`;
+}
+// A timeout reaches us through the Windows shim as ETIMEDOUT (measured: code ETIMEDOUT,
+// signal SIGTERM, status null) — never as an exit code. `status === 1` is a RED check and
+// must not be mistaken for a timer kill.
+function isCheckTimeout(e) {
+  return e?.code === 'ETIMEDOUT' || e?.signal === 'SIGTERM';
+}
+function runOneCheck(cmd, cwd, limit) {
+  const parts = shellSplit(cmd);
+  if (!parts.length) return null;
+  const [file, ...argv] = parts;
+  const started = Date.now();
+  try {
+    runCommandSync(file, argv, { cwd, stdio: 'pipe', timeout: limit.ms });
+    return { cmd, ok: true, elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source };
+  } catch (e) {
+    const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
+    return {
+      cmd, ok: false, timedOut: isCheckTimeout(e),
+      elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source,
+      output: out ? out.split(/\r?\n/).slice(-8).join('\n') : '',
+    };
+  }
+}
+// The structured, journal-ready record of a timeout: answerable after the fact.
+function timeoutDetail(results) {
+  return results.filter((r) => r.timedOut)
+    .map((r) => ({ cmd: r.cmd, limit_ms: r.limit_ms, elapsed_ms: r.elapsed_ms, limit_source: r.limit_source }));
+}
+function warnBadCheckTimeout(task, limit) {
+  if (limit.invalid_declaration === null) return;
+  console.error(`  ⚠ check_timeout_ms on [${task?.id}] is not a positive number (${JSON.stringify(limit.invalid_declaration)}) — using ${limit.ms}ms from ${limit.source}.`);
+}
 // `cwd` defaults to the playbook root — the contract checks were written against.
 // Worker verification passes a worktree instead, so an isolated candidate is
 // judged in ITS OWN tree rather than against the root checkout (which is the whole
 // point of running the work in a worktree).
 function runChecks(task, cwd = ROOT) {
   const checks = taskChecks(task);
+  const limit = resolveCheckTimeout(task);
+  warnBadCheckTimeout(task, limit);
   const results = [];
   for (const cmd of checks) {
-    const parts = shellSplit(cmd);
-    if (!parts.length) continue;
-    const [file, ...argv] = parts;
-    try {
-      runCommandSync(file, argv, { cwd, stdio: 'pipe', timeout: 120000 });
-      results.push({ cmd, ok: true });
-    } catch (e) {
-      const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
-      results.push({ cmd, ok: false, output: out.split(/\r?\n/).slice(-8).join('\n') });
-    }
+    const r = runOneCheck(cmd, cwd, limit);
+    if (r) results.push(r);
   }
   return results;
 }
 function printCheckResults(results) {
   for (const r of results) {
-    console.log(`  ${r.ok ? 'PASS' : 'FAIL'}  ${r.cmd}`);
-    if (!r.ok && r.output) console.log(r.output.split(/\r?\n/).map((l) => `        ${l}`).join('\n'));
+    if (r.ok) { console.log(`  PASS  ${r.cmd}`); continue; }
+    if (r.timedOut) {
+      console.log(`  TIMEOUT  ${r.cmd}`);
+      console.log(`        timed out after ${r.elapsed_ms}ms (limit ${r.limit_ms}ms from ${r.limit_source}, override with check_timeout_ms on the task or PB_CHECK_TIMEOUT_MS) — this is NOT a failing check.`);
+      continue;
+    }
+    console.log(`  FAIL  ${r.cmd}`);
+    if (r.output) console.log(r.output.split(/\r?\n/).map((l) => `        ${l}`).join('\n'));
   }
 }
 function runCommands(task, cwd = ROOT) {
   const cmds = taskCommands(task);
+  const limit = resolveCheckTimeout(task);
+  warnBadCheckTimeout(task, limit);
   const results = [];
   for (const cmd of cmds) {
-    const parts = shellSplit(cmd);
-    if (!parts.length) continue;
-    const [file, ...argv] = parts;
-    try {
-      runCommandSync(file, argv, { cwd, stdio: 'pipe', timeout: 120000 });
-      results.push({ cmd, ok: true });
-    } catch (e) {
-      const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
-      results.push({ cmd, ok: false, output: out.split(/\r?\n/).slice(-8).join('\n') });
-    }
+    const r = runOneCheck(cmd, cwd, limit);
+    if (r) results.push(r);
   }
   return results;
 }
 function printCommandResults(results) {
   for (const r of results) {
-    console.log(`  ${r.ok ? 'OK' : 'FAIL'}  ${r.cmd}`);
-    if (!r.ok && r.output) console.log(r.output.split(/\r?\n/).map((l) => `        ${l}`).join('\n'));
+    if (r.ok) { console.log(`  OK  ${r.cmd}`); continue; }
+    if (r.timedOut) {
+      console.log(`  TIMEOUT  ${r.cmd}`);
+      console.log(`        timed out after ${r.elapsed_ms}ms (limit ${r.limit_ms}ms from ${r.limit_source}, override with check_timeout_ms on the task or PB_CHECK_TIMEOUT_MS) — this is NOT a failing command.`);
+      continue;
+    }
+    console.log(`  FAIL  ${r.cmd}`);
+    if (r.output) console.log(r.output.split(/\r?\n/).map((l) => `        ${l}`).join('\n'));
   }
 }
 
@@ -1586,7 +1656,7 @@ function cmdValidate(args) {
       for (const c of suspect) console.log(`    ⚠  ${c}`);
       console.log('');
     }
-    console.log(`Running ${checks.length} acceptance check(s) for [${task.id}] (cwd: playbook root):`);
+    console.log(`Running ${checks.length} acceptance check(s) for [${task.id}] (cwd: playbook root, ${checkLimitNote(task)}):`);
     const results = runChecks(task);
     printCheckResults(results);
     if (results.some((r) => !r.ok)) process.exit(1);
@@ -3552,11 +3622,19 @@ function cmdRecord(args) {
       checksOutcome = 'skipped';
       console.log(`WARNING: recording done with ${checks.length} acceptance check(s) SKIPPED. The journal will say so.`);
     } else if (checks.length) {
-      console.log(`Running ${checks.length} acceptance check(s) for [${task.id}] before recording done${checkDir === ROOT ? '' : ` in ${checkDir}`}:`);
+      console.log(`Running ${checks.length} acceptance check(s) for [${task.id}] before recording done${checkDir === ROOT ? '' : ` in ${checkDir}`} (${checkLimitNote(task)}):`);
       const results = runChecks(task, checkDir);
       printCheckResults(results);
       if (results.some((r) => !r.ok)) {
-        console.error(`\nRefusing to record [${task.id}] as done — acceptance checks failed.`);
+        const timeouts = results.filter((r) => r.timedOut);
+        if (timeouts.length) {
+          // A timer kill is not a verdict: say TIMEOUT, say the limit, say how to raise it.
+          console.error(`\nRefusing to record [${task.id}] as done — ${timeouts.length} acceptance check(s) TIMED OUT.`);
+          console.error(`No verdict was reached; this is NOT a failed check.`);
+          console.error(`  limit ${timeouts[0].limit_ms}ms from ${timeouts[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
+        } else {
+          console.error(`\nRefusing to record [${task.id}] as done — acceptance checks failed.`);
+        }
         console.error('Fix the work, or record --status blocked with notes. (--skip-checks overrides, and is stamped on the entry.)');
         process.exit(1);
       }
@@ -3906,8 +3984,16 @@ function cmdLoopRunAuto(args) {
       console.log(`[${candidate.id}] → done`);
       tasksCompleted++;
     } else {
-      recordAuto(loop, candidate, 'blocked', 'failed', `Auto-run acceptance checks failed after ${retry} retries.`, { agent: autoAgent, claimToken: autoToken });
-      console.error(`[${candidate.id}] → blocked (checks failed)`);
+      const timeouts = checkResults.filter((r) => r.timedOut);
+      if (timeouts.length) {
+        recordAuto(loop, candidate, 'blocked', 'timed-out',
+          `Auto-run acceptance check TIMED OUT: ${timeouts[0].cmd} (limit ${timeouts[0].limit_ms}ms from ${timeouts[0].limit_source}). Raise it with check_timeout_ms on the task or PB_CHECK_TIMEOUT_MS.`,
+          { agent: autoAgent, claimToken: autoToken, checkTimeouts: timeoutDetail(checkResults) });
+        console.error(`[${candidate.id}] → blocked (check TIMED OUT after ${timeouts[0].elapsed_ms}ms, limit ${timeouts[0].limit_ms}ms)`);
+      } else {
+        recordAuto(loop, candidate, 'blocked', 'failed', `Auto-run acceptance checks failed after ${retry} retries.`, { agent: autoAgent, claimToken: autoToken });
+        console.error(`[${candidate.id}] → blocked (checks failed)`);
+      }
       if (defer) { deferred++; continue; }
       finalStatus = 'blocked';
       break;
@@ -5236,7 +5322,11 @@ function cmdHelp() {
                            (worker/checker/provider) instead of preserving them.
     record --task <id> --action <a> --status <s> [--result <r>] [--files a,b] [--notes "..."] [--agent <n>] [--skip-checks]
                            Append a journal entry. Recording done RUNS the task's
-                           acceptance_checks and refuses if they fail.
+                           acceptance_checks and refuses if they fail. Each check runs under
+                           a bounded limiter — check timeout: 600000 ms default, raised by
+                           "check_timeout_ms: <ms>" on the task, then PB_CHECK_TIMEOUT_MS.
+                           A check KILLED by that limit is reported as TIMEOUT, never as a
+                           failed check: done still means an exit code 0.
     comment --task <id> --text "..."   Journal-native steering note (action: comment).
                            Append-only and attributable; it cannot change task status.
     report [--since DATE]  Roll the journal up into ${REPORTS_DIR}/report-<date>.md
@@ -5270,7 +5360,8 @@ function cmdHelp() {
     cycle [--new [--force] --goal ".." --stop ".."]  Forward half of the phase loop: the cycle brief (4+1 Qs). No args prints it.
     reflect [--notes ".."] Backward half: review done-since-last-reflect vs North Star; --notes records it
     validate               Structural guardrails (exit 1 on failure)
-    validate --task <id>   Run that task's executable acceptance_checks
+    validate --task <id>   Run that task's executable acceptance_checks (same bounded check
+                           timeout: 600000 ms default, then check_timeout_ms, then PB_CHECK_TIMEOUT_MS)
     anchor [--brief]       Print the constitution to re-inject (keeps the playbook salient)
     checkpoint [--snapshot]  Heartbeat: re-anchor + detect drift; --snapshot writes memory/RESUME.md
     list [processes|skills|modes]  Print the indices ("list modes" prints the mode catalog)
