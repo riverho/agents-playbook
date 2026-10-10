@@ -17,7 +17,10 @@
 // package resolution needs a boot, and a boot needs a live app. That remains the human
 // step in RELEASE.md.
 //
-// Skips honestly when no dsh CLI is discoverable.
+// Skips honestly when no dsh CLI is discoverable, or when the discoverable CLI's own
+// harness packages are incomplete (see the guard below — a suite that FAILS because a
+// peer dependency is absent is a red the repo cannot fix, and project-memory rule 11
+// says such a suite must SKIP instead).
 // ----------------------------------------------------------------------------
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -55,19 +58,46 @@ if (!dshBin || !existsSync(profileDir)) {
   process.exit(0);
 }
 
+// The discovered `dsh` shim is only usable when the harness packages it resolves against are
+// actually installed. On this box the npx cache holds a directory that HAS `dsh-tools` but is
+// MISSING `cordis` and its siblings — so `dsh --dump-config` cannot run and the probe imports
+// fail, which used to surface as 10 FAILs for an absent dependency rather than a skip. Detect
+// completeness explicitly: every package this suite needs must be present, or the suite skips.
+const HARNESS_REQUIRED = ['dsh-tools', 'dsh-skill', 'dsh-llm', 'cordis', 'schemastery'];
+function harnessCandidates() {
+  return [
+    process.env.DSH_PACKAGES,
+    'C:/Users/RH/AppData/Local/npm-cache/_npx/1e7f6d9597241db0/node_modules/@deepseek-ai',
+  ].filter(Boolean);
+}
+function harnessDir() {
+  return harnessCandidates().find((d) => existsSync(join(d, 'dsh-tools', 'package.json'))) || null;
+}
+function completeHarnessDir() {
+  return harnessCandidates().find((d) =>
+    HARNESS_REQUIRED.every((p) => existsSync(join(d, p, 'package.json')))) || null;
+}
+{
+  const harness = harnessDir();
+  const complete = completeHarnessDir();
+  if (!complete) {
+    const missing = harness
+      ? HARNESS_REQUIRED.filter((p) => !existsSync(join(harness, p, 'package.json')))
+      : HARNESS_REQUIRED;
+    console.log(`  SKIP  the discoverable dsh CLI's harness packages are incomplete (missing: ${missing.join(', ')})`);
+    console.log('        a failure here would be a red this repo cannot fix — set DSH_PACKAGES to a complete');
+    console.log('        @deepseek-ai directory to run this suite against real packages (rule 11: skip, never fail)');
+    console.log('\ntest-dsh-plugin-profile: skipped (0 pass, 0 fail)');
+    process.exit(0);
+  }
+}
+
 const pluginPkg = JSON.parse(readFileSync(resolve('dsh-plugin/package.json'), 'utf8'));
 const patchPath = resolve('scripts/fixtures/dsh-plugin-probe.patch.yml');
 ok('the probe overlay exists', existsSync(patchPath), patchPath);
 
-// Harness packages, for asserting the API the plugin calls. Optional: the composition
-// assertions above need no harness at all.
-function harnessDir() {
-  const candidates = [
-    process.env.DSH_PACKAGES,
-    'C:/Users/RH/AppData/Local/npm-cache/_npx/1e7f6d9597241db0/node_modules/@deepseek-ai',
-  ].filter(Boolean);
-  return candidates.find((d) => existsSync(join(d, 'dsh-tools', 'package.json'))) || null;
-}
+// Harness packages are resolved by `harnessDir()` / `completeHarnessDir()` above; the
+// completeness guard has already run, so section 3 can rely on a complete directory.
 
 // --- 1. the loader accepts the plugin's patch shape --------------------------
 let tree = '';
