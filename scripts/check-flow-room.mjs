@@ -159,12 +159,15 @@ check("the room reads the graph through the adapter, never a payload module", ()
   }
   // Payload data is reachable from exactly one non-test module: the adapter.
   const importers = [];
+  const payloadFiles = ["flow-graph-live.ts", "flow-sample-layered.ts"];
   const walk = dir => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full);
-      // Tests may import the payloads — they are the ones proving the shape.
+      // Tests may import the payloads — they are the ones proving the shape —
+      // and a payload file may name another one in its own header comment.
       else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name) &&
+        !payloadFiles.includes(entry.name) &&
         /mocks\/flow-(graph-live|sample-layered)/.test(readFileSync(full, "utf8"))) {
         importers.push(path.relative(SRC, full).replace(/\\/g, "/"));
       }
@@ -186,13 +189,14 @@ check("the room shows THIS repo's payload by default and labels the sample", () 
     "the default adapter is not this repo's live snapshot");
   must(adapter, "FLOW_LIVE_GRAPH", "the default adapter does not load the engine snapshot");
   const sample = read("mocks/flow-sample-layered.ts");
-  must(sample, "sample: true", "the three-layer sample is not marked `sample: true`");
+  must(sample, "sample: true", "the sample payload is not marked `sample: true`");
   mustMatch(sample, /explicitly NOT this repo|not presented as this repo's state|labelled in the room's source chip/i,
     "the sample does not say what it is not");
+  must(sample, "per-check EXIT CODES", "the sample does not state what only it can show");
   const room = read("components/stage/FlowRoom.tsx");
   must(room, "hasDeclaredLayers", "the room does not check whether layers are declared");
   must(room, "no layers declared — flat view", "the room does not label a flat view");
-  must(room, "sample · painted frame", "the room does not label the sample");
+  must(room, "sample · unprovable detail", "the room does not label the sample");
   return "default = live snapshot · sample labelled · flat view stated";
 });
 
@@ -350,8 +354,10 @@ check("the inspector, the steering dock and the effects are all present", () => 
   return "frame 2 inspector · frame 3 dock + goal-diff · frame 4 effects + reduced motion";
 });
 
-check("the default payload IS this repo's `pb graph --json`, and it is pinned", () => {
-  // Run the real command and compare it with the snapshot the room opens with.
+check("the live payload is engine-shaped and the room's invariants hold", () => {
+  // Hermetic: this pins SHAPE and engine-derived invariants, never a frozen
+  // backlog. Unrelated backlog work must not turn the room's gate red, so any
+  // snapshot-vs-engine difference is reported as a WARNING (see below).
   const result = spawnSync("node scripts/pb.mjs graph --json", {
     cwd: ROOT,
     encoding: "utf8",
@@ -372,62 +378,107 @@ check("the default payload IS this repo's `pb graph --json`, and it is pinned", 
   if (engine.schema !== "agent-playbook.graph.v1") {
     throw new Error(`the engine emits schema "${engine.schema}"`);
   }
-  const statusOf = (graph, id) => (graph.nodes.find(node => node.id === id) ?? {}).status;
-  // The facts the checker caught the hand-written fixture contradicting.
-  const facts = [
-    ["plan-20260918-004", "done"],
-    ["plan-20260918-002", "blocked"],
-    ["monitor-help-must-not-mutate", "todo"],
-  ];
-  for (const [id, expected] of facts) {
-    const actual = statusOf(engine, id);
-    if (actual !== expected) {
-      throw new Error(
-        `engine says ${id} is "${actual}", expected "${expected}" — re-capture the snapshot`
-      );
+  const statuses = new Set(["todo", "in_progress", "blocked", "done"]);
+  const kinds = new Set(["dep", "done", "spawn", "fork", "merge", "hil", "idle"]);
+  const nodeIds = new Set(engine.nodes.map(node => node.id));
+  if (engine.nodes.length === 0) throw new Error("the engine sent no nodes");
+  for (const node of engine.nodes) {
+    if (!statuses.has(node.status)) throw new Error(`node ${node.id} has status "${node.status}"`);
+    if (typeof node.layer !== "string" || !node.layer) {
+      throw new Error(`node ${node.id} has no layer`);
+    }
+    if (node.checks !== undefined && typeof node.checks !== "number") {
+      throw new Error(`node ${node.id} checks is not the engine's number`);
+    }
+    if (node.gate_quality !== undefined && typeof node.gate_quality !== "string") {
+      throw new Error(`node ${node.id} gate_quality is not the engine's string`);
     }
   }
-  if (engine.human?.batch?.length !== 1) {
-    throw new Error(`engine human.batch has ${engine.human?.batch?.length} entries, expected 1`);
+  // The ids the engine keeps out of `nodes[]` but still points edges at: the
+  // adapter synthesises exactly these, so any OTHER dangling id is a real fault.
+  const synthesised = new Set(["start", "goal", "human"]);
+  for (const edge of engine.edges) {
+    if (!kinds.has(edge.kind)) throw new Error(`edge kind "${edge.kind}" is unknown`);
+    for (const endpoint of [edge.from, edge.to]) {
+      if (!nodeIds.has(endpoint) && !synthesised.has(endpoint)) {
+        throw new Error(
+          `edge endpoint ${endpoint} is neither a node nor a synthesised id (${[...synthesised].join(", ")})`
+        );
+      }
+    }
+  }
+  if (engine.edges.length === 0) throw new Error("the engine sent no edges");
+  // Engine-derived invariants, computed from the payload itself.
+  const manual = engine.nodes.filter(node => node.manual === true);
+
+  /**
+   * A human batch entry must name an EXISTING task that really is `manual: true`.
+   * The third review injected a batch entry naming a NON-manual task and this gate
+   * stayed green, because it only checked that the id existed — this is that hole.
+   */
+  const assertBatchIsManual = (graph, label) => {
+    const ids = new Set(graph.nodes.map(node => node.id));
+    const manualHere = new Set(
+      graph.nodes.filter(node => node.manual === true).map(node => node.id)
+    );
+    for (const entry of graph.human?.batch ?? []) {
+      if (!Array.isArray(entry.tasks) || entry.tasks.length === 0) {
+        throw new Error(`${label}: a human batch entry holds no task`);
+      }
+      for (const task of entry.tasks) {
+        if (!ids.has(task)) throw new Error(`${label}: human batch names unknown task ${task}`);
+        if (!manualHere.has(task)) {
+          throw new Error(
+            `${label}: human batch names ${task}, which is NOT manual:true — the batch would be handing a person work the engine never flagged`
+          );
+        }
+      }
+    }
+  };
+  assertBatchIsManual(engine, "engine");
+  if ((engine.human?.batch?.length ?? 0) > manual.length) {
+    throw new Error(
+      `human.batch has ${engine.human.batch.length} entries for ${manual.length} manual task(s)`
+    );
+  }
+  // Declared layers are the room's axis: when PB declares them, the payload must
+  // carry them (the flat view is only ever the fallback). A single node may still
+  // be at its DERIVED depth without a declared stratum, so the pin is "declared
+  // layers exist and every node has a layer", not "all or nothing".
+  const declared = engine.nodes.filter(node => node.declared_layer != null);
+  if (declared.length === 0) {
+    throw new Error("no node declares a layer — the room would fall back to the flat view");
   }
 
-  // The snapshot must agree: it is the payload the room opens with.
+  // Snapshot drift is a WARNING, never the failure.
   const snapshotText = readFileSync(path.join(SRC, "mocks", "flow-graph-live.ts"), "utf8");
   const literal = snapshotText.slice(snapshotText.indexOf("= {") + 2).replace(/;\s*$/, "");
-  let snapshot;
+  let snapshot = null;
   try {
     snapshot = JSON.parse(literal);
   } catch (error) {
     throw new Error(`the snapshot is not readable JSON: ${String(error).slice(0, 160)}`);
   }
-  for (const [id, expected] of facts) {
-    const actual = statusOf(snapshot, id);
-    if (actual !== expected) {
-      throw new Error(
-        `snapshot says ${id} is "${actual}", the engine says "${expected}" (the fixture lies)`
-      );
-    }
-  }
-  if (snapshot.human.batch.length !== engine.human.batch.length) {
-    throw new Error(
-      `snapshot human.batch=${snapshot.human.batch.length}, engine human.batch=${engine.human.batch.length}`
-    );
-  }
-  const snapshotIds = snapshot.nodes.map(node => node.id).sort().join(",");
-  const engineIds = engine.nodes.map(node => node.id).sort().join(",");
-  if (snapshotIds !== engineIds) {
-    const added = engine.nodes.filter(node => !snapshot.nodes.some(entry => entry.id === node.id));
-    throw new Error(
-      `the snapshot's node set drifted (${added.length} new: ${added.slice(0, 3).map(node => node.id).join(", ")}) — re-capture it`
-    );
-  }
-  // Statuses elsewhere move as work progresses: report them, do not fail.
+  const snapshotIds = new Set(snapshot.nodes.map(node => node.id));
+  // The snapshot is what the room OPENS with, so the same guard applies to it —
+  // a batch entry naming non-manual work would be a lie on the canvas.
+  assertBatchIsManual(snapshot, "snapshot");
+  const added = engine.nodes.filter(node => !snapshotIds.has(node.id)).map(node => node.id);
+  const removed = snapshot.nodes.filter(node => !nodeIds.has(node.id)).map(node => node.id);
   const moved = engine.nodes.filter(node => {
-    const before = statusOf(snapshot, node.id);
-    return before !== undefined && before !== node.status;
-  });
-  return `engine + snapshot agree (${engine.nodes.length} nodes · 1 batch)${
-    moved.length ? ` · ${moved.length} status moved since capture` : ""
+    const before = snapshot.nodes.find(entry => entry.id === node.id);
+    return before && before.status !== node.status;
+  }).length;
+  const warn = [];
+  if (added.length) warn.push(`${added.length} new task(s): ${added.slice(0, 3).join(", ")}`);
+  if (removed.length) warn.push(`${removed.length} removed`);
+  if (moved) warn.push(`${moved} status moved`);
+  if ((snapshot.human?.batch?.length ?? 0) !== (engine.human?.batch?.length ?? 0)) {
+    warn.push(`human.batch ${snapshot.human?.batch?.length} → ${engine.human?.batch?.length}`);
+  }
+  const layers = [...new Set(engine.nodes.map(node => node.layer))].sort();
+  return `${engine.nodes.length} nodes · ${engine.edges.length} edges · layers ${layers.join("/")} (${declared.length} declared)${
+    warn.length ? ` · snapshot older than the backlog (${warn.join("; ")}) — re-capture when convenient` : ""
   }`;
 });
 
@@ -438,6 +489,7 @@ check("the four render defects are pinned by executable geometry assertions", ()
     ["every VISIBLE label box clears", "2 label collision"],
     ["suppresses rather than clips", "2 label suppression"],
     ["reserved legend rect intersects no node rect", "3 legend reserve"],
+    ["reserves at least the legend's own drawn content", "3 legend sized from content"],
     ["uses the light grey + accent tones", "4 minimap tones"],
   ];
   for (const [needle, label] of required) {
@@ -447,14 +499,43 @@ check("the four render defects are pinned by executable geometry assertions", ()
   must(layout, "FLOW_MIN_GUTTER", "no minimum gutter constant");
   must(layout, "declutterRects", "no de-collision pass");
   must(layout, "placeEdgeLabels", "no label placement/collision pass");
-  must(layout, "FLOW_LEGEND_RESERVE", "no legend reserve");
+  must(layout, "flowLegendRequiredSize", "the legend reserve is not derived from the legend's content");
+  if (/FLOW_LEGEND_RESERVE|FLOW_LEGEND_MIN_/.test(layout)) {
+    throw new Error("a hand-written legend size/floor constant is back — the reserve must come from the drawn model");
+  }
   must(layout, "visible: false", "a label that fits nowhere is not suppressed");
+  // One source for the legend: the component renders the model the layout measured.
+  const room = read("components/stage/FlowRoom.tsx");
+  must(room, "flowLegendModel(graph)", "the legend does not render the model the reserve was measured from");
   const derive = read("lib/flow-derive.ts");
+  must(derive, "flowLegendModel", "no legend model");
+  mustMatch(derive, /flowLegendModel[\s\S]{0,900}rows: \[/, "the legend model carries no rows");
   mustMatch(derive, /FLOW_MINIMAP_TONE[\s\S]{0,400}rgba\(17, 17, 17, 0\.22\)/,
     "the minimap does not use the painted light grey");
   mustMatch(derive, /FLOW_MINIMAP_TONE[\s\S]{0,500}var\(--accent-teal\)/,
     "the minimap has no live accent");
   return required.map(([, label]) => label).join(" · ");
+});
+
+check("the legend metrics are tied to the CSS that draws the legend", () => {
+  // The sizing guarantee is only as strong as the metrics; nothing used to tie
+  // them to the stylesheet, so a CSS font-size bump (or a shrunken metric) stayed
+  // green and the legend clipped silently (it has `overflow: hidden`).
+  const cssTest = read("lib/flow-legend-css.test.ts");
+  must(cssTest, "FLOW_LEGEND_METRICS", "the CSS test does not read the metrics");
+  must(cssTest, "index.css", "the CSS test does not read the stylesheet");
+  for (const rule of [".flow-legend", ".flow-legend__grp", ".flow-legend__row"]) {
+    must(cssTest, rule, `the CSS test does not parse ${rule}`);
+  }
+  must(cssTest, "font-size", "the CSS test does not check the declared font sizes");
+  must(cssTest, "padding", "the CSS test does not check the declared padding");
+  const css = readFileSync(path.join(SRC, "index.css"), "utf8");
+  const legend = /\.flow-legend\s*\{([^}]*)\}/.exec(css);
+  if (!legend) throw new Error("index.css has no .flow-legend rule");
+  must(legend[1], "overflow: hidden", "the legend no longer declares overflow:hidden");
+  const derive = read("lib/flow-derive.ts");
+  must(derive, "FLOW_LEGEND_METRICS", "no legend metrics to tie to the CSS");
+  return "metrics ↔ index.css (padding · gaps · swatch · font-size budgets)";
 });
 
 // ── 5. the dependency stayed in app_design ────────────────────────────────
@@ -517,7 +598,7 @@ function runGeometryProof() {
   check("the geometry assertions pass by name (the four render defects)", () => {
     const out = path.join(os.tmpdir(), `flow-geometry-${process.pid}.json`);
     const result = spawnSync(
-      `npx vitest run src/lib/flow-geometry.test.ts --reporter=json --reporter=verbose --outputFile="${out}"`,
+      `npx vitest run src/lib/flow-geometry.test.ts src/lib/flow-legend-css.test.ts --reporter=json --reporter=verbose --outputFile="${out}"`,
       { cwd: APP, encoding: "utf8", shell: true, env: { ...process.env, CI: "1" } }
     );
     if (result.status !== 0) {
@@ -552,10 +633,14 @@ function runGeometryProof() {
       ["every VISIBLE label box clears", "2 · label collision"],
       ["suppresses rather than clips", "2 · label suppression"],
       ["reserved legend rect intersects no node rect", "3 · legend reserve"],
+      ["reserves at least the legend's own drawn content", "3 · legend sized from content"],
       ["uses the light grey + accent tones", "4 · minimap tones"],
+      ["legend metrics agree with the CSS", "5 · metrics ↔ CSS"],
     ];
     for (const [needle, label] of wanted) {
-      const hit = results.find(entry => (entry.title ?? entry.fullName ?? "").includes(needle));
+      const hit = results.find(entry =>
+        `${entry.title ?? ""} ${entry.fullName ?? ""}`.includes(needle)
+      );
       if (!hit) throw new Error(`no geometry assertion matched ${label}`);
       if (hit.status !== "passed") throw new Error(`${label} is "${hit.status}"`);
     }
