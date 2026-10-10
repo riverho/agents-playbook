@@ -23,7 +23,7 @@
 //  Only dependency: js-yaml.
 // ============================================================================
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, copyFileSync, cpSync, openSync, closeSync, statSync, unlinkSync, rmSync, readdirSync, mkdtempSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, copyFileSync, cpSync, openSync, closeSync, statSync, lstatSync, unlinkSync, rmdirSync, readlinkSync, rmSync, readdirSync, mkdtempSync, renameSync } from 'node:fs';
 import { execSync, execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join, isAbsolute, basename } from 'node:path';
@@ -2230,6 +2230,66 @@ function workerCreatePayload(taskId, agent, execute, opts = {}) {
   const command = `git worktree add -b '${commandQuote(branch)}' '${commandQuote(worktree)}' ${base}`;
   return { schema: 'agent-playbook.worker.v1', action: 'create', task_id: taskId, agent, branch, worktree, worktree_path: worktree, base, command, execute: !!execute };
 }
+// --- link-safe teardown (data-loss guard) -----------------------------------
+// A recursive delete FOLLOWS a Windows junction. That is not a theory: a worker
+// worktree whose `node_modules` was a junction to the root checkout was torn down with
+// `git worktree remove`, git walked THROUGH the link, and the root's node_modules was
+// emptied to zero entries (js-yaml among them). Measured on this platform: Node's own
+// `rmSync(recursive)` does not follow a junction, but git's delete does — so the engine
+// must not depend on which implementation it happens to be calling.
+//
+// Every tree we are about to destroy is therefore walked with `lstat` (NEVER `stat`,
+// which resolves the link) and each link is removed AS A LINK:
+//   rmdir   a junction / directory symlink — on Windows this deletes the reparse point
+//           and leaves the target completely untouched (measured);
+//   unlink  a file symlink.
+// If a link cannot be removed we REFUSE and name it: a worktree that survives is
+// recoverable, a destroyed shared dependency tree is not.
+//
+// Detection is two-sided on purpose: `lstat().isSymbolicLink()` catches junctions and
+// symlinks, and `readlink()` is the cross-check — it succeeds only for a reparse point
+// and throws EINVAL for a real directory, so a normal directory can never be misread as
+// a link and rmdir'd.
+function isLinkLike(full, st) {
+  if (st.isSymbolicLink()) return true;
+  if (!st.isDirectory()) return false;                 // a regular file is never a link
+  try { readlinkSync(full); return true; } catch { return false; }
+}
+// Every link under `dir`, WITHOUT ever descending through one — including when `dir`
+// itself is a link, in which case its target is none of our business.
+function treeLinks(dir) {
+  let rootStat;
+  try { rootStat = lstatSync(dir); } catch { return []; }
+  if (isLinkLike(dir, rootStat)) return [dir];
+  const links = [];
+  const walk = (d) => {
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const ent of entries) {
+      const full = join(d, ent.name);
+      let st;
+      try { st = lstatSync(full); } catch { continue; }  // vanished under us: nothing to unlink
+      if (isLinkLike(full, st)) { links.push(full); continue; }
+      if (st.isDirectory()) walk(full);
+    }
+  };
+  walk(dir);
+  return links;
+}
+// Remove links without following them. Returns what was removed and what could not be.
+function unlinkTreeLinks(dir) {
+  const removed = [];
+  const failed = [];
+  for (const link of treeLinks(dir)) {
+    let how = null;
+    try { rmdirSync(link); how = 'rmdir'; }
+    catch {
+      try { unlinkSync(link); how = 'unlink'; } catch (e) { failed.push({ path: link, error: e.code || e.message }); }
+    }
+    if (how) removed.push({ path: link, how });
+  }
+  return { removed, failed };
+}
 function workerRemovePayload(taskId, agent, worker, { execute, force, deleteBranch }) {
   // Prefer the recorded worktree — the operator may have created it under a
   // different agent id or before a rename. Fall back to the derived names.
@@ -2238,9 +2298,14 @@ function workerRemovePayload(taskId, agent, worker, { execute, force, deleteBran
   const worktree = worker?.worktree_path || derived.worktree;
   const steps = [`git worktree remove${force ? ' --force' : ''} '${commandQuote(worktree)}'`];
   if (deleteBranch) steps.push(`git branch -D '${commandQuote(branch)}'`);
+  // A dry run should disclose the hazard, not hide it: these are the links the
+  // teardown will unlink before git ever sees the tree (see unlinkTreeLinks).
+  let links = [];
+  try { if (existsSync(worktree)) links = treeLinks(worktree); } catch { links = []; }
   return {
     schema: 'agent-playbook.worker.v1', action: 'remove', task_id: taskId, agent,
     branch, worktree, delete_branch: !!deleteBranch, command: steps.join(' && '), execute: !!execute,
+    links,
   };
 }
 function cmdWorker(args) {
@@ -2427,6 +2492,30 @@ function cmdWorker(args) {
       execute: !!args.execute, force: !!args.force, deleteBranch: !!args['delete-branch'],
     });
     if (args.execute) {
+      // Unlink first, delete second. git's own recursive delete follows a junction
+      // (measured), so the tree must contain no link by the time it runs. A refusal
+      // here leaves the worktree intact on purpose: that is recoverable.
+      if (existsSync(payload.worktree)) {
+        let rootStat = null;
+        try { rootStat = lstatSync(payload.worktree); } catch { rootStat = null; }
+        if (rootStat && isLinkLike(payload.worktree, rootStat)) {
+          console.error(`\nRefusing to remove the worker worktree for [${taskId}]: the worktree path ITSELF is a link.`);
+          console.error(`  ! ${payload.worktree}`);
+          console.error('    Deleting it would either destroy its target or leave git\'s worktree bookkeeping inconsistent.');
+          console.error('    Unlink it by hand (Windows: `cmd /c rmdir "<path>"`), then re-run.');
+          process.exit(1);
+        }
+        const { removed, failed } = unlinkTreeLinks(payload.worktree);
+        if (failed.length) {
+          console.error(`\nRefusing to remove the worker worktree for [${taskId}]: ${failed.length} link(s) inside it could not be unlinked.`);
+          for (const f of failed) console.error(`  ! ${f.path} (${f.error}) — a recursive delete would follow it into its target.`);
+          console.error('Nothing was deleted. Remove those links by hand (Windows: `cmd /c rmdir "<path>"`), then re-run.');
+          process.exit(1);
+        }
+        if (removed.length) {
+          console.log(`Unlinked ${removed.length} link(s) without following them: ${removed.map((r) => r.path).join(', ')}`);
+        }
+      }
       try {
         runGit(['worktree', 'remove', ...(args.force ? ['--force'] : []), payload.worktree]);
         if (args['delete-branch']) runGit(['branch', '-D', payload.branch]);
@@ -5113,8 +5202,11 @@ function cmdHelp() {
                            isolated slot (atomic: one winner per slot); status reports
                            ahead/behind/uncommitted; exec runs a command IN the worktree;
                            verify runs the task's checks IN the worktree; merge is gated by
-                           merge-ready; remove tears the slot down. checker records an
-                           independent verdict, merge-ready is the exit-1 gate, and
+                           merge-ready; remove tears the slot down AND unlinks any junction or
+                           symlink inside it without following it (a recursive delete follows
+                           a junction — it once emptied the root's node_modules), refusing
+                           instead of deleting if a link cannot be unlinked; checker records
+                           an independent verdict, merge-ready is the exit-1 gate, and
                            provider-rate-limit records a real provider 403/429 cooldown.
     next [--claim] [--force]
                            Select the next task; --claim marks it in_progress. Claiming is
