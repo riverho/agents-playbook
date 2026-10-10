@@ -106,7 +106,8 @@ pins it; the POSIX branch is written but unverified on the Windows machine that 
 The output bound counts stdout and stderr **together**, as it always did. What the kill cannot
 reach: a process the check deliberately detaches (`start /b`, a daemon) after its parent has
 exited is outside any tree `taskkill /T` can walk. A kill that fails is written to the check's
-stderr rather than swallowed. Each check costs one extra Node process (about 0.1 s).
+stderr, but the TIMEOUT / OUTPUT-LIMIT report does not show it yet (filed as a follow-up). Each
+check costs one extra Node process (about 0.1 s).
 
 **The same contract covers mode checks, which are a different list with their own budget.**
 `pb mode check` and `validate --mode` run a mode's `kind:check` principles — usually the whole
