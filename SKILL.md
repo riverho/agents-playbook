@@ -142,6 +142,25 @@ has **zero commits ahead of its base** cannot be merged, and a verification that
 reported rather than trusted. Record the outcome with `--at <worktree>` so the checks that certify
 the work are the ones that ran on the isolated branch.
 
+**Never link a shared tree into a worktree.** Do not put a junction or symlink at
+`<worktree>/node_modules` pointing at the root checkout (or at any other shared directory). A
+worker worktree is temporary; the thing it points at is not. This is not hypothetical: a teardown
+of a worktree whose `node_modules` was a junction to the root checkout's `node_modules` followed the
+link and emptied the root's `node_modules` to zero entries. To give a worktree its dependencies,
+use one of these instead, in this order:
+
+```bash
+cp -r <root>/node_modules <worktree>/node_modules   # a REAL copy (small: the engine needs js-yaml)
+npm install --prefix <worktree>                     # per-worktree install, if the registry is reachable
+NODE_PATH=<root>/node_modules pb worker verify <task>   # point at the root's modules without linking
+```
+
+`pb worker remove --execute` is link-safe as a backstop: it walks the tree with `lstat` and removes
+every junction/symlink **as a link** (`rmdir` for a junction or directory symlink, `unlink` for a
+file symlink) before git deletes anything, and it **refuses** — naming the path and deleting
+nothing — if a link cannot be removed or if the worktree path itself is a link. That is a
+backstop, not permission: a copied tree has no link to get wrong in the first place.
+
 ## State recovery
 
 `memory/journal.ndjson` is the append-only record; `memory/backlog-state.json` is a **projection**
