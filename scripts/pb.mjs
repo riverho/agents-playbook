@@ -1443,22 +1443,87 @@ function isCheckTimeout(e) {
 function isOutputOverflow(e) {
   return e?.code === 'ENOBUFS';
 }
+// ── the check launcher: a kill takes the whole process tree (plan-20261010-026) ──
+//  A timer or output-limit kill used to reach only the engine's DIRECT child. On Windows
+//  that is the `cmd.exe` shim, so the real check — and anything it had started — kept
+//  running after the engine reported TIMEOUT: a checker measured a killed check writing
+//  12 s later, and orphaned fixtures were found alive 27 minutes on. "No verdict" was
+//  declared while the work went on.
+//
+//  So every check runs under a tiny launcher that ENFORCES THE LIMITS ITSELF, while the
+//  tree is still whole: when the time or output bound is crossed it kills the child's
+//  entire tree, writes why to a status file, and only then exits. The engine reads the
+//  status to classify TIMEOUT / OUTPUT-LIMIT exactly as before; its own timer and buffer
+//  stay on as a looser backstop.
+//
+//  Why the launcher and not the engine does the kill — measured, not assumed: when the
+//  engine killed the launcher, libuv's kill-on-close job took `cmd.exe` down with it, but
+//  the real check under `cmd.exe` had escaped the job and lived on, with no parent left for
+//  `taskkill /T` to walk from ("process not found"; the marker was written anyway). Spawning
+//  the child `detached` to keep `cmd.exe` alive does not work either: a detached console
+//  child loses its stdio (a red check's stderr vanished and an over-printing check PASSED).
+//
+//  The launcher is inline (`node -e`) so it ships inside this file: nothing to scaffold,
+//  pack or bundle. It forwards stdout/stderr unchanged (piped and counted on Windows, whose
+//  pipe writes are synchronous; inherited on POSIX) and exits with the child's code, so a
+//  check's output and verdict are unchanged. Cost: one Node process per check, ~+59 ms.
+//
+//  POSIX: the child leads its own process group (`detached`, which keeps stdio there), the
+//  timer kills the group, and the timer's SIGTERM from the engine backstop does the same.
+//  Output volume on POSIX is still bounded by the engine's buffer. The POSIX branch CANNOT
+//  be exercised on the Windows machine this was built on: it is unverified.
+const CHECK_LAUNCHER_SRC = [
+  "const { spawn, execFileSync } = require('child_process');",
+  "const fs = require('fs');",
+  'const [statusFile, limitRaw, maxRaw, file, ...argv] = process.argv.slice(1);',
+  'const limit = Number(limitRaw), max = Number(maxRaw);',
+  "const win = process.platform === 'win32';",
+  "const child = win ? spawn('cmd.exe', ['/d', '/c', file, ...argv], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })",
+  "  : spawn(file, argv, { stdio: 'inherit', detached: true });",
+  'let done = false;',
+  "const killTree = () => { try { if (win) execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); else process.kill(-child.pid, 'SIGKILL'); } catch (e) {} };",
+  'const stop = (why, code) => { if (done) return; done = true; try { fs.writeFileSync(statusFile, why); } catch (e) {} killTree(); process.exit(code); };',
+  "child.on('error', (e) => { process.stderr.write(String((e && e.message) || e) + String.fromCharCode(10)); process.exit(127); });",
+  "const timer = setTimeout(() => stop('timeout', 124), limit);",
+  "if (win) { let out = 0, err = 0; child.stdout.on('data', (d) => { out += d.length; process.stdout.write(d); if (out > max) stop('output-limit', 125); }); child.stderr.on('data', (d) => { err += d.length; process.stderr.write(d); if (err > max) stop('output-limit', 125); }); }",
+  "if (!win) { for (const sig of ['SIGTERM', 'SIGHUP']) process.on(sig, () => stop('killed', 1)); process.on('SIGINT', () => { try { process.kill(-child.pid, 'SIGINT'); } catch (e) {} }); }",
+  "child.on('close', (code) => { if (done) return; clearTimeout(timer); process.exit(code === null ? 1 : code); });",
+].join(' ');
+// The engine's own bounds are a BACKSTOP behind the launcher's: looser, so the launcher's
+// tree-kill always fires first and the engine's cruder kill only covers a launcher that hangs.
+const LAUNCHER_GRACE_MS = 15_000;
+const LAUNCHER_SLACK_BYTES = 1024 * 1024;
+function checkStatusFile() {
+  return join(tmpdir(), `pb-check-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}.status`);
+}
 function runOneCheck(cmd, cwd, limit) {
   const parts = shellSplit(cmd);
   if (!parts.length) return null;
   const [file, ...argv] = parts;
+  const target = process.platform === 'win32' ? file : resolveExecutable(file);
   const maxOutput = resolveMaxOutputBytes();
+  const statusFile = checkStatusFile();
   const started = Date.now();
   try {
-    runCommandSync(file, argv, { cwd, stdio: 'pipe', timeout: limit.ms, maxBuffer: maxOutput });
+    execFileSync(process.execPath, ['-e', CHECK_LAUNCHER_SRC, statusFile, String(limit.ms), String(maxOutput), target, ...argv], {
+      cwd, stdio: 'pipe', windowsHide: true,
+      timeout: limit.ms + LAUNCHER_GRACE_MS,
+      maxBuffer: process.platform === 'win32' ? maxOutput + LAUNCHER_SLACK_BYTES : maxOutput,
+    });
     return { cmd, ok: true, elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput };
   } catch (e) {
+    let status = '';
+    try { status = readFileSync(statusFile, 'utf8').trim(); } catch { /* no status: a plain exit */ }
     const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
     return {
-      cmd, ok: false, timedOut: isCheckTimeout(e), overflow: isOutputOverflow(e),
+      cmd, ok: false,
+      timedOut: status === 'timeout' || isCheckTimeout(e),
+      overflow: status === 'output-limit' || isOutputOverflow(e),
       elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput,
       output: out ? out.split(/\r?\n/).slice(-8).join('\n') : '',
     };
+  } finally {
+    try { rmSync(statusFile, { force: true }); } catch { /* best effort */ }
   }
 }
 // The structured, journal-ready record of a timer kill / output overflow: answerable
