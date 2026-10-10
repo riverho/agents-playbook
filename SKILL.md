@@ -93,8 +93,21 @@ than the runner captures is **not** a timeout and not a failure — it is `OUTPU
 ```
 
 The capture bound is **16 MiB** by default and overridable with `PB_CHECK_MAX_OUTPUT_BYTES`,
-so a legitimately chatty green check still records. Only `execFileSync`'s `ETIMEDOUT` counts
-as a timer kill; `ENOBUFS` (which also sets `SIGTERM`) must never be read as one.
+so a legitimately chatty green check still records. A full pipe must never be read as a timer
+kill (`ENOBUFS` also sets `SIGTERM`, which is how that mistake happened once).
+
+**A kill takes the whole process tree.** Each check runs under a small launcher built into
+`pb.mjs` that enforces the time and output limits itself and, when one is crossed, kills the
+check's entire tree (`taskkill /T /F` on Windows, a process-group kill on POSIX) before the
+engine reports `TIMEOUT` or `OUTPUT-LIMIT`. Before this, a kill reached only the engine's
+direct child: on Windows the `cmd.exe` shim died and the real check kept running, so work
+could land after the engine had declared no verdict. `scripts/test-timeout-kills-tree.mjs`
+pins it; the POSIX branch is written but unverified on the Windows machine that built it.
+The output bound counts stdout and stderr **together**, as it always did. What the kill cannot
+reach: a process the check deliberately detaches (`start /b`, a daemon) after its parent has
+exited is outside any tree `taskkill /T` can walk. A kill that fails is written to the check's
+stderr, but the TIMEOUT / OUTPUT-LIMIT report does not show it yet (filed as a follow-up). Each
+check costs one extra Node process (about 0.1 s).
 
 **The same contract covers mode checks, which are a different list with their own budget.**
 `pb mode check` and `validate --mode` run a mode's `kind:check` principles — usually the whole
