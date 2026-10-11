@@ -4312,6 +4312,20 @@ const COMMENT_INTENTS = ['comment', 'steer', 'question', 'finding'];
 // survive). So this is a targeted textual insertion into the task's own block: add the key if it
 // is absent, append to the list if it is present, and touch nothing else in the file.
 function backlogAttachDoc(taskId, rel) {
+  // The master may point `backlog:` at a JSON file (writeBacklog supports it), and a textual
+  // YAML insertion would corrupt one. JSON gets the structural write it can take.
+  if (BACKLOG.endsWith('.json')) {
+    const doc = readData(BACKLOG);
+    if (!doc) return { ok: false, reason: `no ${BACKLOG}` };
+    const task = (doc.tasks || []).find((t) => t.id === taskId);
+    if (!task) return { ok: false, reason: `task ${taskId} has no block in ${BACKLOG}` };
+    const listed = Array.isArray(task.docs) ? task.docs.slice() : [];
+    if (listed.includes(rel)) return { ok: true, already: true };
+    listed.push(rel);
+    task.docs = listed;
+    atomicReplace(p(BACKLOG), JSON.stringify(doc, null, 2) + '\n');
+    return { ok: true, already: false };
+  }
   const text = readText(BACKLOG);
   if (!text) return { ok: false, reason: `no ${BACKLOG}` };
   const lines = text.split('\n');

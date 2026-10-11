@@ -141,6 +141,34 @@ try {
   check(/evidence\.md/.test(validGone.stderr + validGone.stdout), 'validate failed but did not name the missing document');
   writeFileSync(docPath, docBytes);
 
+  // ── 2b. a JSON backlog ───────────────────────────────────────────────────
+  // The master may point `backlog:` at a .json file and writeBacklog supports it, so the writer
+  // must not assume YAML: a textual insertion into a JSON document would corrupt it.
+  {
+    const master = join(pbRoot, 'playbook.yaml');
+    const masterBefore = readFileSync(master, 'utf8');
+    const flipped = masterBefore.replace(/backlog:\s*memory\/backlog\.yaml/, 'backlog: memory/backlog.json');
+    check(flipped !== masterBefore, 'the scratch master does not name a backlog file to flip — the JSON case cannot be tested');
+    writeFileSync(master, flipped, 'utf8');
+    const jsonBacklog = {
+      tasks: [{ id: taskId, title: 'a card to steer and attach to', status: 'todo', skill: 'run-task', mode: 'coding', priority: 1, acceptance_checks: ['node -v'] }],
+    };
+    writeFileSync(join(pbRoot, 'memory', 'backlog.json'), `${JSON.stringify(jsonBacklog, null, 2)}\n`, 'utf8');
+
+    const jsonAttach = pb(pbRoot, ['attach', '--task', taskId, '--path', 'docs/evidence-2.md']);
+    check(jsonAttach.code === 0, `pb attach against a JSON backlog exited ${jsonAttach.code}: ${(jsonAttach.stderr || jsonAttach.stdout).trim().split('\n')[0]}`);
+    let jsonAfter = null;
+    try { jsonAfter = JSON.parse(readFileSync(join(pbRoot, 'memory', 'backlog.json'), 'utf8')); } catch { jsonAfter = null; }
+    check(jsonAfter !== null, 'pb attach CORRUPTED a JSON backlog — the file no longer parses');
+    check(jsonAfter?.tasks?.[0]?.docs?.includes('docs/evidence-2.md') === true,
+      'pb attach did not record the document in the JSON backlog');
+    const jsonValidate = pb(pbRoot, ['validate']);
+    check(jsonValidate.code === 0, `pb validate fails on a JSON backlog pb attach wrote:\n      ${(jsonValidate.stderr || jsonValidate.stdout).trim().split('\n').slice(0, 2).join('\n      ')}`);
+
+    writeFileSync(master, masterBefore, 'utf8');
+    rmSync(join(pbRoot, 'memory', 'backlog.json'), { force: true });
+  }
+
   // ── 3. the room's routes ─────────────────────────────────────────────────
   const port = 9800 + Math.floor(Math.random() * 150);
   base = `http://127.0.0.1:${port}`;
