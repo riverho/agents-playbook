@@ -125,9 +125,9 @@
   },
   "local_edits": {
     "lib/flow-adapter.ts": {
-      "sha256": "c45bb92b0693a8277f6a89f020d8d04a8492bd709ac1768cef4d91d1b0ab8478",
-      "reason": "plan-20261010-022: the source label is derived from the adapter (sourceChipText) instead of hardcoded, so the live projection is no longer labelled a snapshot.",
-      "recorded": "2026-10-11T12:17:55.312Z",
+      "sha256": "989312a4b5c96db39f0a87184403eba812d69d902c2660ac900c90e3f7304a32",
+      "reason": "plan-20261010-035 decision write seam merged with plan-20261010-022 live-source labeling and 021 attach/steering behavior",
+      "recorded": "2026-10-11T16:33:31.002Z",
       "superseded": [
         {
           "sha256": "0828537b950b2c3b4e60aea5d655f8ddc6ab5dc142979d1661efd1630c573c77",
@@ -148,13 +148,17 @@
         {
           "sha256": "44394bda41e997c94397c47068184b6729defc378e0f971983fa73c049ca0ae7",
           "reason": "plan-20261010-021 fix round (checker BLOCK): the room reports what actually happened - a three-state toast (applied in part), the verb that ran, and the goal diff the live adapter never returned."
+        },
+        {
+          "sha256": "c45bb92b0693a8277f6a89f020d8d04a8492bd709ac1768cef4d91d1b0ab8478",
+          "reason": "plan-20261010-022: the source label is derived from the adapter (sourceChipText) instead of hardcoded, so the live projection is no longer labelled a snapshot."
         }
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "dd4ec2b4764b19964b8a0cc8496dc1d54c4f1d9feaa651437cd32db459bcf718",
-      "reason": "plan-20261010-022: the source label is derived from the adapter (sourceChipText) instead of hardcoded, so the live projection is no longer labelled a snapshot.",
-      "recorded": "2026-10-11T12:17:55.005Z",
+      "sha256": "28b22157b14699d2a30d672914a4dc797bbbaacc4e605bd8a64c817b58d6406c",
+      "reason": "plan-20261010-035 decision inbox and receipts merged with plan-20261010-022 live-source label and 021 truthful steering feedback",
+      "recorded": "2026-10-11T16:33:31.064Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -195,6 +199,10 @@
         {
           "sha256": "0b4330bd723d68ad646f152de032b32a422645ed386dd8885b2825fa77a74381",
           "reason": "plan-20261010-021 fix round (checker BLOCK): the room reports what actually happened - a three-state toast (applied in part), the verb that ran, and the goal diff the live adapter never returned."
+        },
+        {
+          "sha256": "dd4ec2b4764b19964b8a0cc8496dc1d54c4f1d9feaa651437cd32db459bcf718",
+          "reason": "plan-20261010-022: the source label is derived from the adapter (sourceChipText) instead of hardcoded, so the live projection is no longer labelled a snapshot."
         }
       ]
     },
