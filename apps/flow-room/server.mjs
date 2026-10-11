@@ -32,6 +32,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildPrompt, detectHarnesses, sendToHarness } from './harness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, 'dist');
@@ -204,7 +205,7 @@ async function serveApi(req, res, url) {
       ok: true,
       root: ROOT,
       engine: v ? v[1] : null,
-      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/fork', '/api/worker'],
+      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/fork', '/api/worker', '/api/harness', '/api/ask'],
     });
   }
 
@@ -322,6 +323,47 @@ async function serveApi(req, res, url) {
       return json(res, 422, { error: 'pb worker create refused', detail: r.stderr.trim() || r.stdout.trim() });
     }
     return json(res, 200, { ok: true, task: body.task, output: r.stdout.trim() });
+  }
+
+  // ── P4b: chat with a harness, if one is on this machine (plan-20261010-015) ──
+  if (path === '/api/harness' && req.method === 'GET') {
+    const available = detectHarnesses();
+    return json(res, 200, {
+      available,
+      note: available.length ? undefined : 'no harness CLI found on PATH (claude, codex, opencode) — questions are recorded in the journal, not dispatched',
+    });
+  }
+  if (path === '/api/ask' && req.method === 'POST') {
+    const body = await readBody(req);
+    if (!body || typeof body.task !== 'string' || !/^[\w.-]+$/.test(body.task) || typeof body.text !== 'string' || !body.text.trim()) {
+      return json(res, 400, { error: 'expected { task: task id, text: non-empty string, harness?: id }' });
+    }
+    // 1. ALWAYS record first: the question is a journal row whether or not anything answers
+    const recorded = await runPb(ROOT, ['comment', '--task', body.task, '--text', body.text, '--intent', 'question']);
+    if (recorded.code !== 0) {
+      return json(res, 422, { error: 'pb comment refused', detail: recorded.stderr.trim() || recorded.stdout.trim() });
+    }
+    const seq = /\(seq (\d+)/.exec(recorded.stdout);
+    const harness = typeof body.harness === 'string' ? detectHarnesses().find((h) => h.id === body.harness) : null;
+    if (!harness) {
+      return json(res, 200, {
+        ok: true, recorded: true, seq: seq ? Number(seq[1]) : null, dispatched: false,
+        note: body.harness ? `question recorded · not dispatched — no ${body.harness} harness on this machine` : 'question recorded · not dispatched — no harness chosen',
+      });
+    }
+    // 2. dispatch, streamed as server-sent events
+    const shown = await runPb(ROOT, ['task', 'show', body.task, '--json']);
+    let title = body.task;
+    try { title = JSON.parse(shown.stdout)?.task?.title ?? title; } catch { /* keep the id */ }
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
+    const emit = (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    emit({ type: 'recorded', seq: seq ? Number(seq[1]) : null, harness: harness.id });
+    const stop = sendToHarness(harness.id, buildPrompt({ task: body.task, title, text: body.text, root: ROOT }), {
+      cwd: ROOT,
+      onEvent: (ev) => { emit(ev); if (ev.type === 'done' || ev.type === 'error') res.end(); },
+    });
+    req.on('close', () => stop());
+    return undefined;
   }
 
   if (path === '/api/attach' && req.method === 'POST') {

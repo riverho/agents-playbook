@@ -366,6 +366,13 @@ function FlowCanvas({
   const tier = zoomTier(zoom);
 
   const present = useMemo(() => presence(graph), [graph]);
+  // P4b: the harness CLIs the room's server can see (none for a snapshot)
+  const [harnessList, setHarnessList] = useState<{ id: string; label: string }[]>([]);
+  useEffect(() => {
+    let alive = true;
+    if (active.listHarnesses) void active.listHarnesses().then(list => { if (alive) setHarnessList(list); }).catch(() => undefined);
+    return () => { alive = false; };
+  }, [active]);
 
   const counts = {
     hil: graph.human.batch.length,
@@ -524,6 +531,18 @@ function FlowCanvas({
           node={openNode}
           onClose={closeCard}
           readOnly={!active.sendMessage}
+          harnesses={harnessList}
+          onAsk={active.ask ? async (text, harness, onText) => {
+            try {
+              const r = await active.ask!(openNode.id, text, harness, ev => {
+                if (ev.type === "text" && ev.text) onText(ev.text);
+                if (ev.type === "error" && ev.message) onText(`\n[${ev.message}]`);
+              });
+              return { ok: r.recorded, note: r.dispatched ? "Question saved to the journal; the answer is above." : r.note };
+            } catch (err) {
+              return { ok: false, note: err instanceof Error ? err.message : String(err) };
+            }
+          } : undefined}
           onSend={async (text, intent) => {
             if (!active.sendMessage) return { ok: false, note: "This view is a snapshot — nothing was written." };
             const r = await active.sendMessage(openNode.id, text, intent === "steer" || intent === "question" ? intent : "comment");

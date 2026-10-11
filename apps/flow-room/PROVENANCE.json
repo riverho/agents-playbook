@@ -124,9 +124,9 @@
   },
   "local_edits": {
     "lib/flow-adapter.ts": {
-      "sha256": "0a5195844046492d67b2ee3510aa00e4ed965d17fdb92afb770947bdef26f726",
-      "reason": "plan-20261010-031/034 (v2): optional createTask / forkTask / sendMessage on the adapter interface; a snapshot has none and says it cannot write",
-      "recorded": "2026-10-11T03:55:27.857Z",
+      "sha256": "1688f8f204548411b2e28ca1ca03742f6c0a415420eb7459e013e1b1887f5642",
+      "reason": "plan-20261010-031/034/015 (v2): optional createTask / forkTask / sendMessage / listHarnesses / ask on the adapter; a snapshot has none and says it cannot write",
+      "recorded": "2026-10-11T17:25:49.176Z",
       "superseded": [
         {
           "sha256": "0828537b950b2c3b4e60aea5d655f8ddc6ab5dc142979d1661efd1630c573c77",
@@ -135,13 +135,17 @@
         {
           "sha256": "8f1194331be16381e5f785dfa9b0f2a8a3549b07ae7f42f86e93088e96386a78",
           "reason": "plan-20261010-031 (v2 layer view + jump-in, D21/D22; G1-G5, J1-J3): optional createTask / forkTask on the adapter interface: a snapshot or sample has none, so the room says it cannot write"
+        },
+        {
+          "sha256": "0a5195844046492d67b2ee3510aa00e4ed965d17fdb92afb770947bdef26f726",
+          "reason": "plan-20261010-031/034 (v2): optional createTask / forkTask / sendMessage on the adapter interface; a snapshot has none and says it cannot write"
         }
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "09e847aba7fd4051e46b62d1597c3a237c79029a9118ebf8687a29494e30b7a4",
-      "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view and jump-in, open card, presence strip; Escape: a text box with text first, then a + menu, then the open card (focus back to the card), then the selection",
-      "recorded": "2026-10-11T08:15:57.538Z",
+      "sha256": "a09c7c35f623ded903bb2169b6deeae9dbf3870265646c6e14a724a820f39092",
+      "reason": "plan-20261010-030/031/034/015 (v2): zoom tiers, layer view, jump-in, open card, presence strip, Escape order; lists the harness CLIs the server sees and wires the open card's ask",
+      "recorded": "2026-10-11T17:25:49.103Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -174,6 +178,10 @@
         {
           "sha256": "b8ba8bf1ce12a816c98dacb25d682516bcbb9f24dab08b17857685f3bf7d8dfb",
           "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view, jump-in, open card via adapter.sendMessage, presence strip; Escape closes the open card first and focus returns to the card (A1)"
+        },
+        {
+          "sha256": "09e847aba7fd4051e46b62d1597c3a237c79029a9118ebf8687a29494e30b7a4",
+          "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view and jump-in, open card, presence strip; Escape: a text box with text first, then a + menu, then the open card (focus back to the card), then the selection"
         }
       ]
     },
@@ -242,9 +250,9 @@
       ]
     },
     "components/stage/FlowInspector.tsx": {
-      "sha256": "766dba173e347f110548c0e8060fdc8f758289c1dffd936413d7c86e8c01154a",
-      "reason": "plan-20261010-034 (v2 open card, D15/D16; M2, M3): approved order; focus lands on the title; intent chips are toggle buttons (aria-pressed); one send at a time",
-      "recorded": "2026-10-11T08:00:56.380Z",
+      "sha256": "63178b14f0a23986f400c1304cb082194d87dafaa00a43d22a059c84918e34be",
+      "reason": "plan-20261010-034 + 015: the open card in the approved order; a question can be answered by a harness CLI chosen in the composer, streamed under it",
+      "recorded": "2026-10-11T17:25:49.030Z",
       "superseded": [
         {
           "sha256": "c8d736e211db101abc94be970815a63c74799b7707512a31c84bd483da78e153",
@@ -257,6 +265,10 @@
         {
           "sha256": "295ca3a1d29ecede50c0c93543687d574075adeaabbcfe803661f24ba005643d",
           "reason": "plan-20261010-034 (v2 open card, D15/D16; M2, M3): rewritten as the open card in the approved order — title first, what this is, where it stands in plain step names + next line, proof by name, conversation with summaries/intents/folding, engine details folded, composer with intent chips writing one pb comment --intent row"
+        },
+        {
+          "sha256": "766dba173e347f110548c0e8060fdc8f758289c1dffd936413d7c86e8c01154a",
+          "reason": "plan-20261010-034 (v2 open card, D15/D16; M2, M3): approved order; focus lands on the title; intent chips are toggle buttons (aria-pressed); one send at a time"
         }
       ]
     },
