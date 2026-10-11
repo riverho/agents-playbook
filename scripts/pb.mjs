@@ -485,7 +485,7 @@ function withStateTxn(mutator, { agent = 'agent', timeoutMs = 5 * 60_000 } = {})
       // writer queued behind a slow transaction can never claim an earlier position.
       const seq = touchSeqOf(draft) + 1;
       const result = mutator(draft, { seq, agent });
-      draft.__seq = seq;
+      draft.__seq = Math.max(seq, touchSeqOf(draft));
       draft.__written_at = nowISO();
       draft.__written_by = agent;
       writeBacklogState(draft);
@@ -682,6 +682,11 @@ function backlogTasks() {
       agent_id: s.agent_id ?? t.agent_id,
       mode: s.mode ?? t.mode,
       updated_at: s.updated_at ?? t.updated_at,
+      version: s.version ?? t.version,
+      kind: s.kind ?? t.kind,
+      carried_from: s.carried_from ?? t.carried_from,
+      disposition: s.disposition ?? t.disposition,
+      drop_reason: s.drop_reason ?? t.drop_reason,
     };
   });
 }
@@ -789,22 +794,81 @@ function readLoops() {
   let data = null;
   try { data = readData(LOOPS); }
   catch { data = null; }
-  return {
+  const state = {
     active: typeof data?.active === 'string' ? data.active : null,
     loops: Array.isArray(data?.loops) ? data.loops : [],
   };
+  // Version lifecycle rows are durable; loops.yaml is their convenient projection.
+  for (const row of readJournal()) {
+    if (row.action !== 'version' || !row.version_record?.id) continue;
+    const i = state.loops.findIndex(l => l.id === row.version_record.id);
+    if (i < 0) state.loops.push(row.version_record);
+    else state.loops[i] = { ...state.loops[i], ...row.version_record };
+    if (Object.hasOwn(row, 'active_loop')) state.active = row.active_loop;
+  }
+  return state;
 }
 function writeLoops(state) {
   ensureDir(dirname(LOOPS));
-  writeFileSync(p(LOOPS), yaml.dump({
+  atomicReplace(p(LOOPS), yaml.dump({
     active: state.active || null,
     loops: Array.isArray(state.loops) ? state.loops : [],
-  }, { lineWidth: 100 }), 'utf8');
+  }, { lineWidth: 100 }));
 }
 function activeLoop() {
   const state = readLoops();
   const loop = state.active ? state.loops.find((l) => l.id === state.active) : null;
   return loop && loop.status === 'active' ? loop : null;
+}
+
+const VERSION_KINDS = ['feature', 'fix', 'chore', 'experiment'];
+const VERSION_STATES = ['draft', 'open', 'frozen', 'closing', 'closed'];
+function versionMode() { return readLoops().loops.some(l => typeof l.version === 'string'); }
+function findVersion(name, state = readLoops()) { return state.loops.find(l => l.version && (l.version === name || l.id === name)); }
+function openVersion(state = readLoops()) { return state.loops.find(l => l.version && ['open', 'frozen', 'closing'].includes(l.state)); }
+class VersionRefused extends Error {}
+let versionInTxn = false;
+function versionRefusal(rule, message) {
+  console.error(`${rule}: ${message}. Nothing was written.`);
+  if (versionInTxn) throw new VersionRefused(message);
+  process.exit(1);
+}
+function versionWriteGuard(task, action, args = {}) {
+  if (!task?.version) return;
+  if (args.loop !== undefined && args.loop !== task.loop_id) versionRefusal('V4', `Card ${task.id} belongs to loop ${task.loop_id}; drop --loop`);
+  if (args.version !== undefined && args.version !== task.version && args.version !== task.loop_id) {
+    versionRefusal('V4', `Card ${task.id} belongs to ${task.version}; drop --version to inherit it`);
+  }
+  const v = findVersion(task.version);
+  if (['draft', 'closing'].includes(v?.state) && !['comment', 'reflect'].includes(action)) versionRefusal('V7', `${task.version} is ${v.state}; open it before working its cards`);
+  if (v?.state === 'closed' && !['comment', 'reflect'].includes(action)) {
+    versionRefusal('V7', `${task.version} is closed and read-only; fork a follow-up into the open version`);
+  }
+  if (task.disposition === 'dropped' && action !== 'comment') versionRefusal('V7', `Card ${task.id} was dropped: ${task.drop_reason || 'see journal'}`);
+}
+function taskInOpenVersion(task) {
+  if (task.disposition === 'dropped') return false;
+  if (!versionMode()) return true;
+  const v = openVersion();
+  return !!v && v.state !== 'closing' && task.version === v.version;
+}
+function versionPlanStamp(args, deps) {
+  if (!versionMode()) return {};
+  const v = openVersion();
+  if (!v || !['open', 'frozen'].includes(v.state)) versionRefusal('V2', 'Open a version with pb version new before planning');
+  const kind = args.kind ?? (deps.length ? 'fix' : 'feature');
+  if (!VERSION_KINDS.includes(kind)) versionRefusal('V3', `--kind must be ${VERSION_KINDS.join('|')}`);
+  const parents = deps.map(id => backlogTasks().find(t => t.id === id));
+  for (const parent of parents) {
+    if (!parent?.version) versionRefusal('V4', `Parent ${parent?.id} has no version; migrate it explicitly first`);
+    const pv = findVersion(parent.version);
+    if (parent.version !== v.version && !(pv?.state === 'closed' && kind === 'experiment')) {
+      versionRefusal('V4', `Follow-up inherits ${parent.version}; only an experiment fork of a closed card enters ${v.version}`);
+    }
+  }
+  if (args.version !== undefined && args.version !== v.version && args.version !== v.id) versionRefusal('V4', `Task belongs to ${v.version}; drop --version`);
+  if (v.state === 'frozen' && kind === 'feature') versionRefusal('V3', `${v.version} is frozen; use a fix/chore/experiment or open the next version`);
+  return { version: v.version, kind, loop_id: v.id };
 }
 function latestLoop() {
   const loops = readLoops().loops;
@@ -1802,6 +1866,8 @@ function runValidate() {
     if (t.manual !== undefined) {
       ok(typeof t.manual === 'boolean', `Task ${t.id} manual must be a boolean`);
     }
+    if (t.version !== undefined) ok(typeof t.version === 'string' && !!findVersion(t.version), `Task ${t.id} names an unknown version: ${t.version}`);
+    if (t.kind !== undefined) ok(VERSION_KINDS.includes(t.kind), `Task ${t.id} kind must be ${VERSION_KINDS.join('|')}`);
     // `docs:` is the card's document association (design D6): the paths a human needs
     // to read to judge this task. It earns its place because the CLI EXECUTES it here —
     // every entry must be a playbook-root-relative file that exists. A missing document
@@ -1821,6 +1887,16 @@ function runValidate() {
     }
   }
 
+  const versions = readLoops().loops.filter(l => l.version);
+  ok(versions.filter(l => ['open', 'frozen', 'closing'].includes(l.state)).length <= 1, 'V1: more than one version is open/frozen/closing');
+  const versionNames = new Set();
+  for (const v of versions) {
+    ok(typeof v.version === 'string' && v.version.trim() && !versionNames.has(v.version), `V1: duplicate or invalid version name: ${v.version}`);
+    versionNames.add(v.version);
+    ok(VERSION_STATES.includes(v.state), `Version ${v.version} has invalid state: ${v.state}`);
+    ok(Array.isArray(v.stop_checks) && v.stop_checks.length > 0 && v.stop_checks.every(c => typeof c === 'string' && c.trim()), `V5: ${v.version} needs executable stop_checks`);
+    if (v.state === 'closed') ok(v.stop_result?.outcome === 'passed', `V6: closed version ${v.version} lacks passing stop checks`);
+  }
   // 6. structural guardrails for the layer/dependency graph. `pb validate` is the
   // structural gate, so a cycle or a task declared in an earlier layer than its
   // dependencies must FAIL here — a plan that cannot be ordered is not a plan, and
@@ -2693,6 +2769,9 @@ function workerRemovePayload(taskId, agent, worker, { execute, force, deleteBran
 }
 function cmdWorker(args) {
   const sub = args._[0];
+  if (!['status', 'merge-ready'].includes(sub) && args._[1]) {
+    versionWriteGuard(backlogTasks().find(t => t.id === args._[1]), `worker ${sub}`, args);
+  }
   if (sub === 'create') {
     const taskId = args._[1];
     if (!taskId) { console.error('Usage: pb worker create <task-id> --agent <agent> [--base <ref>] [--worktree <path>] [--execute] [--json]'); process.exit(1); }
@@ -3112,7 +3191,7 @@ function cmdNext(args) {
     const tm = (t.mode && String(t.mode).trim()) || null;
     return !tm || !agentMode || tm === agentMode;
   };
-  const todo = tasks.filter((t) => t.status === 'todo');
+  const todo = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t));
   // Layered planning gates the CLAIM, on the same path `dependencies` already gates:
   // a task whose layer sits above a failing (or unverified) gate is not claimable.
   // The playbook's declared layer order is the plan, so honoring it by default is the
@@ -3217,7 +3296,7 @@ function cmdNext(args) {
       withStateTxn((draft, ctx) => {
         ctx.draft = draft;
         const fresh = backlogTasks().find((t) => t.id === candidate.id);
-        if (!fresh || fresh.status !== 'todo') return;
+        if (!fresh || fresh.status !== 'todo' || !taskInOpenVersion(fresh)) return;
         applyTaskMutation(candidate.id, () => ({
           status: 'in_progress',
           claimed_at: claimRow.ts,
@@ -3285,7 +3364,7 @@ function cmdRelease(args) {
 
   if (staleMinutes) {
     const cutoff = Date.now() - staleMinutes * 60_000;
-    const stale = backlogTasks().filter((t) => t.status === 'in_progress' && (t.claimed_at ? Date.parse(t.claimed_at) < cutoff : true));
+    const stale = backlogTasks().filter((t) => taskInOpenVersion(t) && t.status === 'in_progress' && (t.claimed_at ? Date.parse(t.claimed_at) < cutoff : true));
     if (!stale.length) { console.log(`No in_progress claims older than ${staleMinutes} minute(s).`); return; }
     if (args['dry-run']) {
       for (const t of stale) console.log(`[dry-run] would release [${t.id}] (held by ${taskHolder(t)} since ${t.claimed_at || 'unknown'})`);
@@ -3306,6 +3385,7 @@ function cmdRelease(args) {
 
   const task = backlogTasks().find((t) => t.id === taskId);
   if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+  versionWriteGuard(task, 'release', args);
   if (task.status !== 'in_progress') {
     console.log(`[${taskId}] is "${task.status}", not in_progress — nothing to release.`);
     return;
@@ -3413,6 +3493,14 @@ function reconstructStateFromJournal({ strict = false, ids = null } = {}) {
     // strict rebuild would still drop it as "projection-only" — a fact recorded but
     // not replayable, which is the same as not recorded.
     if (row.worker && typeof row.worker === 'object') entry.worker = { ...(entry.worker || {}), ...row.worker };
+    if (row.version) entry.version = row.version;
+    if (row.kind) entry.kind = row.kind;
+    if (row.action === 'carry' && row.carry_side === 'destination') {
+      entry.version = row.to_version;
+      entry.carried_from = row.from_version;
+      delete entry.disposition;
+    }
+    if (row.action === 'drop') { entry.disposition = 'dropped'; entry.drop_reason = row.reason; }
     if (row.action === 'claim') {
       entry.status = 'in_progress';
       entry.claimed_at = ts;
@@ -3746,6 +3834,7 @@ function cmdPlan(args) {
   }
   const loop = activeLoop();
   if (!loop) {
+    if (versionMode()) versionRefusal('V2', 'Open a version with pb version new before planning');
     console.error('No active loop. Start one with `pb loop new` before planning.');
     process.exit(1);
   }
@@ -3806,6 +3895,7 @@ function cmdPlan(args) {
     mode,
     priority,
     acceptance_checks: checks,
+    ...versionPlanStamp(args, depIds),
   };
   if (depIds.length) task.dependencies = depIds;
   if (args.manual) task.manual = true;
@@ -3905,11 +3995,12 @@ function cmdRecord(args) {
   }
 
   const task = backlogTasks().find((t) => t.id === args.task);
+  versionWriteGuard(task, 'record', args);
   if (['done', 'blocked'].includes(args.status) && !task) {
     console.error(`Task not found in backlog: ${args.task}. Cannot record ${args.status} for an unknown task.`);
     process.exit(1);
   }
-  const loop = args.loop ? loopById(args.loop) : activeLoop();
+  const loop = task?.version ? loopById(task.loop_id) : args.loop ? loopById(args.loop) : activeLoop();
   if (args['require-loop'] && !loop) {
     console.error('No active loop. Start one with `pb loop new`, or pass --loop <id>.');
     process.exit(1);
@@ -4031,6 +4122,7 @@ function cmdComment(args) {
     process.exit(1);
   }
   const task = backlogTasks().find((t) => t.id === taskId);
+  versionWriteGuard(task, 'comment', args);
   if (!task) { console.error(`Task not found in backlog: ${taskId}`); process.exit(1); }
   const agent = resolveAgentId(args);
   const claim = readBacklogState()[taskId] || {};
@@ -4041,7 +4133,7 @@ function cmdComment(args) {
   }
   const entry = {
     ts: nowISO(),
-    loop_id: activeLoop()?.id || 'legacy',
+    loop_id: task.version ? task.loop_id : activeLoop()?.id || 'legacy',
     task: taskId,
     agent,
     agent_id: agent,
@@ -4174,6 +4266,7 @@ function seedCycleFromLoop(loop, args) {
   }), 'utf8');
 }
 function cmdLoopRunAuto(args) {
+  if (versionMode() && !['open', 'frozen'].includes(openVersion()?.state)) versionRefusal('V8', 'An open version is required; run pb version new');
   const loop = activeLoop();
   if (!loop) {
     console.error('No active loop. Start one with `pb loop new` before running auto.');
@@ -4200,7 +4293,7 @@ function cmdLoopRunAuto(args) {
   console.log(`\nStarting autonomous run for [${loop.id}] (max-tasks=${maxTasks === Infinity ? 'unlimited' : maxTasks}, retry=${retry}${defer ? ', defer-blocked' : ''})${dryRun ? ' [DRY RUN]' : ''}\n`);
   while (tasksCompleted < maxTasks) {
     const tasks = backlogTasks();
-    const todo = tasks.filter((t) => t.status === 'todo');
+    const todo = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t));
     // Same two gates the interactive claim path applies: dependencies AND layer
     // gates. An autonomous run must not be the one path that can jump a layer.
     const autoPlan = computeLayerPlan({ checkGates: true, allTasks: tasks, persistGates: !dryRun });
@@ -4356,6 +4449,8 @@ function cmdLoopRunAuto(args) {
 
 function cmdLoop(args) {
   const sub = args._[0] || 'status';
+  if (sub === 'new' && versionMode()) versionRefusal('V1', 'This playbook uses versions; use pb version new');
+  if (sub === 'close' && activeLoop()?.version) versionRefusal('V6', 'Use pb version close so stop checks and explicit carry/drop are enforced');
   if (sub === 'new') {
     const state = readLoops();
     const active = state.active ? state.loops.find((l) => l.id === state.active) : null;
@@ -4510,6 +4605,116 @@ function cmdLoop(args) {
 //  learn — structured user/agent reflection. Raw lessons stay in lessons.ndjson;
 //  durable rules, repair tasks, and skills are explicit promotions.
 // ============================================================================
+function cmdVersion(args) {
+  const sub = args._[0] || 'list';
+  if (sub === 'list') {
+    const versions = readLoops().loops.filter(l => l.version).map(l => ({
+      ...l, task_counts: backlogTasks().filter(t => t.version === l.version).reduce((a, t) => { a[t.disposition === 'dropped' ? 'dropped' : t.status] = (a[t.disposition === 'dropped' ? 'dropped' : t.status] || 0) + 1; return a; }, {}),
+    }));
+    if (args.json) return printJson({ schema: 'agent-playbook.versions.v1', versions });
+    for (const v of versions) console.log(`${v.version} · ${v.title || v.goal} · ${v.state} · ${v.id}`);
+    return;
+  }
+  if (!['new', 'open', 'freeze', 'close', 'carry', 'drop'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|list');
+  const agent = resolveAgentId(args);
+  let result;
+  try {
+    versionInTxn = true;
+    result = withStateTxn((draft, ctx) => {
+      const state = readLoops();
+      let v = openVersion(state);
+      const event = (version, active) => {
+        appendJournal({ seq: ctx.seq, ts: nowISO(), task: `version:${version.id}`, loop_id: version.id,
+          agent, action: 'version', status: 'event', checks: 'none', version: version.version,
+          version_record: version, active_loop: active, notes: `Version ${version.version}: ${version.state}` });
+        writeLoops(state);
+      };
+      if (sub === 'new') {
+        const name = typeof args.name === 'string' ? args.name.trim() : '';
+        const checks = (Array.isArray(args['stop-check']) ? args['stop-check'] : [args['stop-check']]).filter(c => typeof c === 'string' && c.trim()).map(c => c.trim());
+        if (!name || typeof args.goal !== 'string' || !args.goal.trim() || !checks.length) versionRefusal('V5', 'Provide --name, --goal and at least one executable --stop-check');
+        if (findVersion(name, state)) versionRefusal('V1', `Version ${name} already exists`);
+        if (!args.draft && (v || state.active)) versionRefusal('V1', 'Close the active version/legacy loop before opening another');
+        const loop = { id: nextLoopId(state), version: name, title: args.title || name, state: args.draft ? 'draft' : 'open',
+          status: args.draft ? 'draft' : 'active', goal: String(args.goal), stop: args.stop || String(args.goal), stop_checks: checks,
+          created_at: nowISO(), started_at: args.draft ? null : nowISO(), closed_at: null,
+          journal: { first_line: journalLineCount() + 1, last_line: null }, artifacts: null };
+        loop.artifacts = loopArtifactsRel(loop.id);
+        state.loops.push(loop);
+        if (!args.draft) state.active = loop.id;
+        event(loop, state.active);
+        if (!args.draft) seedCycleFromLoop(loop, { ...args, goal: loop.goal, stop: loop.stop });
+        return loop;
+      }
+      if (sub === 'open') {
+        if (v || state.active) versionRefusal('V1', 'Close the active version before opening the next draft');
+        v = findVersion(args.name || args._[1], state);
+        if (!v || v.state !== 'draft') versionRefusal('V1', 'Name an existing draft version with --name');
+        v.state = 'open'; v.status = 'active'; v.started_at = nowISO(); state.active = v.id;
+        event(v, v.id); seedCycleFromLoop(v, { ...args, goal: v.goal, stop: v.stop });
+        return v;
+      }
+      if (sub === 'carry' || sub === 'drop') {
+        const task = backlogTasks().find(t => t.id === args._[1]);
+        if (!task || !task.version) versionRefusal('V4', 'Name an existing versioned task');
+        const source = findVersion(task.version, state);
+        if (!source || source.state === 'closed') versionRefusal('V7', 'The source version is closed');
+        if (task.status === 'done' || task.disposition === 'dropped') versionRefusal('V6', 'Only unfinished, undisposed cards may be carried or dropped');
+        if (draft[task.id]?.claim_token || task.status === 'in_progress') versionRefusal('V6', 'Release the active claim before carrying or dropping its card');
+        const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+        if (sub === 'drop' && !reason) versionRefusal('V6', 'Dropping a task requires --reason');
+        const ts = nowISO();
+        const base = { ts, task: task.id, agent, action: sub, status: task.status, checks: 'none', notes: reason || `Carry ${task.id} forward`, reason };
+        ctx.draft = draft;
+        if (sub === 'drop') {
+          appendJournal({ ...base, seq: ctx.seq, loop_id: source.id, version: source.version });
+          applyTaskMutation(task.id, () => ({ disposition: 'dropped', drop_reason: reason, updated_at: ts }), ctx, agent);
+          return source;
+        }
+        const drafts = state.loops.filter(l => l.version && l.state === 'draft');
+        const target = args.to === 'next' ? (drafts.length === 1 ? drafts[0] : null) : findVersion(args.to, state);
+        if (!target || target.state !== 'draft' || target.id === source.id) versionRefusal('V4', 'Stage a unique next draft using pb version new --draft --name ... --goal ... --stop-check ...');
+        const relation = { from_version: source.version, to_version: target.version, from_loop: source.id, to_loop: target.id };
+        appendJournal({ ...base, ...relation, seq: ctx.seq, loop_id: source.id, version: source.version, carry_side: 'source' });
+        const nextCtx = { ...ctx, seq: ctx.seq + 1 };
+        appendJournal({ ...base, ...relation, seq: nextCtx.seq, loop_id: target.id, version: target.version, carry_side: 'destination' });
+        draft.__seq = nextCtx.seq;
+        applyTaskMutation(task.id, () => ({ version: target.version, loop_id: target.id, carried_from: source.version, updated_at: ts }), nextCtx, agent);
+        return target;
+      }
+      if (!v || !['open', 'frozen'].includes(v.state)) versionRefusal('V6', 'No open version; use pb version new');
+      if (sub === 'freeze') {
+        v.state = 'frozen'; v.frozen_at = nowISO(); event(v, state.active); return v;
+      }
+      const pending = backlogTasks().filter(t => t.version === v.version && t.status !== 'done' && t.disposition !== 'dropped');
+      if (pending.length) versionRefusal('V6', `Carry or drop every unfinished task before closing: ${pending.map(t => t.id).join(', ')}`);
+      const live = latestProcessRecords(v.id).filter(rec => rec.status !== 'stopped' && pidAlive(rec.pid));
+      if (live.length) versionRefusal('V6', `Stop tracked processes before closing: ${live.map(rec => rec.pid).join(', ')}`);
+      const checks = runChecks({ id: v.id, acceptance_checks: v.stop_checks });
+      if (!checks.length || checks.some(c => !c.ok)) {
+        printCheckResults(checks);
+        versionRefusal('V6', 'Version stop checks are unverified; fix their failure or limit before closing');
+      }
+      v.stop_result = { outcome: 'passed', at: nowISO(), commands: v.stop_checks };
+      const originallyBorn = new Set((readData(BACKLOG)?.tasks || []).filter(t => t.version === v.version).map(t => t.id));
+      const participated = new Set(readJournal().filter(row => row.loop_id === v.id && row.task).map(row => row.task));
+      v.task_snapshot = backlogTasks().filter(t => t.version === v.version || originallyBorn.has(t.id) || participated.has(t.id)).map(t =>
+        t.version === v.version ? t : { ...t, version: v.version, disposition: 'carried', carried_to: t.version });
+      v.phase_snapshot = readText(CYCLE);
+      v.state = 'closed'; v.status = 'done'; v.closed_at = nowISO();
+      v.journal = { ...v.journal, last_line: journalLineCount() + 1 };
+      state.active = null; event(v, null);
+      return v;
+    }, { agent });
+  } catch (err) {
+    if (err instanceof VersionRefused) process.exit(1);
+    if (!(err instanceof StateTxnBusy)) throw err;
+    console.error('Version state is busy; nothing was written. Retry after the current writer finishes.'); process.exit(1);
+  } finally { versionInTxn = false; }
+  if (args.json) return printJson({ schema: 'agent-playbook.version.v1', version: result });
+  console.log(`Version ${result.version}: ${result.state} (${result.id})`);
+}
+
 function cmdLearn(args) {
   if (args._[0] === 'status') {
     const lessons = readLessons();
@@ -5784,6 +5989,13 @@ function cmdHelp() {
                           When this agent is already executing a task, the task's journal spawn
                           row records origin_task=<that task>, so pb graph draws the spawn edge
                           from the card that created it instead of from start.
+    version new --name <name> --goal ".." --stop-check <cmd> [--stop-check <cmd>] [--draft]
+                          Open a version, or stage the next draft without opening it.
+    version open --name <draft> | freeze | close
+                          Close requires passing stop checks and explicit carry/drop of open work.
+    version carry <task> --to next|<draft> | drop <task> --reason ".."
+                          Carry preserves the card ID and records both source and destination.
+    version list [--json]  Version history (loops with a name, state, and stop checks).
     loop new [--goal ".."] [--stop ".."] [--from-lessons] [--fresh]  Open a durable loop epoch.
                           Default continues from the existing backlog. --fresh archives the
                           current backlog (nothing lost) and resets it to empty for a ground-up
@@ -5975,6 +6187,7 @@ if (isMainModule) {
   case 'report': cmdReport(args); break;
   case 'plan': cmdPlan(args); break;
   case 'loop': cmdLoop(args); break;
+  case 'version': cmdVersion(args); break;
   case 'learn': cmdLearn(args); break;
   case 'run': cmdRun(args); break;
   case 'ps': cmdPs(args); break;
