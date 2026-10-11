@@ -4230,8 +4230,16 @@ function cmdDecide(args) {
   // cannot see a person, but it can refuse the two writers that are certainly not one:
   // the agent that holds this task, and any writer carrying a claim token (an agent
   // mid-task — a token is minted by `pb next --claim`, and people do not hold one).
-  if (claim.status === 'in_progress' && claim.claimed_by && claim.claimed_by === agent) {
+  const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.trim().toLowerCase() === b.trim().toLowerCase();
+  if (claim.status === 'in_progress' && (same(claim.claimed_by, agent) || same(claim.agent_id, agent))) {
     console.error(`[${taskId}] is held by "${agent}", the writer of this decision. An agent cannot answer its own human gate. Nothing was written.`);
+    process.exit(1);
+  }
+  // a harness stamps these on every agent shell (adapters/opencode, the DSH plugin); a
+  // person deciding at a terminal or through the room has none of them
+  const agentShell = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID'].filter((k) => process.env[k]);
+  if (agentShell.length) {
+    console.error(`pb decide refuses an agent shell (${agentShell.join(', ')} set): decisions come from a person. Nothing was written.`);
     process.exit(1);
   }
   if (process.env.PB_CLAIM_TOKEN || args.token) {
