@@ -125,9 +125,9 @@
   },
   "local_edits": {
     "lib/flow-adapter.ts": {
-      "sha256": "da3c32106e3749d2fa852956643676a0c563ff920d65e9aa0bc444fffed5eeec",
-      "reason": "plan-20261010-035 decision write seam + 022 live-source labeling + 021 attach/steering, merged with agent/v2-room: createTask / forkTask / sendMessage / listHarnesses / ask (031, 034, 015)",
-      "recorded": "2026-10-11T17:28:43.594Z",
+      "sha256": "0f3b8021931f6ed5f8979abf3194cc061616a19092f1cfc7ec37f3a0d27da037",
+      "reason": "plan-20261010-035 decision write seam + 022 live-source labeling + 021 attach/steering, merged with agent/v2-room: createTask / forkTask / sendMessage / listHarnesses / ask (031, 034, 015); plan-20261010-040: createTask takes a kind (experiment forks, V4)",
+      "recorded": "2026-10-11T18:22:24.193Z",
       "superseded": [
         {
           "sha256": "0828537b950b2c3b4e60aea5d655f8ddc6ab5dc142979d1661efd1630c573c77",
@@ -156,13 +156,17 @@
         {
           "sha256": "989312a4b5c96db39f0a87184403eba812d69d902c2660ac900c90e3f7304a32",
           "reason": "plan-20261010-035 decision write seam merged with plan-20261010-022 live-source labeling and 021 attach/steering behavior"
+        },
+        {
+          "sha256": "da3c32106e3749d2fa852956643676a0c563ff920d65e9aa0bc444fffed5eeec",
+          "reason": "plan-20261010-035 decision write seam + 022 live-source labeling + 021 attach/steering, merged with agent/v2-room: createTask / forkTask / sendMessage / listHarnesses / ask (031, 034, 015)"
         }
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "b1673d015927bcf61c0056cb185b27ec172efba4a56476429fea78161dd3c38d",
-      "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask for the open card (034, 015); the legend is a screen overlay, readable after load at every zoom (006)",
-      "recorded": "2026-10-11T17:43:02.327Z",
+      "sha256": "64d0af9dca4ad9386bca0c20487f2fe64dcfab722219ede3a8b5144f39ef6099",
+      "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask (034, 015); legend as screen overlay (006); plan-20261010-040: changed-card ids from the host, a past version is read-only with Fork into the open version (S7)",
+      "recorded": "2026-10-11T18:22:24.110Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -215,6 +219,10 @@
         {
           "sha256": "2944633e526e98c9ce2222c16ca0ffde061874ace2662843675e335f7da31d3a",
           "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering feedback, merged with agent/v2-room: Escape order (text box, + menu, inbox, open card), harness list and ask for the open card (034, 015)"
+        },
+        {
+          "sha256": "b1673d015927bcf61c0056cb185b27ec172efba4a56476429fea78161dd3c38d",
+          "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask for the open card (034, 015); the legend is a screen overlay, readable after load at every zoom (006)"
         }
       ]
     },
@@ -249,9 +257,9 @@
       ]
     },
     "components/stage/FlowCards.tsx": {
-      "sha256": "4f4f970265d0067d7c175b93a0a85a392388ae7986225ec04fdace6a9e709f9a",
-      "reason": "plan-20261010-030/031/034 (v2): the five-slot face, data-live, + on every card; the card is keyboard-focusable and Enter/Space opens it (A1)",
-      "recorded": "2026-10-11T08:00:55.872Z",
+      "sha256": "96a85ad510e5fff8022b3b516bea4a8834a07059085564e0f8c3dc3344635eac",
+      "reason": "plan-20261010-030/031/034 (v2): the five-slot face, data-live, + on every card; keyboard-focusable, Enter/Space opens it (A1); plan-20261010-040: a card that moved since the last refresh glows once, a carried card says where it came from (V5)",
+      "recorded": "2026-10-11T18:22:24.033Z",
       "superseded": [
         {
           "sha256": "b7ffdddba6b596037b4c5935e69279476bf6eb88ccedfc0e38ea0713de04f315",
@@ -272,6 +280,10 @@
         {
           "sha256": "64b8077cffb2aded91d8f1aca9b7186e3cf699266fb88daddedcac66656666f2",
           "reason": "plan-20261010-030/031 (v2): the five-slot face from lib/flow-face.ts, data-live, sweep/beacon only when live (F1), unproven done neutral (C4); every task card carries the + (J1)"
+        },
+        {
+          "sha256": "4f4f970265d0067d7c175b93a0a85a392388ae7986225ec04fdace6a9e709f9a",
+          "reason": "plan-20261010-030/031/034 (v2): the five-slot face, data-live, + on every card; the card is keyboard-focusable and Enter/Space opens it (A1)"
         }
       ]
     },
@@ -361,9 +373,9 @@
       "recorded": "2026-10-11T03:20:37.780Z"
     },
     "lib/flow-types.ts": {
-      "sha256": "319c3349efa9c95037f07d2b59bf0e6d655b923cceeef7fed31b161ed164e3d8",
-      "reason": "plan-20261010-030/031/034/008 (v2) merged with main: headline, now, live, human, check_names, journal summary/intent; layers[] gate_result incl. timeout/output-limit; node kinds stack and draft",
-      "recorded": "2026-10-11T17:28:44.048Z",
+      "sha256": "9890e2db95f89281c26b3a3e8b17289b45ac93bf18472b6aba6fe702b5bc7fc5",
+      "reason": "plan-20261010-030/031/034/008 (v2) merged with main: headline, now, live, human, check_names, journal summary/intent; layers[] gate_result; node kinds stack and draft; plan-20261010-040: graph version, node version/task_kind/carried_from/disposition, StateProjection, VersionHistory",
+      "recorded": "2026-10-11T18:23:34.563Z",
       "superseded": [
         {
           "sha256": "012a4f1a3ba99b14bb1028155fc845e2353114c4e69dc7b7bb70e7d1c21dc00e",
@@ -376,13 +388,27 @@
         {
           "sha256": "b8e0d8481ab4c6cd6400fd006157f14b838fb1ac46ccedfafb0988ac4c976064",
           "reason": "plan-20261010-030/031/034 (v2): headline, now, live, human (+ decided, sources), check_names, journal summary/intent; layers[]; node kinds stack and draft"
+        },
+        {
+          "sha256": "319c3349efa9c95037f07d2b59bf0e6d655b923cceeef7fed31b161ed164e3d8",
+          "reason": "plan-20261010-030/031/034/008 (v2) merged with main: headline, now, live, human, check_names, journal summary/intent; layers[] gate_result incl. timeout/output-limit; node kinds stack and draft"
+        },
+        {
+          "sha256": "b498cd7db2ce314fd2150fe4537d930a7a32fed5169b1366032c2120053ca26c",
+          "reason": "plan-20261010-030/031/034/008 (v2) merged with main: headline, now, live, human, check_names, journal summary/intent; layers[] gate_result; node kinds stack and draft; plan-20261010-040: graph version, node version/task_kind/carried_from/disposition, StateProjection, VersionHistory"
         }
       ]
     },
     "lib/flow-view.ts": {
-      "sha256": "091076140de023f5064a8c6f85864e40ae0d9dc5216c7506b6cbb2a18eb1c763",
-      "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): the view context carries reducedMotion, read once by the room",
-      "recorded": "2026-10-11T03:20:37.927Z"
+      "sha256": "d4c1452ca93634699cc184a3cfa0efa9672246f972ed99bacee86a7af3e0d0e4",
+      "reason": "plan-20261010-030 (v2 card face): the view context carries reducedMotion, read once by the room; plan-20261010-040: and the ids of cards that moved since the last refresh (S2)",
+      "recorded": "2026-10-11T18:22:24.342Z",
+      "superseded": [
+        {
+          "sha256": "091076140de023f5064a8c6f85864e40ae0d9dc5216c7506b6cbb2a18eb1c763",
+          "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): the view context carries reducedMotion, read once by the room"
+        }
+      ]
     },
     "lib/flow-projection.ts": {
       "sha256": "3e38bd71f4c45988e9ea0cac647b6f2512ce5136fc6139ebe6cf599e219276e9",

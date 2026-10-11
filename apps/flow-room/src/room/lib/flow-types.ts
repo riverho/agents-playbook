@@ -287,6 +287,12 @@ export interface FlowNode {
   live_detail?: { live: boolean; why: string; last_row_age_s: number | null; window_s: number };
   /** v2 (D17): the question a person is asked, when the task declares one. */
   human?: FlowHumanAsk | null;
+  /** D23: the version the task belongs to, its kind (feature|fix|chore|experiment), and,
+   *  for a carried card, the version it came from (V5) and what happened to it there. */
+  version?: string | null;
+  task_kind?: string | null;
+  carried_from?: string | null;
+  disposition?: string | null;
   /** v2 (D16): a human name per acceptance check, index for index; fallback is the script name. */
   check_names?: string[];
   headline_source?: string;
@@ -414,6 +420,53 @@ export interface FlowGraph {
    * labels it as such: only the live snapshot or `pb graph --json` is this repo.
    */
   sample?: boolean;
+  /** D23: the version this graph draws (pb graph --version); null/absent without versions. */
+  version?: FlowVersionInfo | null;
   /** Where the payload came from — shown in the room's source chip. */
   source?: string;
+}
+
+// ── D23–D26: versions, the state bar and history ──────────────────────────────
+export interface FlowVersionInfo {
+  id: string;
+  version: string | null;
+  title: string;
+  state: "draft" | "open" | "frozen" | "closing" | "closed" | string;
+  goal: string | null;
+  stop_checks: string[];
+  stop_result?: { outcome: string; at: string } | null;
+  opened_at?: string | null;
+  /** pb version list sends the raw record, where the opening date is started_at. */
+  started_at?: string | null;
+  closed_at?: string | null;
+  /** V7 / S7: a closed version is history. */
+  read_only?: boolean;
+  /** No versions: the active loop shown as one unnamed version. */
+  unnamed?: boolean;
+  legacy?: boolean;
+  stop?: string | null;
+  task_counts?: Record<string, number>;
+}
+export interface StateProjection {
+  schema: string;
+  journal_seq: number;
+  change_token: string;
+  version: FlowVersionInfo | null;
+  phase: { phase: number | null; goal: string | null } | null;
+  orchestrator: {
+    configured: boolean;
+    state: string;
+    note?: string;
+    reason?: string | null;
+    every_minutes?: number;
+    next_tick_due?: string | null;
+    last_tick: { seq: number | null; ts: string; summary: string } | null;
+  };
+  counts: { todo: number; in_progress: number; blocked: number; done: number; needs_you: number; stale: number };
+  stale_after_minutes: number;
+}
+export interface VersionHistory {
+  schema: string;
+  versions: FlowVersionInfo[];
+  legacy_loops?: FlowVersionInfo[];
 }

@@ -23,6 +23,8 @@ export interface FlowViewState {
    * re-rendered every edge at once and crashed React (error #185).
    */
   reducedMotion?: boolean;
+  /** Cards that moved since the last refresh: they glow once (S2 — you see what changed). */
+  changedIds?: string[];
 }
 
 export const FlowViewContext = createContext<FlowViewState>({ steeredIds: [] });

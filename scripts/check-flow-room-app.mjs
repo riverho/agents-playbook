@@ -16,6 +16,7 @@
 //    tests       npm --prefix apps/flow-room test     geometry, legend budget, honesty rules
 //    build       npm --prefix apps/flow-room run build the dist the browser step serves
 //    browser     scripts/check-room-browser.mjs       T3 (>= 9px at every zoom), F4 reduced motion, G5 beacons
+//    versions    scripts/check-room-versions.mjs      S1-S8: state bar, refresh, History, one version per graph
 //
 //  The browser render (scripts/check-app-render.mjs) is not here: it draws the
 //  playbook it runs in, and a worker worktree has no backlog (memory/ is gitignored),
@@ -39,6 +40,7 @@ const STEPS = [
   ['tests', 'npm', ['--prefix', 'apps/flow-room', 'test']],
   ['build', 'npm', ['--prefix', 'apps/flow-room', 'run', 'build']],
   ['browser', process.execPath, ['scripts/check-room-browser.mjs']],
+  ['versions', process.execPath, ['scripts/check-room-versions.mjs']],
   ['stack-proof', process.execPath, ['scripts/check-stack-proof.mjs']],
 ];
 

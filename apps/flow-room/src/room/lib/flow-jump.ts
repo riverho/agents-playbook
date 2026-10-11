@@ -37,8 +37,13 @@ export interface FlowJump {
   followUpBand(taskId: string): string;
   /** Declared bands take `--layer`; derived ones do not. */
   isDeclared(band: string): boolean;
-  /** True when the room is reading a snapshot or a sample: Create would write nothing. */
+  /** True when the room is reading a snapshot, a sample or a past version: Create would write nothing. */
   readOnly: boolean;
+  /** S7: the version label when the room is showing a PAST version (read-only history);
+   *  null otherwise. Its cards offer only "Fork into the open version" and comments. */
+  pastVersion: string | null;
+  /** S7 / V4: an experiment in the open version that follows this past card. */
+  forkIntoOpen(taskId: string): Promise<CreateOutcome>;
 }
 
 const noop = () => undefined;
@@ -55,6 +60,8 @@ export const FlowJumpContext = createContext<FlowJump>({
   followUpBand: () => "",
   isDeclared: () => false,
   readOnly: true,
+  pastVersion: null,
+  forkIntoOpen: async () => ({ ok: false, note: "the room is not mounted" }),
 });
 
 export function useFlowJump(): FlowJump {

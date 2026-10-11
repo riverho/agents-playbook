@@ -20,7 +20,7 @@
 
 import { createPbGraphAdapter, type FlowAdapter, type FlowSteeringMode } from "@/lib/flow-adapter";
 import { steeringPlan } from "@/lib/flow-derive";
-import type { FlowGraph, FlowNode } from "@/lib/flow-types";
+import type { FlowGraph, FlowNode , StateProjection, VersionHistory } from "@/lib/flow-types";
 import type { DecisionRow } from "@/lib/flow-decisions";
 
 const CSRF_HEADER = { "x-pb-ui": "1", "content-type": "application/json" } as const;
@@ -47,8 +47,9 @@ export async function probeEngine(apiBase = ""): Promise<Probe> {
 }
 
 /** `pb graph --json`, through the server. Throws with the engine's own words on refusal. */
-export async function loadGraph(apiBase = ""): Promise<FlowGraph> {
-  const res = await fetch(`${apiBase}/api/graph`, { headers: { accept: "application/json" } });
+export async function loadGraph(apiBase = "", version?: string | null): Promise<FlowGraph> {
+  const q = version ? `?version=${encodeURIComponent(version)}` : "";
+  const res = await fetch(`${apiBase}/api/graph${q}`, { headers: { accept: "application/json" } });
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as { error?: string; detail?: string } | null;
     throw new Error(body?.detail ?? body?.error ?? `pb graph failed (${res.status})`);
@@ -66,8 +67,8 @@ export async function loadGraph(apiBase = ""): Promise<FlowGraph> {
  * Here each selected card becomes one `pb comment` through the server — a real journal row,
  * or a refusal reported in the adapter's own words.
  */
-export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
-  const graph = await loadGraph(apiBase);
+export async function liveAdapter(apiBase = "", version?: string | null): Promise<FlowAdapter> {
+  const graph = await loadGraph(apiBase, version);
   const base = createPbGraphAdapter(() => graph);
   return {
     ...base,
@@ -89,9 +90,9 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
         return { ok: false, note: err instanceof Error ? err.message : String(err) };
       }
     },
-    createTask: async ({ goal, from, layer }) => {
+    createTask: async ({ goal, from, layer, kind }) => {
       try {
-        const r = await fork(goal, from, undefined, apiBase, layer);
+        const r = await fork(goal, from, undefined, apiBase, layer, kind);
         return { ok: r.ok, task: r.task, note: r.task ? `created ${r.task} — refresh to see it in its band` : "created" };
       } catch (err) {
         return { ok: false, note: err instanceof Error ? err.message : String(err) };
@@ -222,8 +223,26 @@ export const steer = (tasks: string[], text: string, goal?: string, apiBase = ""
   }>("/api/steer", { tasks, text, goal }, apiBase);
 
 /** A new task, linked at birth with `pb plan --dep` so the graph shows the relation. */
-export const fork = (goal: string, from?: string, check?: string, apiBase = "", layer?: string) =>
-  post<{ ok: boolean; task: string | null }>("/api/fork", { goal, from, check, layer }, apiBase);
+export const fork = (goal: string, from?: string, check?: string, apiBase = "", layer?: string, kind?: string) =>
+  post<{ ok: boolean; task: string | null }>("/api/fork", { goal, from, check, layer, kind }, apiBase);
+
+// ── D25 / D26: the state bar's projection and the History page's data ─────────
+/** The state projection, or null when the server says nothing changed since `since` (304, S4). */
+export async function loadState(apiBase = "", since?: string | null): Promise<StateProjection | null> {
+  const q = since ? `?since=${encodeURIComponent(since)}` : "";
+  const res = await fetch(`${apiBase}/api/state${q}`, { headers: { accept: "application/json" }, cache: "no-store" });
+  if (res.status === 304) return null;
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string; detail?: string } | null;
+    throw new Error(body?.detail ?? body?.error ?? `pb state failed (${res.status})`);
+  }
+  return (await res.json()) as StateProjection;
+}
+export async function loadHistory(apiBase = ""): Promise<VersionHistory> {
+  const res = await fetch(`${apiBase}/api/history`, { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(`pb version list failed (${res.status})`);
+  return (await res.json()) as VersionHistory;
+}
 
 /** A worker slot for a card: `pb worker create <task> --execute` (D22 fork). */
 export const workerCreate = (task: string, apiBase = "") =>

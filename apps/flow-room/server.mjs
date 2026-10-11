@@ -389,6 +389,11 @@ async function serveApi(req, res, url) {
     if (body.from) argv.push('--dep', String(body.from));
     if (body.check) argv.push('--check', String(body.check));
     if (body.layer) argv.push('--layer', String(body.layer));
+    // a fork of a past version's card enters the open version as an experiment (V4, S7)
+    if (body.kind !== undefined && body.kind !== null && body.kind !== '') {
+      if (!['feature', 'fix', 'chore', 'experiment'].includes(String(body.kind))) return json(res, 400, { error: 'kind must be feature, fix, chore or experiment' });
+      argv.push('--kind', String(body.kind));
+    }
     const r = await runPb(ROOT, argv);
     if (r.code !== 0) {
       return json(res, 422, { error: 'pb plan refused', detail: r.stderr.trim() || r.stdout.trim() });

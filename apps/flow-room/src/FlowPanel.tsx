@@ -1,13 +1,21 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import FlowRoom from "@/components/stage/FlowRoom";
+import { FlowHistory, FlowStateBar } from "@/components/stage/FlowStateBar";
 import { LIVE_SNAPSHOT_ADAPTER, type FlowAdapter } from "@/lib/flow-adapter";
+import type { FlowGraph, StateProjection } from "@/lib/flow-types";
+import { changedCards, createPoller, readRefreshPref, writeRefreshPref, type Poller, type RefreshMinutes } from "@/lib/flow-refresh";
 
 /** The one-word source claim, taken from the adapter's own label ("live …" / "snapshot …"). */
 function sourceWord(adapter: FlowAdapter): string {
   if (adapter.kind === "sample") return "sample";
   return adapter.label.split(" ·")[0];
 }
-import { liveAdapter, probeEngine } from "./flow-api";
+import { liveAdapter, loadHistory, loadState, probeEngine } from "./flow-api";
+
+/** This browser's storage, or null where touching it throws (a sandboxed frame, blocked site data). */
+function browserStorage(): Storage | null {
+  try { return window.localStorage; } catch { return null; }
+}
 
 /**
  * The Flow room's host panel — the one place that decides what the room is looking at.
@@ -147,7 +155,7 @@ export default function FlowPanel({ apiBase = "", showFooter = true }: FlowPanel
 
   return (
     <div style={{ height: "100%", minHeight: "220px", display: "flex", flexDirection: "column" }}>
-      <FlowRoom adapter={state.adapter} />
+      <LiveRoom apiBase={apiBase} initial={state.adapter} />
       {showFooter && (
         <div
           style={{
@@ -167,5 +175,119 @@ export default function FlowPanel({ apiBase = "", showFooter = true }: FlowPanel
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The live room with its state bar (D25). It owns the refresh: every 1/5/15 min or off (S2),
+ * paused while the tab is hidden, asking /api/state with the last change token so an
+ * unchanged journal is one 304 (S4). Only a CHANGED token re-reads the graph; the cards that
+ * moved glow once. A failed refresh keeps the last good graph and says why. Every request
+ * here is a GET: refresh adds no write path (S3).
+ */
+function LiveRoom({ apiBase, initial }: { apiBase: string; initial: FlowAdapter }) {
+  const [adapter, setAdapter] = useState(initial);
+  const [proj, setProj] = useState<StateProjection | null>(null);
+  const [lastOkAt, setLastOkAt] = useState<number | null>(() => Date.now());
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [changed, setChanged] = useState<string[]>([]);
+  const [minutes, setMinutes] = useState<RefreshMinutes>(() => readRefreshPref(browserStorage()));
+  const [now, setNow] = useState(() => Date.now());
+  const [showHistory, setShowHistory] = useState(false);
+  // S6: null = the open version (the engine's default); a label = a version picked in History
+  const [picked, setPicked] = useState<string | null>(null);
+  const token = useRef<string | null>(null);
+  const graphRef = useRef<FlowGraph>(initial.load());
+  const pickedRef = useRef<string | null>(null);
+  const busy = useRef(false);
+
+  const reread = useCallback(async (version: string | null, glow: boolean) => {
+    const next = await liveAdapter(apiBase, version);
+    const after = next.load();
+    setChanged(glow ? changedCards(graphRef.current, after) : []);
+    graphRef.current = after;
+    setAdapter(next);
+  }, [apiBase]);
+
+  const poll = useCallback(async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setRefreshing(true);
+    try {
+      const s = await loadState(apiBase, token.current);
+      if (s) {
+        setProj(s);
+        if (s.change_token !== token.current) {
+          const first = token.current === null;
+          token.current = s.change_token;
+          if (!first) await reread(pickedRef.current, true);
+        }
+      }
+      setLastOkAt(Date.now());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      busy.current = false;
+      setRefreshing(false);
+      setNow(Date.now());
+    }
+  }, [apiBase, reread]);
+
+  const poller = useRef<Poller | null>(null);
+  useEffect(() => {
+    void poll(); // the state bar's first read; the graph is already the one the probe loaded
+    const p = createPoller(readRefreshPref(browserStorage()), {
+      poll: () => void poll(),
+      isHidden: () => document.visibilityState === "hidden",
+      setTimer: (fn, ms) => window.setTimeout(fn, ms),
+      clearTimer: id => window.clearTimeout(id as number),
+      clock: () => Date.now(),
+    });
+    poller.current = p;
+    const onVis = () => p.visibilityChanged();
+    document.addEventListener("visibilitychange", onVis);
+    const clock = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => { p.stop(); document.removeEventListener("visibilitychange", onVis); window.clearInterval(clock); poller.current = null; };
+  }, [poll]);
+
+  const changeMinutes = (m: RefreshMinutes) => {
+    setMinutes(m);
+    writeRefreshPref(browserStorage(), m);
+    poller.current?.setMinutes(m);
+  };
+  const pick = async (version: string | null) => {
+    setShowHistory(false);
+    pickedRef.current = version;
+    setPicked(version);
+    try { await reread(version, false); setError(null); }
+    catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+  };
+  const shown = adapter.load().version ?? proj?.version ?? null;
+  const history = useCallback(() => loadHistory(apiBase), [apiBase]);
+
+  return (
+    <>
+      <FlowStateBar
+        state={proj}
+        shown={shown}
+        lastOkAt={lastOkAt}
+        now={now}
+        minutes={minutes}
+        onMinutes={changeMinutes}
+        onRefresh={() => poller.current?.now()}
+        refreshing={refreshing}
+        error={error}
+        onHistory={() => setShowHistory(true)}
+        onBackToOpen={picked ? () => void pick(null) : undefined}
+      />
+      <div style={{ flex: "1 1 0", minHeight: 0, display: "flex", flexDirection: "column", position: "relative" }}>
+        <FlowRoom adapter={adapter} changed={changed} />
+        {showHistory && (
+          <FlowHistory load={history} current={shown?.version ?? null} onPick={v => void pick(v)} onClose={() => setShowHistory(false)} />
+        )}
+      </div>
+    </>
   );
 }

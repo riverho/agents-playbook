@@ -47,13 +47,16 @@ export function FlowBandCard({ data }: NodeProps<FlowBandNode>) {
           {open} open{b.live ? ` · ${b.live} working` : ""}{b.needsYou ? ` · ${b.needsYou} need you` : ""}
         </span>
       </div>
-      <button
-        type="button"
-        className="flow-bandplus nodrag nopan"
-        onClick={() => jump.addDraft("card", b.id)}
-      >
-        <Plus size={16} aria-hidden /> Add a card to {b.id}
-      </button>
+      {/* S7: a past version takes no new cards */}
+      {!jump.pastVersion && (
+        <button
+          type="button"
+          className="flow-bandplus nodrag nopan"
+          onClick={() => jump.addDraft("card", b.id)}
+        >
+          <Plus size={16} aria-hidden /> Add a card to {b.id}
+        </button>
+      )}
     </div>
   );
 }
@@ -182,6 +185,20 @@ export function FlowPlus({ node }: { node: FlowNode }) {
             <>
               <p className={`flow-draft__note${outcome.ok ? "" : " is-refused"}`} role="status">{outcome.note}</p>
               <button type="button" role="menuitem" onClick={close}><b>Close</b></button>
+            </>
+          ) : jump.pastVersion ? (
+            <>
+              {/* S7: history is read-only — the only way forward is a new card in the open version */}
+              <div className="flow-pop__h">{jump.pastVersion} is closed</div>
+              <button type="button" role="menuitem" className="flow-pop__go"
+                onClick={async () => setOutcome(await jump.forkIntoOpen(node.id))}>
+                <b><GitFork size={14} aria-hidden /> Fork into the open version</b>
+                <span>A new experiment card that follows this one · this card stays as it was</span>
+              </button>
+              <button type="button" role="menuitem" onClick={() => { jump.openCard(node.id); close(); }}>
+                <b><MessageSquare size={14} aria-hidden /> Comment</b>
+                <span>Opens the card; your comment goes in its journal</span>
+              </button>
             </>
           ) : confirmFork ? (
             <>

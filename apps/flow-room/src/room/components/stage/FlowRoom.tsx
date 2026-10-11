@@ -145,6 +145,8 @@ export interface FlowRoomProps {
   view?: string;
   query?: string;
   adapter?: FlowAdapter;
+  /** Ids of cards that moved since the host's last refresh: they glow once. */
+  changed?: string[];
 }
 
 /**
@@ -165,6 +167,7 @@ function FlowCanvas({
   view = "all",
   query = "",
   adapter,
+  changed,
 }: FlowRoomProps) {
   const reactFlow = useReactFlow();
   // The injected adapter wins (P3/tests); otherwise the room can flip between
@@ -228,8 +231,8 @@ function FlowCanvas({
   const multi = selection.length > 1;
   const reducedMotion = usePrefersReducedMotion();
   const viewState = useMemo(
-    () => ({ goalDiff, steeredIds, reducedMotion }),
-    [goalDiff, steeredIds, reducedMotion]
+    () => ({ goalDiff, steeredIds, reducedMotion, changedIds: changed }),
+    [goalDiff, steeredIds, reducedMotion, changed]
   );
 
   // The frame-3 summary card: view state, placed under the orchestrator.
@@ -271,6 +274,8 @@ function FlowCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastDraft]);
   const bands = layout.bands.map(b => b.band);
+  // S7: a past version is history — nothing in it is planned, claimed or followed up
+  const pastVersion = graph.version?.read_only ? (graph.version.version ?? graph.version.title) : null;
   const jump: FlowJump = useMemo(() => ({
     openPlus,
     setOpenPlus,
@@ -298,9 +303,15 @@ function FlowCanvas({
       return from ? nextBandId(bands, from) : bands[bands.length - 1]?.id ?? "L1";
     },
     isDeclared: band => bands.some(b => b.id === band && b.source === "declared"),
-    readOnly: !active.createTask,
+    readOnly: !active.createTask || !!pastVersion,
+    pastVersion,
+    forkIntoOpen: async id => {
+      if (!active.createTask) return { ok: false, note: "this view is a snapshot — nothing was written." };
+      const node = filtered.nodes.find(n => n.id === id);
+      return active.createTask({ goal: node?.headline ?? node?.title ?? id, from: id, kind: "experiment" });
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [openPlus, active, layout, filtered]);
+  }), [openPlus, active, layout, filtered, pastVersion]);
   const openNode = openId ? filtered.nodes.find(node => node.id === openId) : undefined;
 
   // A1: closing a card hands focus back to it, so a keyboard user is where they were
