@@ -272,9 +272,25 @@ try {
       await wait(400);
       const panel = document.querySelector('.flow-oc');
       const inPanel = !!panel && panel.contains(document.activeElement);
+      // Escape in a message box with text keeps the card AND the text; the next one closes
+      const ta = panel?.querySelector('textarea');
+      let keptDraft = false;
+      if (ta) {
+        const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        ta.focus(); set.call(ta, 'half a thought'); ta.dispatchEvent(new Event('input', { bubbles: true })); await wait(100);
+        ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait(300);
+        keptDraft = !!document.querySelector('.flow-oc') && document.querySelector('.flow-oc textarea')?.value === 'half a thought';
+      }
       document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       await wait(400);
-      return { focused, opened: !!panel, inPanel, closed: !document.querySelector('.flow-oc'), back: document.activeElement === card || document.activeElement?.dataset?.id === card.dataset.id };
+      const closed = !document.querySelector('.flow-oc');
+      const back = document.activeElement === card || document.activeElement?.dataset?.id === card.dataset.id;
+      // Escape closes an open + menu
+      const plus = card.querySelector('.flow-plus');
+      plus?.click(); await wait(250);
+      const menuOpen = !!document.querySelector('.flow-pop');
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); await wait(250);
+      return { focused, opened: !!panel, inPanel, keptDraft, closed, back, menuOpen, menuClosed: !document.querySelector('.flow-pop') };
     })()`);
     console.log(`  A1 keyboard: ${JSON.stringify(kb)}`);
     if (kb.error) problems.push(`A1: ${kb.error}`);
@@ -284,6 +300,8 @@ try {
       if (!kb.inPanel) problems.push('A1: opening a card does not move focus into it');
       if (!kb.closed) problems.push('A1: Escape does not close the open card');
       if (!kb.back) problems.push('A1: closing the card does not return focus to it');
+      if (!kb.keptDraft) problems.push('A1: Escape in a message box with text closed the card or lost the text');
+      if (!kb.menuOpen || !kb.menuClosed) problems.push(`A1: Escape does not close an open + menu (open ${kb.menuOpen}, closed after Escape ${kb.menuClosed})`);
     }
   }
 

@@ -139,9 +139,9 @@
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "b8ba8bf1ce12a816c98dacb25d682516bcbb9f24dab08b17857685f3bf7d8dfb",
-      "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view, jump-in, open card via adapter.sendMessage, presence strip; Escape closes the open card first and focus returns to the card (A1)",
-      "recorded": "2026-10-11T08:00:56.118Z",
+      "sha256": "09e847aba7fd4051e46b62d1597c3a237c79029a9118ebf8687a29494e30b7a4",
+      "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view and jump-in, open card, presence strip; Escape: a text box with text first, then a + menu, then the open card (focus back to the card), then the selection",
+      "recorded": "2026-10-11T08:15:57.538Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -170,6 +170,10 @@
         {
           "sha256": "b0d636ee12ef1d57a6e41ef102f7ef58124ca0ab667123b4baf9d84e14554057",
           "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view and jump-in, ?gate seam; the open card sends through adapter.sendMessage; the presence strip (M1)"
+        },
+        {
+          "sha256": "b8ba8bf1ce12a816c98dacb25d682516bcbb9f24dab08b17857685f3bf7d8dfb",
+          "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view, jump-in, open card via adapter.sendMessage, presence strip; Escape closes the open card first and focus returns to the card (A1)"
         }
       ]
     },

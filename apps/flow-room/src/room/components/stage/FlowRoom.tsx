@@ -303,6 +303,18 @@ function FlowCanvas({
 
   // Escape unwinds one level, the nearest first: the open card, then the selection.
   useStageEscape(useCallback(() => {
+    // a message or a draft being written is not thrown away by Escape: the first Escape
+    // only leaves the text box; the next one closes
+    const typing = document.activeElement as HTMLTextAreaElement | HTMLInputElement | null;
+    if (typing && (typing.tagName === "TEXTAREA" || typing.tagName === "INPUT") && typing.value.trim()) {
+      typing.blur();
+      return true;
+    }
+    // the nearest open thing first: a + menu, then the open card, then the selection
+    if (openPlus) {
+      setOpenPlus(null);
+      return true;
+    }
     if (openNode) {
       closeCard();
       return true;
@@ -313,7 +325,7 @@ function FlowCanvas({
       return true;
     }
     return false;
-  }, [selectedIds.length, openNode, setNodes, closeCard]));
+  }, [selectedIds.length, openNode, setNodes, closeCard, openPlus]));
 
   const runSteering = useCallback(
     async (mode: FlowSteeringMode) => {
