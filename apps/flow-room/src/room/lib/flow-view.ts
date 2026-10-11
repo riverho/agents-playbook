@@ -17,6 +17,12 @@ import type { FlowGoalDiff } from "./flow-types";
 export interface FlowViewState {
   goalDiff?: FlowGoalDiff;
   steeredIds: string[];
+  /**
+   * prefers-reduced-motion, read ONCE by the room and shared. Each edge used to subscribe
+   * to the media query itself; flipping the setting while the room was open then
+   * re-rendered every edge at once and crashed React (error #185).
+   */
+  reducedMotion?: boolean;
 }
 
 export const FlowViewContext = createContext<FlowViewState>({ steeredIds: [] });

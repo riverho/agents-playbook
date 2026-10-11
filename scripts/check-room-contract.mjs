@@ -199,8 +199,9 @@ function ruleT5({ rules, ts }) {
   return p;
 }
 
-const TEXT_TOKEN = /^--(text-|ink|tone-|on-|you$|accent(-[a-z]+)?$)/;
-const SURFACE_TOKEN = /^--(surface-[0-9]|surface|bg)$/;
+const TEXT_TOKEN = /^--(text-|ink|tone-|on-|you$|accent(-(?!tint|wash)[a-z]+)?$)/;
+// bands (v2 layer view) are surfaces too: band headers sit on them
+const SURFACE_TOKEN = /^--(surface-[0-9]|surface|bg|band-[0-9x])$/;
 function ruleC1({ rules, ts }) {
   const p = [];
   const themes = [['light', tokensFrom(rules, lightRoot)]];
@@ -238,8 +239,12 @@ function ruleC1({ rules, ts }) {
   // Inline text colours in components: a token, never a literal (and never a literal fallback,
   // which is the colour a missing token silently falls back to).
   for (const f of ts) {
-    for (const m of f.text.matchAll(/(?<![\w-])color\s*:\s*["'`]([^"'`]+)["'`]/g)) {
-      if (!/^(var\(--[\w-]+\)|inherit|currentColor|transparent)$/i.test(m[1])) p.push(`${f.rel}: literal text colour ${m[1]} — use a measured token`);
+    // every quoted value in the expression counts, so a literal inside a ternary is caught too
+    // (a comma inside a quoted string does not end the expression: var(--x, #fff) is one value)
+    for (const m of f.text.matchAll(/(?<![\w-])color\s*:\s*((?:[^,}\n"'`]|"[^"\n]*"|'[^'\n]*'|`[^`\n]*`)+)/g)) {
+      for (const q of m[1].matchAll(/["'`]([^"'`]+)["'`]/g)) {
+        if (/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i.test(q[1])) p.push(`${f.rel}: literal text colour ${q[1]} — use a measured token`);
+      }
     }
   }
   // A rule that paints its own background under a text token is measured on THAT background.
@@ -312,6 +317,8 @@ function ruleC5({ rules, ts }) {
   }
   const cards = ts.find((f) => /FlowCards\.tsx$/.test(f.rel));
   if (!cards || !/railAttrs\(/.test(cards.text)) p.push('FlowCards.tsx does not set the rail attributes through railAttrs(node)');
+  const insp = ts.find((f) => /FlowInspector\.tsx$/.test(f.rel));
+  if (insp && /flow-cycle/.test(insp.text) && !/railAttrs\(/.test(insp.text)) p.push('FlowInspector.tsx draws a rail without railAttrs(node)');
   return p;
 }
 
@@ -372,7 +379,8 @@ const BAD_EXTRA = {
        (s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'className="tracking-[0.2em]"' }] })],
   C1: [(s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ color: "#bbbbbb" }}' }] }),
        (s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ color: "var(--text-tertiary, #9a9590)" }}' }] }),
-       (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} :root { --accent-teal: #43b3a0; }`) })],
+       (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} :root { --accent-teal: #43b3a0; }`) }),
+       (s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ color: ok ? "#bbbbbb" : "var(--text-primary)" }}' }] })],
   C3: [(s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: '<span style={{ color: "var(--you)" }}/>' }] }),
        (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} .flow-card__title, .flow-hil { color: var(--you); }`) })],
   C5: [(s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} .flow-rail[data-done] i { background: var(--s6); }`) }),

@@ -204,7 +204,7 @@ async function serveApi(req, res, url) {
       ok: true,
       root: ROOT,
       engine: v ? v[1] : null,
-      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/fork'],
+      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/attach', '/api/fork', '/api/worker'],
     });
   }
 
@@ -238,11 +238,17 @@ async function serveApi(req, res, url) {
     if (!body || typeof body.task !== 'string' || typeof body.text !== 'string' || !body.text.trim()) {
       return json(res, 400, { error: 'expected { task: string, text: non-empty string }' });
     }
-    const r = await runPb(ROOT, ['comment', '--task', body.task, '--text', body.text]);
+    // M3: a person's message says why it was written; the engine stamps the intent
+    const intent = body.intent === undefined ? 'comment' : String(body.intent);
+    if (!['comment', 'steer', 'question'].includes(intent)) {
+      return json(res, 400, { error: 'intent must be comment, steer or question' });
+    }
+    const r = await runPb(ROOT, ['comment', '--task', body.task, '--text', body.text, '--intent', intent]);
     if (r.code !== 0) {
       return json(res, 422, { error: 'pb comment refused', task: body.task, detail: r.stderr.trim() || r.stdout.trim() });
     }
-    return json(res, 200, { ok: true, task: body.task, wrote: 'journal row (action: comment)' });
+    const seq = /\(seq (\d+)/.exec(r.stdout);
+    return json(res, 200, { ok: true, task: body.task, intent, seq: seq ? Number(seq[1]) : null, wrote: `journal row (action: comment, intent: ${intent})` });
   }
 
   if (path === '/api/steer' && req.method === 'POST') {
@@ -253,21 +259,27 @@ async function serveApi(req, res, url) {
     }
     const rows = [];
     for (const task of tasks) {
-      const r = await runPb(ROOT, ['comment', '--task', String(task), '--text', body.text]);
+      const r = await runPb(ROOT, ['comment', '--task', String(task), '--text', body.text, '--intent', 'steer']);
       rows.push({ task, ok: r.code === 0, detail: r.code === 0 ? undefined : r.stderr.trim() });
     }
-    // HONEST GAP: editing an OPEN cycle brief is not a pb primitive today
-    // (`pb cycle --new` opens a new phase; nothing edits the current one's stop).
-    // Rather than write memory/cycle.md from here — which invariant 5 forbids — the
-    // goal half of a steer is reported as not applied.
-    const goalApplied = false;
+    // The goal half of a steer edits the OPEN cycle brief's stop condition. That used to be
+    // impossible — `pb cycle --new` opens a phase and nothing edited the current one — so this
+    // hardcoded false and said so. `pb cycle --edit` is that primitive now, and a refusal from it
+    // is reported verbatim rather than as a silent no-op.
+    let goalApplied = false;
+    let goalNote;
+    if (body?.goal !== undefined && body?.goal !== null && String(body.goal).trim()) {
+      const stop = String(body.goal).trim();
+      if (stop.startsWith('-')) return json(res, 400, { error: 'a goal may not start with "-"' });
+      const g = await runPb(ROOT, ['cycle', '--edit', '--stop', stop]);
+      goalApplied = g.code === 0;
+      if (!goalApplied) goalNote = g.stderr.trim() || g.stdout.trim();
+    }
     return json(res, 200, {
-      ok: rows.every((r) => r.ok),
+      ok: rows.every((r) => r.ok) && (body?.goal ? goalApplied : true),
       rows,
       goal_applied: goalApplied,
-      goal_note: body?.goal
-        ? 'not applied: the engine has no primitive to edit an open cycle brief (pb cycle --new opens a new phase)'
-        : undefined,
+      goal_note: goalApplied ? undefined : goalNote,
     });
   }
 
@@ -276,9 +288,20 @@ async function serveApi(req, res, url) {
     if (typeof body?.goal !== 'string' || !body.goal.trim()) {
       return json(res, 400, { error: 'expected { goal: non-empty string, from?: task id, check?: command }' });
     }
-    const argv = ['plan', '--goal', body.goal];
+    // every value becomes an argument to pb: nothing may start with "-" (it would be read
+    // as a flag), and ids and layers must look like ids
+    const ID = /^[\w][\w.-]*$/;
+    if (body.goal.trim().startsWith('-')) return json(res, 400, { error: 'a goal may not start with "-"' });
+    for (const k of ['from', 'layer']) {
+      if (body[k] !== undefined && body[k] !== null && body[k] !== '' && !ID.test(String(body[k]))) {
+        return json(res, 400, { error: `${k} must be an id (letters, digits, . _ -), got ${JSON.stringify(body[k])}` });
+      }
+    }
+    if (body.check && String(body.check).trim().startsWith('-')) return json(res, 400, { error: 'a check may not start with "-"' });
+    const argv = ['plan', '--goal', body.goal.trim()];
     if (body.from) argv.push('--dep', String(body.from));
     if (body.check) argv.push('--check', String(body.check));
+    if (body.layer) argv.push('--layer', String(body.layer));
     const r = await runPb(ROOT, argv);
     if (r.code !== 0) {
       return json(res, 422, { error: 'pb plan refused', detail: r.stderr.trim() || r.stdout.trim() });
@@ -287,16 +310,52 @@ async function serveApi(req, res, url) {
     return json(res, 200, { ok: true, task: id ? id[1] : null, output: r.stdout.trim() });
   }
 
+  // v2 fork (D22): a worker slot for a card, through the engine's own command. The room
+  // never creates a worktree itself; pb worker create is atomic and refuses a taken slot.
+  if (path === '/api/worker' && req.method === 'POST') {
+    const body = await readBody(req);
+    if (typeof body?.task !== 'string' || !/^[\w.-]+$/.test(body.task)) {
+      return json(res, 400, { error: 'expected { task: task id }' });
+    }
+    // a fork is work in parallel on an OPEN card: a done card has nothing left to fork
+    const shown = await runPb(ROOT, ['task', 'show', body.task, '--json']);
+    if (shown.code !== 0) return json(res, 422, { error: 'pb task show refused', detail: shown.stderr.trim() || shown.stdout.trim() });
+    let status = null;
+    try { status = JSON.parse(shown.stdout)?.task?.status ?? null; } catch { /* not json */ }
+    if (status === 'done') return json(res, 409, { error: 'the card is done', detail: `[${body.task}] is done — there is nothing left to fork. Draft a follow-up instead.` });
+    const r = await runPb(ROOT, ['worker', 'create', body.task, '--agent', 'room', '--execute']);
+    if (r.code !== 0) {
+      return json(res, 422, { error: 'pb worker create refused', detail: r.stderr.trim() || r.stdout.trim() });
+    }
+    return json(res, 200, { ok: true, task: body.task, output: r.stdout.trim() });
+  }
+
   if (path === '/api/attach' && req.method === 'POST') {
-    // Deliberately not implemented rather than half-implemented: attaching a document
-    // means writing the task's `docs:` field, and no pb command does that yet. Writing
-    // memory/backlog.yaml from here would break invariant 5.
-    return json(res, 501, {
-      error: 'not implemented',
-      detail:
-        'attaching a document means setting a task\'s `docs:` field, and no `pb` command writes it yet. ' +
-        'The room will not edit memory/backlog.yaml directly (the engine owns state and its lock).',
-    });
+    // This used to answer 501, deliberately: attaching a document means writing a task's `docs:`
+    // field, no pb command wrote it, and the room must not edit memory/backlog.yaml itself
+    // (invariant 5). The primitive now exists — `pb attach` — so the route calls it and the room
+    // stops being unable to do something the engine can.
+    const body = await readBody(req);
+    if (typeof body?.task !== 'string' || typeof body?.path !== 'string' || !body.path.trim()) {
+      return json(res, 400, { error: 'expected { task: string, path: string (playbook-root-relative), label?: string }' });
+    }
+    const attachPath = body.path.trim();
+    if (attachPath.startsWith('-')) return json(res, 400, { error: 'a path may not start with "-"' });
+    const argv = ['attach', '--task', body.task, '--path', attachPath];
+    const label = body.label === undefined || body.label === null ? '' : String(body.label).trim();
+    if (label) {
+      if (label.startsWith('-')) return json(res, 400, { error: 'a label may not start with "-"' });
+      argv.push('--label', label);
+    }
+    const r = await runPb(ROOT, argv);
+    if (r.code !== 0) {
+      // The engine's refusal, verbatim: a path that is absolute or missing is refused there, and
+      // this route must not soften it into a success.
+      return json(res, 422, { error: 'pb attach refused', task: body.task, detail: (r.stderr.trim() || r.stdout.trim()) });
+    }
+    const line = r.stdout.trim().split('\n')[0];
+    const docs = /documents \((\d+)\)/.exec(r.stdout);
+    return json(res, 200, { ok: true, task: body.task, path: attachPath, count: docs ? Number(docs[1]) : null, wrote: line });
   }
 
   return json(res, 404, { error: `no route ${path}` });

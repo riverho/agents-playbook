@@ -42,8 +42,11 @@ export type FlowSteeringMode = "steer" | "comment" | "fork" | "attach";
 
 /** What a steering action wrote: journal rows, and at most one cycle-brief edit. */
 export interface FlowSteeringResult {
-  /** Append-only journal rows, one per selected card (`pb comment --task`). */
-  rows: { task: string; action: "comment"; text: string }[];
+  /**
+   * Append-only journal rows, one per selected card: `pb comment --task` for a comment or steer,
+   * `pb attach --task --path` (which also writes the card's `docs:`) for an attach.
+   */
+  rows: { task: string; action: "comment" | "attach"; text: string }[];
   /** The cycle-brief `stop` edit, as a diff for the end-goal card (frame 3). */
   goal_diff?: FlowGoalDiff;
   /** The dock's "steering will write" summary. */
@@ -81,6 +84,15 @@ export interface FlowAdapter {
     prompt: string,
     mode?: FlowSteeringMode
   ): FlowSteeringResult | Promise<FlowSteeringResult>;
+  /**
+   * v2 jump-in (D22, J3): turn a draft into a task through the engine (`pb plan`), or fork
+   * a card into a worker (`pb worker create`). Optional: a snapshot or a sample cannot
+   * write, and says so instead of pretending.
+   */
+  createTask?(req: { goal: string; from?: string; layer?: string }): Promise<{ ok: boolean; task?: string | null; note: string }>;
+  forkTask?(task: string): Promise<{ ok: boolean; note: string }>;
+  /** v2 (M3): one message on one card, with its intent — `pb comment --intent`. */
+  sendMessage?(task: string, text: string, intent: "comment" | "steer" | "question"): Promise<{ ok: boolean; note: string }>;
 }
 
 /**

@@ -70,35 +70,88 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
   const base = createPbGraphAdapter(() => graph);
   return {
     ...base,
+    sendMessage: async (task, text, intent) => {
+      try {
+        const r = await comment(task, text, apiBase, intent);
+        return { ok: r.ok, note: `Saved to the project journal${r.seq !== null ? ` (row ${r.seq})` : ""} as a ${intent === "steer" ? "change of direction" : intent}.` };
+      } catch (err) {
+        return { ok: false, note: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    createTask: async ({ goal, from, layer }) => {
+      try {
+        const r = await fork(goal, from, undefined, apiBase, layer);
+        return { ok: r.ok, task: r.task, note: r.task ? `created ${r.task} — refresh to see it in its band` : "created" };
+      } catch (err) {
+        return { ok: false, note: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    forkTask: async (task) => {
+      try {
+        const r = await workerCreate(task, apiBase);
+        return { ok: r.ok, note: r.output.split(String.fromCharCode(10)).map((l) => l.trim()).filter(Boolean).slice(-2).join(" · ") || `forked ${task}` };
+      } catch (err) {
+        return { ok: false, note: err instanceof Error ? err.message : String(err) };
+      }
+    },
     applySteering: async (selection: FlowNode[], prompt: string, mode: FlowSteeringMode = "steer") => {
       const tasks = selection.map((node) => node.id);
       const wrote = steeringPlan(selection);
 
       if (mode === "attach") {
-        // No pb command writes a task's `docs:` yet, and the room will not edit
-        // memory/backlog.yaml itself. Say so rather than pretend (plan-20261010-021).
-        return {
-          rows: [],
-          wrote,
-          persisted: false,
-          note: "attach is not implemented: no `pb` command writes a task's docs: field yet",
-        };
+        // The prompt box holds the document's path, playbook-root-relative — that is what
+        // `pb attach --task <id> --path <path>` takes, and the engine refuses a path that is
+        // absolute or missing. One card per selection, as with a comment (plan-20261010-021).
+        const path = prompt.trim();
+        if (!path) {
+          return {
+            rows: [],
+            wrote,
+            persisted: false,
+            note: "attach needs a document path in the prompt box, relative to the playbook root",
+          };
+        }
+        try {
+          const results = await Promise.all(tasks.map((task) => attach(task, path, undefined, apiBase)));
+          const failed = results.filter((r) => !r.ok);
+          return {
+            rows: results.map((r) => ({ task: r.task, action: "attach" as const, text: `docs: + ${path}` })),
+            wrote,
+            persisted: failed.length === 0 && results.length > 0 && results.length === tasks.length,
+            note:
+              failed.length > 0
+                ? `pb attach refused ${failed.length} of ${tasks.length} card(s)`
+                : `attached ${path} to ${results.length} card(s)`,
+          };
+        } catch (err) {
+          return { rows: [], wrote, persisted: false, note: err instanceof Error ? err.message : String(err) };
+        }
       }
 
       try {
         const res = await steer(tasks, prompt, mode === "steer" ? prompt : undefined, apiBase);
         const ok = res.rows.filter((row) => row.ok);
         const failed = res.rows.filter((row) => !row.ok);
+        // A steer has TWO halves now: the journal rows and the brief's stop condition. The goal
+        // half used to be impossible, so `persisted` could ignore it; now a written comment with a
+        // refused goal edit must not report itself as fully persisted.
+        const goalRequested = mode === "steer";
+        const goalOk = !goalRequested || res.goal_applied === true;
+        const note =
+          failed.length > 0
+            ? `pb refused ${failed.length} of ${tasks.length}: ${failed
+                .map((row) => `${row.task} — ${row.detail ?? "refused"}`)
+                .join("; ")}`
+            : !goalOk
+              ? `the journal rows were written but the GOAL half was not applied: ${res.goal_note ?? "the engine refused the edit"}`
+              : res.goal_applied
+                ? "written: the journal rows and the open brief's stop condition"
+                : res.goal_note;
         return {
           rows: ok.map((row) => ({ task: row.task, action: "comment" as const, text: prompt })),
           wrote,
-          persisted: failed.length === 0 && ok.length === tasks.length,
-          note:
-            failed.length > 0
-              ? `pb refused ${failed.length} of ${tasks.length}: ${failed
-                  .map((row) => `${row.task} — ${row.detail ?? "refused"}`)
-                  .join("; ")}`
-              : res.goal_note,
+          persisted: failed.length === 0 && ok.length === tasks.length && goalOk,
+          note,
         };
       } catch (err) {
         return {
@@ -126,8 +179,8 @@ async function post<T>(route: string, payload: unknown, apiBase = ""): Promise<T
 }
 
 /** One journal row, written by `pb comment --task … --text …`. */
-export const comment = (task: string, text: string, apiBase = "") =>
-  post<{ ok: boolean; task: string; wrote: string }>("/api/comment", { task, text }, apiBase);
+export const comment = (task: string, text: string, apiBase = "", intent: "comment" | "steer" | "question" = "comment") =>
+  post<{ ok: boolean; task: string; wrote: string; seq: number | null }>("/api/comment", { task, text, intent }, apiBase);
 
 /** Comment on every selected card; the goal half is reported, never faked. */
 export const steer = (tasks: string[], text: string, goal?: string, apiBase = "") =>
@@ -139,5 +192,21 @@ export const steer = (tasks: string[], text: string, goal?: string, apiBase = ""
   }>("/api/steer", { tasks, text, goal }, apiBase);
 
 /** A new task, linked at birth with `pb plan --dep` so the graph shows the relation. */
-export const fork = (goal: string, from?: string, check?: string, apiBase = "") =>
-  post<{ ok: boolean; task: string | null }>("/api/fork", { goal, from, check }, apiBase);
+export const fork = (goal: string, from?: string, check?: string, apiBase = "", layer?: string) =>
+  post<{ ok: boolean; task: string | null }>("/api/fork", { goal, from, check, layer }, apiBase);
+
+/** A worker slot for a card: `pb worker create <task> --execute` (D22 fork). */
+export const workerCreate = (task: string, apiBase = "") =>
+  post<{ ok: boolean; task: string; output: string }>("/api/worker", { task }, apiBase);
+
+/**
+ * Attach a document to one card: `pb attach --task <id> --path <root-relative file>`.
+ * The path must be playbook-root-relative and must exist — the engine refuses otherwise, and the
+ * room must pass that refusal through rather than soften it into a write.
+ */
+export const attach = (task: string, path: string, label?: string, apiBase = "") =>
+  post<{ ok: boolean; task: string; path: string; count: number | null; wrote: string }>(
+    "/api/attach",
+    { task, path, label },
+    apiBase
+  );

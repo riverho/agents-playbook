@@ -124,6 +124,13 @@ try {
   check(/from env PB_MODE_CHECK_TIMEOUT_MS/.test(tight.out), 'the env limit source was not reported');
   check(!/FAIL/.test(tight.out.split('\n').find((l) => l.includes('[slow]')) ?? ''), 'the slow green check was called FAIL');
 
+  // a mode check whose tree kill FAILS says so next to its TIMEOUT (plan-20261010-042)
+  if (process.platform === 'win32') {
+    const noKill = pb(['mode', 'check'], { PB_MODE_CHECK_TIMEOUT_MS: '1000', PB_TASKKILL: join(tmpdir(), 'pb-no-such-dir', 'taskkill.exe') });
+    check(/TIMEOUT {2}\[slow\]/.test(noKill.out) && noKill.out.includes("WARNING: the check's process tree could NOT be killed"),
+      `a failed kill of a mode check was not reported:\n${noKill.out}`);
+  }
+
   const raised = pb(['mode', 'check'], { PB_MODE_CHECK_TIMEOUT_MS: '60000' });
   check(raised.code === 0, `raising the limit did not make the slow green check pass (exit ${raised.code}):\n${raised.out}`);
   check(/PASS {2}\[slow\]/.test(raised.out), 'the raised-limit run did not report PASS');

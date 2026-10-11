@@ -14,6 +14,8 @@
 //    decoupled   scripts/check-app-decoupled.mjs      no reach-back into Wenmei, no linked deps
 //    types       npm --prefix apps/flow-room run check
 //    tests       npm --prefix apps/flow-room test     geometry, legend budget, honesty rules
+//    build       npm --prefix apps/flow-room run build the dist the browser step serves
+//    browser     scripts/check-room-browser.mjs       T3 (>= 9px at every zoom), F4 reduced motion, G5 beacons
 //
 //  The browser render (scripts/check-app-render.mjs) is not here: it draws the
 //  playbook it runs in, and a worker worktree has no backlog (memory/ is gitignored),
@@ -35,6 +37,8 @@ const STEPS = [
   ['decoupled', process.execPath, ['scripts/check-app-decoupled.mjs']],
   ['types', 'npm', ['--prefix', 'apps/flow-room', 'run', 'check']],
   ['tests', 'npm', ['--prefix', 'apps/flow-room', 'test']],
+  ['build', 'npm', ['--prefix', 'apps/flow-room', 'run', 'build']],
+  ['browser', process.execPath, ['scripts/check-room-browser.mjs']],
 ];
 
 let failed = 0;

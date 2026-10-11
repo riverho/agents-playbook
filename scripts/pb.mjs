@@ -1087,7 +1087,7 @@ function evalLayerGate(gate) {
       runCommandSync(file, argv, { cwd: ROOT, stdio: 'pipe', timeout: 120000 });
       result = { ok: true, output: '' };
     } catch (e) {
-      result = { ok: false, output: [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim().split(/\r?\n/).slice(-8).join('\n') };
+      result = { ok: false, output: boundedTail([e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim()) };
     }
   }
   layerGateCache.set(gate, result);
@@ -1586,8 +1586,10 @@ const CHECK_LAUNCHER_SRC = [
   "const child = win ? spawn('cmd.exe', ['/d', '/c', file, ...argv], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })",
   "  : spawn(file, argv, { stdio: 'inherit', detached: true });",
   'let done = false;',
-  "const taskkill = require('path').join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');",
-  "const killTree = () => { try { if (win) execFileSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); else process.kill(-child.pid, 'SIGKILL'); } catch (e) { process.stderr.write('pb: could not kill the check process tree (pid ' + child.pid + '): ' + String((e && e.message) || e).split(String.fromCharCode(10))[0] + String.fromCharCode(10)); } };",
+  // PB_TASKKILL may only name a taskkill.exe (where it lives), never another program
+  "const tkOverride = process.env.PB_TASKKILL || '';",
+  "const taskkill = /(^|[\\\\/])taskkill[.]exe$/i.test(tkOverride) ? tkOverride : require('path').join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');",
+  "const killTree = () => { try { if (win) execFileSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); else process.kill(-child.pid, 'SIGKILL'); } catch (e) { const why = String((e && e.message) || e).split(String.fromCharCode(10))[0]; process.stderr.write('pb: could not kill the check process tree (pid ' + child.pid + '): ' + why + String.fromCharCode(10)); try { fs.appendFileSync(statusFile, String.fromCharCode(10) + 'kill-failed: pid ' + child.pid + ': ' + why); } catch (e2) {} } };",
   'const stop = (why, code) => { if (done) return; done = true; try { fs.writeFileSync(statusFile, why); } catch (e) {} killTree(); process.exit(code); };',
   "child.on('error', (e) => { process.stderr.write(String((e && e.message) || e) + String.fromCharCode(10)); process.exit(127); });",
   "const timer = setTimeout(() => stop('timeout', 124), limit);",
@@ -1619,14 +1621,21 @@ function runOneCheck(cmd, cwd, limit) {
     return { cmd, ok: true, elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput };
   } catch (e) {
     let status = '';
-    try { status = readFileSync(statusFile, 'utf8').trim(); } catch { /* no status: a plain exit */ }
+    let killFailed = null;
+    try {
+      // line 1 is the outcome; a later 'kill-failed:' line means the tree may still be running
+      const lines = readFileSync(statusFile, 'utf8').split(/\r?\n/);
+      status = (lines[0] || '').trim();
+      killFailed = (lines.find((l) => l.startsWith('kill-failed:')) || '').replace(/^kill-failed:\s*/, '') || null;
+    } catch { /* no status: a plain exit */ }
     const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
     return {
       cmd, ok: false,
       timedOut: status === 'timeout' || isCheckTimeout(e),
       overflow: status === 'output-limit' || isOutputOverflow(e),
+      kill_failed: killFailed,
       elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput,
-      output: out ? out.split(/\r?\n/).slice(-8).join('\n') : '',
+      output: out ? boundedTail(out) : '',
     };
   } finally {
     try { rmSync(statusFile, { force: true }); } catch { /* best effort */ }
@@ -1643,6 +1652,9 @@ function noVerdictDetail(results, kind, outcome) {
       elapsed_ms: r.elapsed_ms,
       limit_source: r.limit_source,
       ...(outcome === 'output-limit' ? { limit_bytes: r.max_output_bytes } : {}),
+      // a failed tree kill goes into the journal row, not only to the console: an
+      // autonomous run moves on, and this is the trace that something may still run
+      ...(r.kill_failed ? { kill_failed: r.kill_failed } : {}),
     }));
 }
 function timeoutDetail(results, kind = 'check') {
@@ -1654,16 +1666,48 @@ function overflowDetail(results, kind = 'check') {
 function warnCheckLimit(limit) {
   for (const w of limit.warnings || []) console.error(`  ⚠ ${w} — using ${limit.ms}ms from ${limit.source}.`);
 }
+// A kill that FAILED is not a detail: the engine has stopped waiting, but the check's
+// processes may still be running and writing. Say so next to the verdict, never only in
+// the check's own stderr (checker note on plan-20261010-026, seq 147).
+// The tail of a check's output that a report echoes: the last lines, AND at most this many
+// bytes — a red check that prints one 20 MiB line must not dump 20 MiB to the console.
+const ECHO_TAIL_LINES = 8;
+const ECHO_TAIL_BYTES = 4096;
+function boundedTail(text) {
+  const tail = String(text || '').split(/\r?\n/).slice(-ECHO_TAIL_LINES).join('\n');
+  if (Buffer.byteLength(tail) <= ECHO_TAIL_BYTES) return tail;
+  const cut = Buffer.from(tail).subarray(-ECHO_TAIL_BYTES).toString('utf8').replace(/^\uFFFD+/, '');
+  return `… [${Buffer.byteLength(tail) - Buffer.byteLength(cut)} earlier bytes not shown]${cut}`;
+}
+function printKillFailure(r) {
+  if (!r.kill_failed) return;
+  console.log(`        WARNING: the check's process tree could NOT be killed (${r.kill_failed}) — some of its processes may still be running. Find and stop them before trusting the next run.`);
+}
+// Each no-verdict outcome gets ITS remedy, and only its own: a pure output overflow must
+// not be told to raise a time limit. An overflow also says when it was cut — a check that
+// printed fast and then hung would only reveal its hang if the output bound were raised.
+function printLimitRemedies(timeouts, overflows) {
+  if (timeouts.length) {
+    console.error(`  TIMED OUT: limit ${timeouts[0].limit_ms}ms from ${timeouts[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
+  }
+  if (overflows.length) {
+    const o = overflows[0];
+    console.error(`  OUTPUT-LIMIT: bound ${o.max_output_bytes} bytes; make the check quieter (send its output to a file), or raise it with PB_CHECK_MAX_OUTPUT_BYTES=<bytes>.`);
+    console.error(`  It was cut after ${o.elapsed_ms}ms of a ${o.limit_ms}ms time limit: with a bigger bound it may still run on — and time out — if it is hanging.`);
+  }
+}
 function printResultOutcome(r, { okLabel, noun }) {
   if (r.ok) { console.log(`  ${okLabel}  ${r.cmd}`); return; }
   if (r.timedOut) {
     console.log(`  TIMEOUT  ${r.cmd}`);
     console.log(`        timed out after ${r.elapsed_ms}ms (limit ${r.limit_ms}ms from ${r.limit_source}, override with check_timeout_ms on the task or PB_CHECK_TIMEOUT_MS) — this is NOT a failing ${noun}.`);
+    printKillFailure(r);
     return;
   }
   if (r.overflow) {
     console.log(`  OUTPUT-LIMIT  ${r.cmd}`);
     console.log(`        the ${noun} produced more output than the runner accepts (limit ${r.max_output_bytes} bytes, override with PB_CHECK_MAX_OUTPUT_BYTES) — the exit code was never read, so this is NOT a failing ${noun}.`);
+    printKillFailure(r);
     return;
   }
   console.log(`  FAIL  ${r.cmd}`);
@@ -1741,11 +1785,13 @@ function printModeCheckResults(results) {
       console.log(`  TIMEOUT  [${r.id}] ${r.cmd}`);
       console.log(`        timed out after ${r.elapsed_ms}ms (limit ${r.limit_ms}ms from ${r.limit_source}) — this is NOT a failing mode check.`);
       console.log("        raise it with 'check_timeout_ms' on the principle, or PB_MODE_CHECK_TIMEOUT_MS=<ms>.");
+      printKillFailure(r);
       continue;
     }
     if (r.overflow) {
       console.log(`  OUTPUT-LIMIT  [${r.id}] ${r.cmd}`);
       console.log(`        produced more output than the runner accepts (limit ${r.max_output_bytes} bytes, override with PB_CHECK_MAX_OUTPUT_BYTES) — the exit code was never read, so this is NOT a failing mode check.`);
+      printKillFailure(r);
       continue;
     }
     console.log(`  FAIL  [${r.id}] ${r.cmd} (${r.elapsed_ms}ms)`);
@@ -1885,6 +1931,10 @@ function runValidate() {
         ok(exists(rel), `Task ${t.id} docs path does not exist: ${rel}`);
       }
     }
+    // A declared human: block is a contract with a person (H1, H2): a malformed one —
+    // a question that is not a question, one option, an option with no effect, a
+    // recommendation nobody signs — FAILS. A manual task with no block only warns.
+    for (const e of humanBlockProblems(t).errors) ok(false, e);
   }
 
   const versions = readLoops().loops.filter(l => l.version);
@@ -2019,6 +2069,14 @@ function cmdValidate(args) {
     for (const t of hollowActionable) console.log(`  ⚠hollow  [${t.id}] ${t.title || ''}`);
     console.log('Add task-specific acceptance_checks that test the work itself. Run `node scripts/check-hollow.mjs .` for details.');
     if (args.strict) { console.error('\nFailing (--strict): hollow gates on actionable tasks.'); process.exit(1); }
+  }
+
+  // Human-in-the-loop asks (H1): a manual task should say what it asks a person.
+  const humanWarnings = backlogTasks().flatMap((t) => humanBlockProblems(t).warnings);
+  if (humanWarnings.length) {
+    console.log(`\n⚠ Human-in-the-loop warning: ${humanWarnings.length} task(s) ask a person without a real question:`);
+    for (const w of humanWarnings) console.log(`  ⚠  ${w}`);
+    console.log('Add human.question (ending in "?") and human.options (each with an effect) to the task.');
   }
 
   // Tracked-state trap: runtime state committed to git gets reverted by merges,
@@ -2273,9 +2331,12 @@ function graphStepForAction(action) {
 // The card's cycle rail: which loop steps this task's journal rows show it passed
 // through, and the step of its most recent row. A step, never a percentage — the
 // engine has no completion fraction and must not grow one (rule 25).
-function cycleForJournal(journal) {
+function cycleForJournal(allRows) {
   const steps = graphStepIds();
   const filled = [];
+  // a person's decision is an answer to the agent, not a step of the agent's loop: it
+  // neither fills a segment nor moves the card back to the start of the rail
+  const journal = allRows.filter((row) => row.action !== 'decide');
   for (const row of journal) {
     const step = graphStepForAction(row.action);
     if (!filled.includes(step)) filled.push(step);
@@ -2305,9 +2366,143 @@ function liveForCard(card, now = Date.now()) {
     window_s: GRAPH_LIVE_WINDOW_MS / 1000,
   };
 }
-function graphNodeFor(task, planned) {
+// ── the human-facing text fields (D16; contract K2, M2) ─────────────────────
+// Each is optional on the task and has the fallback proposal.html §8 documents, and
+// each says where it came from (`*_source`), so a room never mistakes a guess for
+// something an agent wrote.
+const HEADLINE_MAX = 72;
+// "DEMONSTRATED, not just described" → "Demonstrated, not just described": shouting is
+// how a note marks emphasis in a terminal; a one-line lead should read as a sentence.
+// ...but an acronym is not shouting: words of four letters or fewer (YAML, JSON, CSRF,
+// WCAG) and a few longer ones keep their capitals.
+const KEEP_CAPS = new Set(['POSIX', 'ASCII', 'HTTPS', 'JSONL', 'NDJSON', 'OAUTH', 'WSL2']);
+function deShout(text) {
+  const out = String(text).replace(/\b([A-Z][A-Z'-]{4,})\b/g, (w) => (KEEP_CAPS.has(w) ? w : w.toLowerCase()));
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+function firstSentence(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  const m = /^(.{12,}?[.!?])(\s|$)/.exec(t);
+  return m ? m[1] : t;
+}
+function cutAtWord(text, max) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length <= max) return t;
+  const head = t.slice(0, max - 1);
+  const sp = head.lastIndexOf(' ');
+  return `${(sp > max * 0.4 ? head.slice(0, sp) : head).replace(/[\s,;:(—-]+$/, '')}…`;
+}
+function graphHeadline(task) {
+  if (typeof task.headline === 'string' && task.headline.trim()) return { headline: task.headline.trim(), headline_source: 'task' };
+  const title = String(task.title || '').replace(/\s+/g, ' ').trim();
+  // a clause boundary first ("P2: …", "Engine (D16): …" keep their head), else the sentence
+  const sentence = firstSentence(title).replace(/[.]$/, '');
+  return { headline: cutAtWord(sentence, HEADLINE_MAX), headline_source: 'title' };
+}
+function rowSummary(row) {
+  if (typeof row.summary === 'string' && row.summary.trim()) return row.summary.trim();
+  return deShout(firstSentence(row.notes || ''));
+}
+function graphNow(task, status, journal) {
+  if (typeof task.now === 'string' && task.now.trim()) return { now: task.now.trim(), now_source: 'task' };
+  if (status === 'todo' && !journal.some((r) => r.action !== 'spawn' && r.action !== 'comment')) {
+    return { now: 'Nobody has picked this up', now_source: 'fallback' };
+  }
+  const last = [...journal].reverse().find((r) => (r.notes || r.summary));
+  return last ? { now: rowSummary(last), now_source: 'journal' } : { now: null, now_source: 'none' };
+}
+// "node scripts/test-graph-layers-live.mjs" → "test graph layers live". A check may also
+// declare its own name: `acceptance_checks: [{ run: "…", name: "…" }]` is not the format,
+// so names come from the task's optional `check_names: [..]`, index for index.
+function checkName(command, declared) {
+  if (typeof declared === 'string' && declared.trim()) return declared.trim();
+  const tokens = String(command || '').trim().split(/\s+/);
+  const script = tokens.find((t) => /\.(mjs|cjs|js|ts|sh|py|ps1)$/i.test(t));
+  if (script) return basename(script).replace(/\.[^.]+$/, '').replace(/[-_.]+/g, ' ').trim();
+  return tokens.slice(0, 4).join(' ');
+}
+
+// ── human-in-the-loop (D17; contract H1–H3) ─────────────────────────────────
+// A task that needs a person may say exactly what it asks:
+//   human:
+//     question: "Publish 0.6.2 to npm, or close it as superseded?"
+//     options:
+//       - { id: publish, label: Publish, effect: "a person runs npm publish; the task closes" }
+//       - { id: close,   label: Close,   effect: "the task is closed as superseded by 0.7.0" }
+//     recommended: close
+//     recommended_by: lead
+// A manual task without one still gets an ask, by the documented fallback — and
+// `pb validate` warns, because a generic "Approve?" is a worse question than a real one.
+const DEFAULT_HUMAN_OPTIONS = [
+  { id: 'approve', label: 'Approve', effect: 'the work goes ahead as described' },
+  { id: 'reject', label: 'Reject', effect: 'the task is not done; the agent stops and records why' },
+  { id: 'ask', label: 'Ask a question', effect: 'nothing changes yet; the agent answers first' },
+];
+function humanBlockProblems(task) {
+  const errors = [];
+  const warnings = [];
+  const h = task.human;
+  if (h === undefined || h === null) {
+    if (task.manual && task.status !== 'done') warnings.push(`[${task.id}] is manual: true but declares no human.question — a person will see the generic "Approve: …?" (H1)`);
+    return { errors, warnings };
+  }
+  if (typeof h !== 'object' || Array.isArray(h)) { errors.push(`Task ${task.id} human: must be a mapping (question, options, recommended, recommended_by)`); return { errors, warnings }; }
+  if (h.question !== undefined && (typeof h.question !== 'string' || !h.question.trim().endsWith('?'))) {
+    errors.push(`Task ${task.id} human.question must be a question ending in "?" (H1)`);
+  }
+  if (h.question === undefined && task.status !== 'done') warnings.push(`[${task.id}] declares human: without a question (H1)`);
+  if (h.options !== undefined) {
+    if (!Array.isArray(h.options) || h.options.length < 2) errors.push(`Task ${task.id} human.options must list at least two options (H1)`);
+    else {
+      const ids = new Set();
+      h.options.forEach((o, i) => {
+        if (!o || typeof o !== 'object' || typeof o.id !== 'string' || !o.id.trim()) { errors.push(`Task ${task.id} human.options[${i}] needs an id`); return; }
+        if (ids.has(o.id)) errors.push(`Task ${task.id} human.options has the id "${o.id}" twice`);
+        ids.add(o.id);
+        if (typeof o.effect !== 'string' || !o.effect.trim()) errors.push(`Task ${task.id} human.options "${o.id}" must state its effect (H2)`);
+      });
+      if (h.recommended !== undefined && h.recommended !== null && !ids.has(h.recommended)) errors.push(`Task ${task.id} human.recommended "${h.recommended}" is not one of its options`);
+    }
+  }
+  if (h.recommended && !(typeof h.recommended_by === 'string' && h.recommended_by.trim())) {
+    errors.push(`Task ${task.id} human.recommended needs recommended_by — a recommendation names who makes it (H2)`);
+  }
+  return { errors, warnings };
+}
+function humanOptions(task) {
+  const h = task.human && typeof task.human === 'object' ? task.human : {};
+  return Array.isArray(h.options) && h.options.length >= 2
+    ? h.options.map((o) => ({ id: String(o.id), label: String(o.label || o.id), effect: String(o.effect || '') }))
+    : DEFAULT_HUMAN_OPTIONS;
+}
+function lastDecision(journal) {
+  const row = [...journal].reverse().find((r) => r.action === 'decide');
+  return row ? { option: row.option || null, reason: row.reason || row.notes || null, by: row.agent || null, ts: row.ts || null, seq: typeof row.seq === 'number' ? row.seq : null } : null;
+}
+function graphHuman(task, headline, journal, dependents) {
+  const declared = task.human && typeof task.human === 'object' && !Array.isArray(task.human) ? task.human : null;
+  if (!declared && !task.manual) return null;
+  const question = declared && typeof declared.question === 'string' && declared.question.trim()
+    ? { question: declared.question.trim(), question_source: 'task' }
+    // a title that opens with a shouted label ("HUMAN APPROVAL: accept ...") drops the label
+    : { question: `Approve: ${headline.replace(/^[A-Z][A-Z0-9 -]{2,}:\s*/, '').replace(/[.…]+$/, '')}?`, question_source: 'fallback' };
+  const waiting = declared && Array.isArray(declared.waiting_on) ? declared.waiting_on.map(String) : dependents;
+  return {
+    ...question,
+    options: humanOptions(task),
+    options_source: declared && Array.isArray(declared.options) && declared.options.length >= 2 ? 'task' : 'fallback',
+    recommended: declared?.recommended ?? null,
+    recommended_by: declared?.recommended_by ?? null,
+    waiting_on: waiting,
+    waiting_on_source: declared && Array.isArray(declared.waiting_on) ? 'task' : 'dependencies',
+    decided: lastDecision(journal),
+  };
+}
+
+function graphNodeFor(task, planned, dependents = []) {
   const card = runCardForTask(task);
   const live = liveForCard(card);
+  const declaredNames = Array.isArray(task.check_names) ? task.check_names : [];
   const state = taskState(task.id);
   const gate = mergeReadyPayload(task);
   const declared = planned?.layer || null;
@@ -2343,10 +2538,15 @@ function graphNodeFor(task, planned) {
     merge_reasons: gate.reasons,
     merge_warnings: gate.warnings,
     cycle: cycleForJournal(card.journal),
+    ...graphHeadline(task),
+    ...graphNow(task, card.status, card.journal),
+    human: graphHuman(task, graphHeadline(task).headline, card.journal, dependents),
+    check_names: card.checks.map((c, i) => checkName(c.command, declaredNames[i])),
     live: live.live,
     live_detail: live,
     docs: docsOfTask(task),
-    journal: card.journal,
+    // rows verbatim, plus a one-line `summary` (the row's own, or its first sentence)
+    journal: card.journal.map((row) => ({ ...row, summary: rowSummary(row) })),
     updated_at: card.updated_at,
   };
 }
@@ -2513,7 +2713,14 @@ function graphPayload() {
   const tasks = backlogTasks();
   const plan = computeLayerPlan({ checkGates: false, allTasks: tasks });
   const plannedById = new Map(plan.tasks.map((t) => [t.id, t]));
-  const nodes = tasks.map((t) => graphNodeFor(t, plannedById.get(t.id)));
+  // who waits on whom: the open tasks that depend on each task (human.waiting_on's fallback)
+  const dependentsOf = new Map();
+  for (const t of tasks) for (const dep of Array.isArray(t.dependencies) ? t.dependencies : []) {
+    if (t.status === 'done') continue;
+    if (!dependentsOf.has(dep)) dependentsOf.set(dep, []);
+    dependentsOf.get(dep).push(t.id);
+  }
+  const nodes = tasks.map((t) => graphNodeFor(t, plannedById.get(t.id), dependentsOf.get(t.id) || []));
   const human = graphHumanBatch(nodes, plan);
   const start = graphStart(activeLoop());
   return {
@@ -4039,8 +4246,7 @@ function cmdRecord(args) {
           const what = timeouts.length ? 'TIMED OUT' : 'exceeded the output limit';
           console.error(`\nRefusing to record [${task.id}] as done — ${noVerdict.length} acceptance check(s) ${what}.`);
           console.error('No verdict was reached; this is NOT a failed check.');
-          console.error(`  limit ${noVerdict[0].limit_ms}ms from ${noVerdict[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
-          if (overflows.length) console.error(`  output bound ${overflows[0].max_output_bytes} bytes; raise it with PB_CHECK_MAX_OUTPUT_BYTES=<bytes>.`);
+          printLimitRemedies(timeouts, overflows);
         } else if (!noVerdict.length) {
           console.error(`\nRefusing to record [${task.id}] as done — acceptance checks failed.`);
         } else {
@@ -4048,7 +4254,7 @@ function cmdRecord(args) {
           // one sentence call the whole refusal "not a failed check".
           console.error(`\nRefusing to record [${task.id}] as done — ${reds.length} check(s) FAILED and ${noVerdict.length} reached no verdict${timeouts.length ? ` (${timeouts.length} TIMED OUT)` : ''}${overflows.length ? ` (${overflows.length} output-limit)` : ''}.`);
           console.error('The FAILED check(s) above are failures; the TIMED OUT / OUTPUT-LIMIT check(s) are NOT — no verdict was reached for them.');
-          console.error(`  limit ${noVerdict[0].limit_ms}ms from ${noVerdict[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
+          printLimitRemedies(timeouts, overflows);
         }
         console.error('Fix the work, or record --status blocked with notes. (--skip-checks overrides, and is stamped on the entry.)');
         process.exit(1);
@@ -4114,11 +4320,184 @@ function cmdRecord(args) {
 // scripts/test-pb-graph.mjs — a "comment" that could close a task would be a status
 // change wearing a note's clothes.
 // ============================================================================
+// D17 / H3: a person answers a human-in-the-loop ask. ONE journal row (action: decide),
+// carrying the option and the reason; the task's status does not move — the agent acts
+// on the decision next, and its own record closes the task through its checks.
+function cmdDecide(args) {
+  const taskId = typeof args.task === 'string' ? args.task.trim() : '';
+  const option = typeof args.option === 'string' ? args.option.trim() : '';
+  const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+  if (!taskId || !option || !reason) {
+    console.error('Usage: pb decide --task <id> --option <option-id> --reason "..." [--agent <name>]');
+    process.exit(1);
+  }
+  const task = backlogTasks().find((t) => t.id === taskId);
+  if (!task) { console.error(`Task not found in backlog: ${taskId}. Nothing was written.`); process.exit(1); }
+  versionWriteGuard(task, 'decide', args);
+  if (!task.manual && !task.human) {
+    console.error(`[${taskId}] does not ask a person anything (no manual: true, no human:). Use pb comment to leave a note. Nothing was written.`);
+    process.exit(1);
+  }
+  if (task.status === 'done') { console.error(`[${taskId}] is already done — there is nothing left to decide. Nothing was written.`); process.exit(1); }
+  const options = humanOptions(task);
+  const chosen = options.find((o) => o.id === option);
+  if (!chosen) {
+    console.error(`[${taskId}] has no option "${option}". Options: ${options.map((o) => o.id).join(', ')}. Nothing was written.`);
+    process.exit(1);
+  }
+  const agent = resolveAgentId(args);
+  const claim = readBacklogState()[taskId] || {};
+  // H3: a human gate is answered by a person, never by the agent doing the work. The engine
+  // cannot see a person, but it can refuse the two writers that are certainly not one:
+  // the agent that holds this task, and any writer carrying a claim token (an agent
+  // mid-task — a token is minted by `pb next --claim`, and people do not hold one).
+  const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.trim().toLowerCase() === b.trim().toLowerCase();
+  if (claim.status === 'in_progress' && (same(claim.claimed_by, agent) || same(claim.agent_id, agent))) {
+    console.error(`[${taskId}] is held by "${agent}", the writer of this decision. An agent cannot answer its own human gate. Nothing was written.`);
+    process.exit(1);
+  }
+  // a harness stamps these on every agent shell (adapters/opencode, the DSH plugin); a
+  // person deciding at a terminal or through the room has none of them
+  const agentShell = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID'].filter((k) => process.env[k]);
+  if (agentShell.length) {
+    console.error(`pb decide refuses an agent shell (${agentShell.join(', ')} set): decisions come from a person. Nothing was written.`);
+    process.exit(1);
+  }
+  if (process.env.PB_CLAIM_TOKEN || args.token) {
+    console.error(`pb decide refuses a writer that holds a claim token: decisions come from a person, not from an agent mid-task. Nothing was written.`);
+    process.exit(1);
+  }
+  const prior = readJournal().filter((e) => !e.__malformed && e.task === taskId && e.action === 'decide').pop() || null;
+  const entry = {
+    ts: nowISO(),
+    loop_id: task.version ? task.loop_id : activeLoop()?.id || 'legacy',
+    task: taskId,
+    agent,
+    agent_id: agent,
+    claimed_by: claim.claimed_by || agent,
+    mode: claim.mode || resolveModeId() || undefined,
+    ownership: 'decision',
+    // a second decision does not erase the first; it says which one it replaces
+    replaces: prior && typeof prior.seq === 'number' ? prior.seq : undefined,
+    agent_chain: resolveAgentChain(args),
+    action: 'decide',
+    intent: 'decision',
+    option: chosen.id,
+    reason,
+    status: task.status,
+    checks: 'none',
+    result: null,
+    files: [],
+    notes: `Decided: ${chosen.label} — ${reason}`,
+  };
+  const commit = commitIteration(taskId, entry, () => ({}), { agent });
+  if (!commit) process.exit(1);
+  console.log(`Decision on [${taskId}] recorded (seq ${commit.seq}): ${chosen.label}. Effect: ${chosen.effect || '(none stated)'} — status unchanged (${task.status}).`);
+  if (prior) console.log(`This REPLACES the decision at seq ${prior.seq} by ${prior.agent || 'unknown'} (${prior.option || '?'}). Both rows stay in the journal.`);
+}
+
+// M3: a person's message says WHY it was written. `steer` changes direction, `question`
+// asks the agent something, `finding` reports something learned; a plain note is `comment`.
+const COMMENT_INTENTS = ['comment', 'steer', 'question', 'finding'];
+// `docs:` is a DEFINITION, not status, and `writeBacklog` deliberately does not rewrite the
+// backlog file (it writes status into the sidecar so hand-edited YAML formatting and comments
+// survive). So this is a targeted textual insertion into the task's own block: add the key if it
+// is absent, append to the list if it is present, and touch nothing else in the file.
+function backlogAttachDoc(taskId, rel) {
+  // The master may point `backlog:` at a JSON file (writeBacklog supports it), and a textual
+  // YAML insertion would corrupt one. JSON gets the structural write it can take.
+  if (BACKLOG.endsWith('.json')) {
+    const doc = readData(BACKLOG);
+    if (!doc) return { ok: false, reason: `no ${BACKLOG}` };
+    const task = (doc.tasks || []).find((t) => t.id === taskId);
+    if (!task) return { ok: false, reason: `task ${taskId} has no block in ${BACKLOG}` };
+    const listed = Array.isArray(task.docs) ? task.docs.slice() : [];
+    if (listed.includes(rel)) return { ok: true, already: true };
+    listed.push(rel);
+    task.docs = listed;
+    atomicReplace(p(BACKLOG), JSON.stringify(doc, null, 2) + '\n');
+    return { ok: true, already: false };
+  }
+  const text = readText(BACKLOG);
+  if (!text) return { ok: false, reason: `no ${BACKLOG}` };
+  const lines = text.split('\n');
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const openRe = new RegExp(`^(\\s*)-\\s*id:\\s*${escapeRe(taskId)}\\s*$`);
+  const idIdx = lines.findIndex((l) => openRe.test(l));
+  if (idIdx === -1) return { ok: false, reason: `task ${taskId} has no block in ${BACKLOG}` };
+  const dashIndent = (lines[idIdx].match(/^(\s*)-/) || ['', ''])[1];
+  let end = lines.length;
+  for (let i = idIdx + 1; i < lines.length; i += 1) {
+    const m = lines[i].match(/^(\s*)-\s/);
+    if (m && m[1].length <= dashIndent.length) { end = i; break; }
+  }
+  const docsIdx = lines.findIndex((l, i) => i > idIdx && i < end && /^\s*docs:\s*$/.test(l));
+  if (docsIdx !== -1) {
+    let last = docsIdx + 1;
+    const items = [];
+    while (last < end && /^\s*-\s/.test(lines[last])) { items.push(lines[last].trim().replace(/^-\s*/, '')); last += 1; }
+    if (items.includes(rel)) return { ok: true, already: true };
+    lines.splice(last, 0, `${dashIndent}    - ${rel}`);
+  } else {
+    lines.splice(end, 0, `${dashIndent}  docs:`, `${dashIndent}    - ${rel}`);
+  }
+  writeFileSync(p(BACKLOG), lines.join('\n'), 'utf8');
+  return { ok: true, already: false };
+}
+// `pb attach` — the WRITER for a card's `docs:` association (design D6). Both readers already
+// existed: `pb validate` insists every entry is a playbook-root-relative path that EXISTS, and
+// `pb graph` exposes `docs` per node so the room can render the list. Nothing could write one,
+// which is why the room's Attach button answered 501 — attaching a document had no primitive, so
+// it was refused rather than faked. This is that primitive: it refuses an absolute path and a path
+// that is not there, because `docs:` is checked, and a recorded path that does not exist would be
+// a claim rather than a document.
+function cmdAttach(args) {
+  const taskId = typeof args.task === 'string' ? args.task.trim() : '';
+  const given = typeof args.path === 'string' ? args.path.trim() : '';
+  if (!taskId || !given) {
+    console.error('Usage: pb attach --task <id> --path <playbook-root-relative file> [--label "..."]');
+    process.exit(2);
+  }
+  const task = backlogTasks().find((t) => t.id === taskId);
+  if (!task) { console.error(`Task not found in backlog: ${taskId}`); process.exit(1); }
+  versionWriteGuard(task, 'attach', args);
+  if (/^([A-Za-z]:[\\/]|[\\/])/.test(given)) {
+    console.error(`Refusing: "${given}" is absolute. A docs: entry is relative to the playbook root, and pb validate enforces that.`);
+    process.exit(1);
+  }
+  const rel = given.replace(/\\/g, '/');
+  if (!existsSync(resolve(ROOT, rel))) {
+    console.error(`Refusing: ${rel} does not exist under the playbook root.`);
+    console.error('A recorded path that is not there is a claim, not a document — pb validate would fail on it.');
+    process.exit(1);
+  }
+  const written = backlogAttachDoc(taskId, rel);
+  if (!written.ok) { console.error(`Refusing: ${written.reason}`); process.exit(1); }
+  if (written.already) {
+    console.log(`[${taskId}] already lists ${rel}; nothing written.`);
+    return;
+  }
+  const label = typeof args.label === 'string' && args.label.trim() ? args.label.trim() : null;
+  const row = appendJournal({
+    action: 'attach',
+    status: 'in_progress',
+    task: taskId,
+    notes: `docs: + ${rel}${label ? ` (${label})` : ''}`,
+  });
+  const listed = backlogTasks().find((t) => t.id === taskId)?.docs ?? [];
+  console.log(`[${taskId}] documents (${listed.length}): ${listed.join(', ')}`);
+  console.log(`Journalled as seq ${row.seq}${label ? `, label "${label}"` : ''}. The room sees this through pb graph's per-node docs.`);
+}
 function cmdComment(args) {
   const taskId = typeof args.task === 'string' ? args.task.trim() : '';
   const text = typeof args.text === 'string' ? args.text : '';
   if (!taskId || !text.trim()) {
-    console.error('Usage: pb comment --task <id> --text "..." [--agent <name>] [--token <claim-token>] [--chain <a,b>]');
+    console.error('Usage: pb comment --task <id> --text "..." [--intent comment|steer|question|finding] [--agent <name>] [--token <claim-token>] [--chain <a,b>]');
+    process.exit(1);
+  }
+  const intent = args.intent === undefined ? 'comment' : String(args.intent).trim();
+  if (!COMMENT_INTENTS.includes(intent)) {
+    console.error(`--intent must be one of: ${COMMENT_INTENTS.join(', ')} (got "${intent}"). Nothing was written.`);
     process.exit(1);
   }
   const task = backlogTasks().find((t) => t.id === taskId);
@@ -4146,6 +4525,7 @@ function cmdComment(args) {
     // declared path unconditionally instead of inheriting that hole.)
     agent_chain: resolveAgentChain(args),
     action: 'comment',
+    intent,
     status: task.status,          // current status, so a replay cannot move it
     checks: 'none',
     result: null,
@@ -4154,7 +4534,7 @@ function cmdComment(args) {
   };
   const commit = commitIteration(taskId, entry, () => ({}), { agent });
   if (!commit) process.exit(1);
-  console.log(`Comment on [${taskId}] recorded (seq ${commit.seq}, ownership: ${entry.ownership}) — status unchanged (${task.status}).`);
+  console.log(`Comment on [${taskId}] recorded (seq ${commit.seq}, intent: ${intent}, ownership: ${entry.ownership}) — status unchanged (${task.status}).`);
 }
 
 // ============================================================================
@@ -4280,7 +4660,12 @@ function cmdLoopRunAuto(args) {
     process.exit(1);
   }
   const maxTasks = Number(args['max-tasks']) || Infinity;
-  const retry = Number(args.retry) || 3;
+  // an explicit 0 means "no retries"; `Number(x) || 3` once turned it into 3
+  const retry = args.retry === undefined ? 3 : Number(args.retry);
+  if (!Number.isInteger(retry) || retry < 0) {
+    console.error(`--retry must be a whole number of retries, 0 or more (got ${JSON.stringify(args.retry)}).`);
+    process.exit(1);
+  }
   const dryRun = args['dry-run'];
   // --defer-blocked: keep going past a faulted task instead of stopping the whole
   // run. A blocked task drops out of the `todo` filter, so the run naturally ends
@@ -4616,6 +5001,10 @@ function cmdVersion(args) {
     return;
   }
   if (!['new', 'open', 'freeze', 'close', 'carry', 'drop'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|list');
+  if (['freeze', 'close', 'carry', 'drop'].includes(sub)) {
+    const context = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID', 'PB_CLAIM_TOKEN'].filter(k => process.env[k]);
+    if (context.length || args.token) versionRefusal('V6', `Lifecycle decisions require a person at the local CLI; agent context detected (${context.join(', ') || 'claim token'})`);
+  }
   const agent = resolveAgentId(args);
   let result;
   try {
@@ -5534,8 +5923,78 @@ ${conflicts || `(Your host memory is the PAST; this folder is the project's PRES
 the folder as truth — do not silently follow memory.)`}
 `;
 }
+// Rewrite the OPEN brief in the two places the same sentence lives: the YAML front matter
+// (`goal:`/`stop:`, which every command reads) and the numbered question it answers (`## 1.`
+// goal, `## 4.` stop, which the human reads). Editing one and not the other would leave the file
+// disagreeing with itself — and the front matter is the half that wins.
+function rewriteCycleBrief(text, wanted) {
+  const SECTION = { goal: /^##\s*1\./, stop: /^##\s*4\./ };
+  let out = text;
+  const fm = out.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fm) throw new Error('the cycle brief has no YAML front matter to edit');
+  let block = fm[1];
+  for (const [key, value] of Object.entries(wanted)) {
+    const line = `${key}: ${JSON.stringify(value)}`;
+    const re = new RegExp(`^${key}:.*$`, 'm');
+    block = re.test(block) ? block.replace(re, line) : `${block}\n${line}`;
+  }
+  out = `---\n${block}\n---${out.slice(fm[0].length)}`;
+  for (const [key, value] of Object.entries(wanted)) {
+    const lines = out.split('\n');
+    const start = lines.findIndex((l) => SECTION[key].test(l));
+    if (start === -1) continue;
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i += 1) if (/^##\s/.test(lines[i])) { end = i; break; }
+    out = [...lines.slice(0, start + 1), value, '', ...lines.slice(end)].join('\n');
+  }
+  return out;
+}
 function cmdCycle(args) {
   const cur = readCycle();
+  if ((args.edit || args.new) && versionMode() && !['open', 'frozen'].includes(openVersion()?.state)) versionRefusal('V7', 'Open a version before changing the cycle brief');
+  // `pb cycle --edit --stop "..."` — the OPEN brief is editable state, not a fossil. The goal
+  // half of a steer is exactly this edit, and no command could make it until now, which is why
+  // the room reported it as "not applied" instead of pretending.
+  if (args.edit) {
+    const wanted = {};
+    if (typeof args.goal === 'string' && args.goal.trim()) wanted.goal = args.goal.trim();
+    if (typeof args.stop === 'string' && args.stop.trim()) wanted.stop = args.stop.trim();
+    if (!Object.keys(wanted).length) {
+      console.error('Nothing to change: pass --stop "<text>" and/or --goal "<text>".');
+      process.exit(2);
+    }
+    if (!cur.exists) {
+      console.error(`No cycle brief at ${CYCLE} — open the phase with \`pb cycle --new\` first.`);
+      process.exit(1);
+    }
+    const before = readText(CYCLE);
+    let after;
+    try { after = rewriteCycleBrief(before, wanted); } catch (err) {
+      console.error(`Refusing to edit: ${err.message}`);
+      process.exit(1);
+    }
+    if (after === before) {
+      console.log('No change — the brief already says that.');
+      return;
+    }
+    writeFileSync(p(CYCLE), after, 'utf8');
+    const loop = activeLoop();
+    const row = appendJournal({
+      action: 'cycle-edit',
+      status: 'in_progress',
+      task: null,
+      loop: loop?.id || null,
+      fields: Object.keys(wanted),
+      before: Object.fromEntries(Object.entries(wanted).map(([k]) => [k, String(cur[k] ?? '')])),
+      notes: Object.entries(wanted).map(([k, v]) => `${k} -> ${v}`).join(' | '),
+    });
+    for (const [key, value] of Object.entries(wanted)) {
+      console.log(`  ${key}: ${String(cur[key] || '(unset)').slice(0, 90)}`);
+      console.log(`  ${' '.repeat(key.length)}  -> ${value.slice(0, 90)}`);
+    }
+    console.log(`Edited the OPEN cycle brief (${CYCLE}) in both places — front matter and question — journalled as seq ${row.seq}.`);
+    return;
+  }
   if (args.new) {
     if (cur.exists && !args.force) {
       console.log(`A cycle brief already exists (phase ${cur.phase ?? '?'}, started ${String(cur.started).slice(0, 19)}).`);
@@ -5980,6 +6439,17 @@ function cmdHelp() {
                            OUTPUT-LIMIT, a third outcome — not a timeout, not a failure.
     comment --task <id> --text "..."   Journal-native steering note (action: comment).
                            Append-only and attributable; it cannot change task status.
+                           --intent comment|steer|question|finding (default comment) is
+                           stamped on the row, so a steer or a question is a distinct message.
+    attach --task <id> --path <root-relative file> [--label ".."]
+                           Add a DOCUMENT to a card (design D6). The path must be relative to the
+                           playbook root and must EXIST, because pb validate checks both and the
+                           room renders the list from pb graph per-node docs. Refuses rather than
+                           recording a path that is not there.
+    decide --task <id> --option <id> --reason "..."
+                           Answer a human-in-the-loop ask (manual: true or a human: block): ONE
+                           journal row (action: decide) with the option and reason. Unknown
+                           options are refused; the task's status does not move.
     report [--since DATE]  Roll the journal up into ${REPORTS_DIR}/report-<date>.md
     plan --goal ".." [--skill <id>] [--priority <n>] [--check <cmd>] [--dep <task-id>] [--manual] [--layer <id>]
                           Convert a goal into a backlog task with acceptance_checks.
@@ -6016,6 +6486,11 @@ function cmdHelp() {
     ps [--loop <id>]      List tracked processes
     stop [--loop <id>]    Stop tracked processes for a loop
     cycle [--new [--force] --goal ".." --stop ".."]  Forward half of the phase loop: the cycle brief (4+1 Qs). No args prints it.
+    cycle --edit [--stop ".."] [--goal ".."]
+                           Edit the OPEN brief in both places it states the answer - the front
+                           matter and the numbered question - and journal the change. This is the
+                           primitive the room's steer-the-goal half needed; without it that half
+                           was reported as not applied.
     reflect [--notes ".."] Backward half: review done-since-last-reflect vs North Star; --notes records it
     validate               Structural guardrails (exit 1 on failure)
     validate --task <id>   Run that task's executable acceptance_checks (same bounded check
@@ -6184,6 +6659,7 @@ if (isMainModule) {
   case 'worker': cmdWorker(args); break;
   case 'record': cmdRecord(args); break;
   case 'comment': cmdComment(args); break;
+  case 'decide': cmdDecide(args); break;
   case 'report': cmdReport(args); break;
   case 'plan': cmdPlan(args); break;
   case 'loop': cmdLoop(args); break;
@@ -6206,6 +6682,7 @@ if (isMainModule) {
   }
   case 'anchor': cmdAnchor(args); break;
   case 'checkpoint': cmdCheckpoint(args); break;
+  case 'attach': cmdAttach(args); break;
   case 'cycle': cmdCycle(args); break;
   case 'reflect': cmdReflect(args); break;
   case 'list': cmdList(args); break;

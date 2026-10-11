@@ -237,7 +237,8 @@ try {
     const chipbar = document.querySelector('.flow-chipbar');
     return {
       nodes: q('.react-flow__node'),
-      cards: q('.flow-card'),
+      // v2: task cards are .flow-face (the card face, D13); the frame's other cards keep .flow-card
+      cards: q('.flow-card, .flow-face'),
       edges: q('.react-flow__edge'),
       controls: q('.react-flow__controls'),
       minimap: q('.react-flow__minimap'),

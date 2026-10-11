@@ -52,6 +52,8 @@ noWrite('V8 no open version refuses autonomous run', ['loop', 'run', '--auto'], 
 noWrite('V7 closed task cannot be recorded', ['record', '--task', fixId, '--action', 'execute', '--status', 'done', '--notes', 'wrong'], /V7/);
 noWrite('V7 record cannot masquerade as a comment to change closed state', ['record', '--task', fixId, '--action', 'comment', '--status', 'done', '--notes', 'wrong'], /V7/);
 noWrite('V7 closed task cannot create a worker', ['worker', 'create', fixId], /V7/);
+noWrite('V7 closed task cannot attach a document', ['attach', '--task', fixId, '--path', 'SKILL.md'], /V7/);
+noWrite('V7 closed cycle cannot be edited', ['cycle', '--edit', '--stop', 'bypass'], /V7/);
 const openNext = run(['version', 'open', '--name', 'v2']);
 s.ok('staged next version opens', openNext.code === 0, openNext.combined);
 answerBrief();
@@ -67,6 +69,8 @@ s.ok('closed-card conversation inherits its own loop', readJournal(root).at(-1).
 s.ok('past snapshot retains carried-out cards', pbJson(root, ['version', 'list', '--json']).versions.find(v => v.version === 'v1').task_snapshot.some(t => t.id === task && t.carried_to === 'v2'));
 s.ok('carry state rebuild is clean', run(['repair-state', '--check']).code === 0);
 s.ok('version schema validates', run(['validate']).code === 0);
+const agentClose = runPb(root, ['version', 'close'], { env: { PB_RUNTIME: 'codex' } });
+s.ok('agent shell cannot close a version', agentClose.code !== 0 && /person/.test(agentClose.combined));
 const finish = run(['record', '--task', task, '--action', 'execute', '--status', 'done', '--notes', 'verified']);
 s.ok('carried task completes under its own checks', finish.code === 0, finish.combined);
 s.ok('v2 closes with executable proof', run(['version', 'close']).code === 0);
