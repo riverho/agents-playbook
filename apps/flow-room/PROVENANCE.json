@@ -135,9 +135,9 @@
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "c8d1ec476efa8578a624c4b48da4db26055a5a71e6e58fe4887693eec85d701a",
-      "reason": "plan-20261010-030/031 (v2): zoom tiers, minZoom 5%, reduced motion read once, ?gate seam; the canvas is the layer view (bands, gate posts, stacks, drafts) with the jump-in context; a new draft is brought into view",
-      "recorded": "2026-10-11T03:39:09.631Z",
+      "sha256": "380e2a0e2af6540ac13058ebc894b571374f803f198f4d317e86c57f6acad17c",
+      "reason": "plan-20261010-030/031 (v2): zoom tiers, minZoom 5%, reduced motion read once; the canvas is the layer view with the jump-in context; a new draft is brought into view; ?gate seam (viewport, center, nodes) for the browser gate",
+      "recorded": "2026-10-11T03:47:43.049Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -154,6 +154,10 @@
         {
           "sha256": "3dd4dd2846b08dddfced32f49695a1d842be03c65217af7c8febdc2a6ca046ec",
           "reason": "plan-20261010-030 (v2 card face) + checker seq 158 fixes: zoom tier and --inv on the room, minZoom 5%, reduced motion read once, window.__flowRoom seam installed only with ?gate"
+        },
+        {
+          "sha256": "c8d1ec476efa8578a624c4b48da4db26055a5a71e6e58fe4887693eec85d701a",
+          "reason": "plan-20261010-030/031 (v2): zoom tiers, minZoom 5%, reduced motion read once, ?gate seam; the canvas is the layer view (bands, gate posts, stacks, drafts) with the jump-in context; a new draft is brought into view"
         }
       ]
     },
@@ -276,9 +280,15 @@
       "recorded": "2026-10-11T03:20:37.927Z"
     },
     "lib/flow-projection.ts": {
-      "sha256": "911d0eac60a481b9316687a04fe7bd4687f49054b44fa6ec47cf914e20922f9a",
-      "reason": "plan-20261010-031 (v2 layer view + jump-in, D21/D22; G1-G5, J1-J3): node types for bands, layer gates, stacks and drafts; buildLayerNodes / buildLayerEdges (edges re-pointed to stacks, bookend fan-out dropped)",
-      "recorded": "2026-10-11T03:39:09.782Z"
+      "sha256": "3e38bd71f4c45988e9ea0cac647b6f2512ce5136fc6139ebe6cf599e219276e9",
+      "reason": "plan-20261010-031 (v2 layer view): node types for bands, layer gates, stacks, drafts; buildLayerNodes / buildLayerEdges (edges re-pointed to stacks; a merged edge is only as proven as its weakest; bookend fan-out dropped)",
+      "recorded": "2026-10-11T03:47:42.974Z",
+      "superseded": [
+        {
+          "sha256": "911d0eac60a481b9316687a04fe7bd4687f49054b44fa6ec47cf914e20922f9a",
+          "reason": "plan-20261010-031 (v2 layer view + jump-in, D21/D22; G1-G5, J1-J3): node types for bands, layer gates, stacks and drafts; buildLayerNodes / buildLayerEdges (edges re-pointed to stacks, bookend fan-out dropped)"
+        }
+      ]
     }
   }
 }

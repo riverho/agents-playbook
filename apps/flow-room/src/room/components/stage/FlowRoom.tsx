@@ -353,7 +353,7 @@ function FlowCanvas({
     // only when asked for (?gate): a production build does not expose it by default
     if (!/[?&]gate\b/.test(window.location.search)) return;
     const w = window as unknown as { __flowRoom?: unknown };
-    w.__flowRoom = { setViewport: reactFlow.setViewport, getZoom: reactFlow.getZoom };
+    w.__flowRoom = { setViewport: reactFlow.setViewport, getZoom: reactFlow.getZoom, setCenter: reactFlow.setCenter, getNodes: reactFlow.getNodes };
     return () => { delete w.__flowRoom; };
   }, [reactFlow]);
 

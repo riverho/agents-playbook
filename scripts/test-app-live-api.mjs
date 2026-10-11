@@ -217,6 +217,15 @@ try {
     body: JSON.stringify({ task: '../etc; rm -rf /' }),
   });
   check(badId.status === 400, `a fork with a malformed task id returned ${badId.status}, expected 400`);
+  //     nothing the room sends may become a pb flag (checker note on plan-20261010-031)
+  for (const [payload, why] of [
+    [{ goal: 'ok goal', layer: '--force' }, 'a layer that is a flag'],
+    [{ goal: 'ok goal', from: '--x' }, 'a from that is a flag'],
+    [{ goal: '--skip-checks' }, 'a goal that is a flag'],
+  ]) {
+    const res = await fetch(`${base}/api/fork`, { method: 'POST', headers: { ...CSRF, cookie }, body: JSON.stringify(payload) });
+    check(res.status === 400, `/api/fork with ${why} returned ${res.status}, expected 400`);
+  }
 } catch (err) {
   problems.push(`harness error: ${err instanceof Error ? err.message : String(err)}`);
 } finally {

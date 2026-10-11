@@ -126,7 +126,9 @@ try {
         // the REAL on-screen scale: rendered height over layout height, so the canvas zoom AND any
         // counter-scale (fixed-size labels use scale(var(--inv))) are both counted
         const scale = el.offsetHeight > 0 ? r.height / el.offsetHeight : (inCanvas(el) ? zoom : 1);
-        const px = parseFloat(getComputedStyle(el).fontSize) * scale;
+        // offset sizes are whole pixels, so the ratio carries up to ~3% rounding: 12px at
+        // exactly 75% measures 8.8 while the browser draws it at 9. Allow that much, no more.
+        const px = parseFloat(getComputedStyle(el).fontSize) * scale * 1.03;
         counted++;
         if (px < smallest) { smallest = px; where = (el.className && String(el.className).slice(0, 60)) + ' "' + el.textContent.trim().slice(0, 30) + '"'; }
       }
@@ -182,9 +184,28 @@ try {
       set.call(ta, 'a follow-up typed in the gate'); ta.dispatchEvent(new Event('input', { bubbles: true })); await wait(200);
     }
     const cmd = document.querySelector('.flow-face--draft .flow-draft__cmd')?.textContent ?? '';
+    // T3 with a draft OPEN, at the tier edges (the first T3 pass ran before any draft existed)
+    const sizes = [];
+    for (const z of [0.75, 0.74, 0.4, 0.39]) {
+      { const d = window.__flowRoom.getNodes().find((n) => String(n.id).startsWith("draft:")); if (d) window.__flowRoom.setCenter(d.position.x + 144, d.position.y + 98, { zoom: z }); else window.__flowRoom.setViewport({ x: 20, y: 20, zoom: z }); } await wait(400);
+      const draftShown = !!document.querySelector(".flow-face--draft");
+      const zoomNow = window.__flowRoom.getZoom();
+      let smallest = Infinity, where = '';
+      for (const el of document.querySelectorAll('.flow-room *')) {
+        const own = [...el.childNodes].some((n) => (n.nodeType === 3 && n.textContent.trim()) || el.tagName === 'TEXTAREA');
+        if (!own || (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true }))) continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height || r.right < 0 || r.bottom < 0 || r.left > innerWidth || r.top > innerHeight) continue;
+        const scale = el.offsetHeight > 0 ? r.height / el.offsetHeight : zoomNow;
+        const px = parseFloat(getComputedStyle(el).fontSize) * scale * 1.03;
+        if (px < smallest) { smallest = px; where = String(el.className).slice(0, 40) + ' "' + (el.textContent || el.value || '').trim().slice(0, 24) + '"'; }
+      }
+      sizes.push({ z, draftShown, smallest: Math.round(smallest * 10) / 10, where });
+    }
+    window.__flowRoom.setViewport({ x: 20, y: 20, zoom: 1 }); await wait(350);
     const discard = [...(document.querySelector('.flow-face--draft')?.querySelectorAll('button') ?? [])].find((b) => /Discard/.test(b.textContent));
     discard?.click(); await wait(300);
-    return { cards: cards.length, pluses, focusable, items, drafted: !!draft, cmd, gone: !document.querySelector('.flow-face--draft'), writes: window.__writes };
+    return { cards: cards.length, pluses, focusable, items, drafted: !!draft, cmd, sizes, gone: !document.querySelector('.flow-face--draft'), writes: window.__writes };
   })()`);
   console.log(`  J1–J3: ${JSON.stringify(jump)}`);
   if (jump.error) problems.push(`J1: ${jump.error}`);
@@ -195,6 +216,8 @@ try {
     if (!jump.drafted) problems.push('J2: Follow-up did not put a draft card on the canvas');
     if (!/^pb plan --goal "a follow-up typed in the gate" --dep \S+/.test(jump.cmd)) problems.push(`J3: the draft does not say what Create will run (${jump.cmd})`);
     if (!jump.gone) problems.push('J3: Discard did not remove the draft');
+    for (const sz of jump.sizes ?? []) if (!sz.draftShown) problems.push(`T3 ${sz.z}: the draft was not on screen to measure`);
+    for (const sz of jump.sizes ?? []) if (sz.smallest < MIN_PX) problems.push(`T3 ${sz.z} with a draft open: text at ${sz.smallest}px (< ${MIN_PX}px): ${sz.where}`);
     if (jump.writes !== 0) problems.push(`J3: the room sent ${jump.writes} write request(s) before anything was created`);
   }
 

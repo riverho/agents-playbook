@@ -276,7 +276,17 @@ async function serveApi(req, res, url) {
     if (typeof body?.goal !== 'string' || !body.goal.trim()) {
       return json(res, 400, { error: 'expected { goal: non-empty string, from?: task id, check?: command }' });
     }
-    const argv = ['plan', '--goal', body.goal];
+    // every value becomes an argument to pb: nothing may start with "-" (it would be read
+    // as a flag), and ids and layers must look like ids
+    const ID = /^[\w][\w.-]*$/;
+    if (body.goal.trim().startsWith('-')) return json(res, 400, { error: 'a goal may not start with "-"' });
+    for (const k of ['from', 'layer']) {
+      if (body[k] !== undefined && body[k] !== null && body[k] !== '' && !ID.test(String(body[k]))) {
+        return json(res, 400, { error: `${k} must be an id (letters, digits, . _ -), got ${JSON.stringify(body[k])}` });
+      }
+    }
+    if (body.check && String(body.check).trim().startsWith('-')) return json(res, 400, { error: 'a check may not start with "-"' });
+    const argv = ['plan', '--goal', body.goal.trim()];
     if (body.from) argv.push('--dep', String(body.from));
     if (body.check) argv.push('--check', String(body.check));
     if (body.layer) argv.push('--layer', String(body.layer));
@@ -295,6 +305,12 @@ async function serveApi(req, res, url) {
     if (typeof body?.task !== 'string' || !/^[\w.-]+$/.test(body.task)) {
       return json(res, 400, { error: 'expected { task: task id }' });
     }
+    // a fork is work in parallel on an OPEN card: a done card has nothing left to fork
+    const shown = await runPb(ROOT, ['task', 'show', body.task, '--json']);
+    if (shown.code !== 0) return json(res, 422, { error: 'pb task show refused', detail: shown.stderr.trim() || shown.stdout.trim() });
+    let status = null;
+    try { status = JSON.parse(shown.stdout)?.task?.status ?? null; } catch { /* not json */ }
+    if (status === 'done') return json(res, 409, { error: 'the card is done', detail: `[${body.task}] is done — there is nothing left to fork. Draft a follow-up instead.` });
     const r = await runPb(ROOT, ['worker', 'create', body.task, '--agent', 'room', '--execute']);
     if (r.code !== 0) {
       return json(res, 422, { error: 'pb worker create refused', detail: r.stderr.trim() || r.stdout.trim() });

@@ -302,7 +302,12 @@ export function buildLayerEdges(graph: FlowGraph, layout: LayerLayout): FlowEdge
     // the bands already say where work sits: the bookends' spawn fan-out is noise here
     if (from === "start" || to === "goal") return;
     const key = `${from}->${to}:${edge.kind}`;
-    if (seen.has(key)) return;
+    if (seen.has(key)) {
+      // a merged edge is only as proven as the weakest edge it stands for
+      const merged = out.find(e => e.id.startsWith(`${key}:`));
+      if (merged?.data && edge.proven !== true) merged.data.proven = false;
+      return;
+    }
     seen.add(key);
     out.push({
       id: `${key}:${index}`, source: from, target: to, type: "flow",

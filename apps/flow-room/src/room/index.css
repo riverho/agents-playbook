@@ -1430,6 +1430,14 @@ code,
   cursor: pointer;
 }
 
+/* a draft below full size shows only its chip (glance, 28px) and nothing in the overview:
+   a 14px textarea at 40% would be 5.6px on screen (T3) */
+.flow-room:not([data-tier="full"]) .flow-face--draft > :not(.flow-face__top) {
+  display: none;
+}
+.flow-room[data-tier="overview"] .flow-face--draft > * {
+  visibility: hidden;
+}
 /* a draft: written here, created only by Create (J3) */
 .flow-face--draft {
   border: 2px dashed var(--accent-teal);
