@@ -39,6 +39,7 @@ const STEPS = [
   ['tests', 'npm', ['--prefix', 'apps/flow-room', 'test']],
   ['build', 'npm', ['--prefix', 'apps/flow-room', 'run', 'build']],
   ['browser', process.execPath, ['scripts/check-room-browser.mjs']],
+  ['stack-proof', process.execPath, ['scripts/check-stack-proof.mjs']],
 ];
 
 let failed = 0;
