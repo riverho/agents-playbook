@@ -36,9 +36,13 @@ repo's history:
 
 1. Someone fixes a room bug in the playground because that is where they first saw it. The copy
    diverges, and the next person cannot tell which one ships.
-2. A pin is recorded against a path that later stops existing — the original
-   `PROVENANCE.json` named `…\Wenmei\wenmei\.worktrees\graph-room`, a worker worktree that was
-   de-registered once it merged. The pin still *looked* auditable while pointing at nothing.
+2. A pin is recorded against a path that stops being the checkout that was pinned — the original
+   `PROVENANCE.json` named `…\Wenmei\wenmei\.worktrees\graph-room`. That directory **still exists
+   and is still populated**; what happened is that its branch merged and it was removed from
+   `git worktree list`, so it is no longer the durable thing the pin claims to be. (The first
+   version of this record said it was "pointing at nothing", which overstated it: a worktree that
+   has been de-registered is not a path that has vanished. The repoint was still necessary, and
+   the gate now rejects a worktree-shaped source by name.)
 3. A convenience import reaches back into the other checkout, and the app stops being portable
    without anyone noticing.
 
@@ -46,9 +50,24 @@ repo's history:
 
 | # | Assertion |
 | --- | --- |
-| 1 | No shipped file **resolves** a Wenmei path: no import, require, package dependency or configured path. Fixture data that *records* historical paths is counted and reported, not ignored. |
-| 2 | `PROVENANCE.json` pins a full commit sha, names a source repo **that still exists**, does not point at a worktree, and records file hashes. |
-| 3 | The playground carries `app_design/TOMBSTONE.md` naming `apps/flow-room`, this repo, the pinned commit and the direction. When no Wenmei checkout is reachable this **skips and says so** — an unreachable source must never read as a pass. |
-| 4 | This record exists (the direction is written down where the room is maintained, not only asserted in a check). |
+| 1 | No file in the app **resolves** a Wenmei path: no import specifier, no path-shaped string, no dependency name or value in any dependency-bearing field. Comments and fixture data that *record* the origin are counted and reported, not ignored. The scanner is a character walk, not a regex, so a `/*` inside prose cannot swallow a file. |
+| 2 | `PROVENANCE.json` pins a full commit sha that **git agrees is a real commit** in a source repo that exists, is an ancestor of that repo's `HEAD`, is not a worktree, and carries file hashes. Shape alone is not truth — a forty-zero sha fails. |
+| 3 | The playground carries `app_design/TOMBSTONE.md` naming `apps/flow-room`, this repo, the pinned commit and the direction. |
+| 4 | This record exists **and is tracked by git**. |
 
-Unset `PB_FLOW_SOURCE` to point assertion 3 at a different checkout.
+## The honest limits
+
+- **Assertion 3 is not evaluated when no Wenmei checkout is present.** The gate says so in its
+  output (`NOT EVALUATED`) and still exits 0, because it is `&&`-chained into `npm test` and the
+  suite must run on a machine that has no Wenmei checkout. Pass `--require-source` (or set
+  `PB_FLOW_REQUIRE_SOURCE=1`) to make its absence **fatal** — on a machine that is supposed to
+  have the checkout, that flag is the honest setting.
+- A path assembled at run time from parts that never appear as one segment in the source — a
+  string built by concatenation from single characters, for instance — is not statically
+  detectable by any rule of this shape. The gate catches whole paths, backslash and forward-slash
+  escapes, bare segments, and split `join(...)` segments; it does not claim to catch arithmetic.
+- Set `PB_FLOW_SOURCE=<checkout>` to point assertion 3 at a different checkout (the default is
+  `D:\HermesProjects\Wenmei\wenmei`).
+- Pass `--root <dir>` to run the whole gate against a copied tree; the regression test
+  `scripts/test-wenmei-retired-teeth.mjs` does exactly that, and every escape an independent
+  checker once used to walk through this gate is now a case in it.
