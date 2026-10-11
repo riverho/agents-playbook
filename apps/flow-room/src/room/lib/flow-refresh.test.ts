@@ -49,6 +49,17 @@ describe("S2 — the schedule", () => {
     ft.advance(60_000);
     expect(polls).toBe(2);
   });
+  it("a poll missed while hidden is forgotten when refresh is turned off", () => {
+    const ft = fakeTime();
+    let polls = 0;
+    let hidden = true;
+    const p = createPoller(1, { ...ft, poll: () => polls++, isHidden: () => hidden });
+    ft.advance(5 * 60_000);
+    p.setMinutes(0);
+    hidden = false;
+    p.visibilityChanged();
+    expect(polls).toBe(0);
+  });
   it("off means never; 15 means every 15", () => {
     const ft = fakeTime();
     let polls = 0;

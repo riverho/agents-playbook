@@ -14,7 +14,7 @@
 //  5. A playbook without versions: the active loop is an unnamed version; --version refused.
 // ----------------------------------------------------------------------------
 import { spawn } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { appendFileSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeFixture, makeSuite, pbJson, readJournal, runPb } from './test-fixture-playbook.mjs';
@@ -53,7 +53,7 @@ st.a3 = { status: 'done', seq: 2, updated_at: iso(60) };
 // ── 1. pb state ────────────────────────────────────────────────────────────
 const s1 = pbJson(root, ['state', '--json']);
 ok('state names its schema and the open version', s1.schema === 'agent-playbook.state.v1' && s1.version?.version === 'v0.1' && s1.version.state === 'open', JSON.stringify(s1.version));
-ok('state carries the journal seq and a change token', typeof s1.journal_seq === 'number' && s1.journal_seq >= 90 && /^\d+:\d+$/.test(s1.change_token), s1.change_token);
+ok('state carries the journal seq and a change token', typeof s1.journal_seq === 'number' && s1.journal_seq >= 90 && /^\d+:\d+:[0-9a-f]{8}$/.test(s1.change_token), s1.change_token);
 ok('state counts this version only: a person is needed once, one stale claim', s1.counts.needs_you === 1 && s1.counts.stale === 1 && s1.counts.in_progress === 1 && s1.counts.done === 1, JSON.stringify(s1.counts));
 ok('with no orchestrator block the state says so instead of inventing one', s1.orchestrator.state === 'not-scheduled' && s1.orchestrator.last_tick === null, JSON.stringify(s1.orchestrator));
 
@@ -95,6 +95,12 @@ try {
   const after = await fetch(`${base}/api/state?since=${encodeURIComponent(body.change_token)}`);
   const afterBody = after.status === 200 ? await after.json() : null;
   ok('a new journal row → 200 with a new change token', after.status === 200 && afterBody.change_token !== body.change_token, `${after.status} ${afterBody?.change_token}`);
+  // pausing the orchestrator in the master writes no journal row, but it changes the state:
+  // the token must move, or the bar keeps saying idle behind a 304 (checker note, seq 288)
+  appendFileSync(join(root, 'playbook.yaml'), '\norchestrator:\n  paused: true\n');
+  const paused = await fetch(`${base}/api/state?since=${encodeURIComponent(afterBody?.change_token ?? '')}`);
+  const pausedBody = paused.status === 200 ? await paused.json() : null;
+  ok('pausing the orchestrator in the master → 200, a new token, and the paused state', paused.status === 200 && pausedBody.change_token !== afterBody?.change_token && pausedBody.orchestrator.state === 'paused', `${paused.status} ${JSON.stringify(pausedBody?.orchestrator)}`);
   const gv = await (await fetch(`${base}/api/graph?version=v0.2`)).json();
   ok('/api/graph?version= passes the version through', gv.version?.version === 'v0.2', JSON.stringify(gv.version));
   const badV = await fetch(`${base}/api/graph?version=${encodeURIComponent('v0.1;rm')}`);

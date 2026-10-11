@@ -2910,7 +2910,9 @@ function statePayload() {
     journal_seq: latestJournalSeq(rows),
     // the change token a room polls with: rows AND the highest seq, so an unnumbered row
     // (written when the state lock was busy) still counts as a change
-    change_token: `${rows.length}:${latestJournalSeq(rows)}`,
+    // the journal, plus the orchestrator block: pausing it in the master writes no row, and the
+    // bar must not keep saying "idle" behind a 304 (checker note, seq 288)
+    change_token: `${rows.length}:${latestJournalSeq(rows)}:${createHash('sha256').update(JSON.stringify(cfg ?? null)).digest('hex').slice(0, 8)}`,
     version: v ? versionSummary(v) : (loop ? { id: loop.id, version: null, title: loop.goal || loop.id, state: 'open', goal: loop.goal || null, stop_checks: [], unnamed: true } : null),
     phase: cyc.exists ? { phase: cyc.phase ?? null, goal: cyc.goal || null } : null,
     orchestrator: { ...orchestrator, last_tick: last ? { seq: last.seq ?? null, ts: last.ts, summary: last.notes || '' } : null },
@@ -2979,8 +2981,12 @@ function tickPlan({ now = Date.now(), runStopChecks = true } = {}) {
     return n >= 2;
   };
 
-  // 2. release quiet claims
+  // 2. release quiet claims — never one a live worker still holds: a quiet journal is not a
+  // dead worker while its tracked process (a lifecycle lease, or a pid that is alive) runs.
+  // version carry/drop/close refuse on the same evidence.
+  const working = new Set(latestProcessRecords().filter((rec) => rec.task && rec.status !== 'stopped' && (rec.lifecycle_lease || pidAlive(rec.pid))).map((rec) => rec.task));
   for (const t of scope.filter((x) => x.status === 'in_progress')) {
+    if (working.has(t.id)) continue;
     const at = lastAt(t.id);
     const quietMin = Number.isFinite(at) ? Math.floor((now - at) / 60000) : null;
     if (quietMin === null || quietMin >= cfg.stale_claim_minutes) {
@@ -3055,7 +3061,9 @@ function tickPlan({ now = Date.now(), runStopChecks = true } = {}) {
       plan.goal_check = { ran: true, passed, failing: results.filter((x) => !x.ok).map((x) => x.cmd) };
       plan.stop_reason = passed ? 'goal-met-propose-close' : 'goal-not-met';
     } else {
-      plan.goal_check = { ran: false, passed: null, failing: [] };
+      // a dry run does not run the stop checks (they can build, write, take minutes): it says
+      // that they WOULD run
+      plan.goal_check = { ran: false, passed: null, failing: [], ...(commands.length ? { would_run: commands } : {}) };
       plan.stop_reason = 'all-tasks-done';
     }
   } else if (!plan.chosen) {
@@ -3083,7 +3091,7 @@ function cmdTick(args) {
   const now = args.now ? Date.parse(String(args.now)) : Date.now();
   if (!Number.isFinite(now)) { console.error('--now must be an ISO time'); process.exit(1); }
   const dry = !!args['dry-run'];
-  const plan = tickPlan({ now, runStopChecks: true });
+  const plan = tickPlan({ now, runStopChecks: !dry });
   plan.summary = tickSummary(plan);
   if (dry) {
     if (args.json) return printJson({ ...plan, dry_run: true });
@@ -5693,7 +5701,19 @@ function migrationScope(loopId) {
 function migrationFingerprint(loopId) {
   const loops = readLoops();
   const scope = migrationScope(loopId).map((t) => [t.id, t.status, t.loop_id, t.claimed_by]).sort((a, b) => a[0].localeCompare(b[0]));
-  return createHash('sha256').update(JSON.stringify({ active: loops.active, versions: loops.loops.filter((l) => l.version).map((l) => [l.id, l.version, l.state]), scope })).digest('hex');
+  return createHash('sha256').update(JSON.stringify({ loop: loopId, active: loops.active, versions: loops.loops.filter((l) => l.version).map((l) => [l.id, l.version, l.state]), scope })).digest('hex');
+}
+// A carried card that depends on a parked one waits on a card frozen in a closed version:
+// it could never be claimed, and nothing would report it (checker note, seq 291).
+function strandedCarries(decisions) {
+  const tasks = new Map(backlogTasks().map((t) => [t.id, t]));
+  const out = [];
+  for (const [id, d] of decisions) {
+    if (d !== 'carry') continue;
+    const parked = (tasks.get(id)?.dependencies || []).filter((dep) => decisions.get(dep) === 'park');
+    if (parked.length) out.push({ id, parked });
+  }
+  return out;
 }
 function cmdVersionMigrate(args) {
   if (args.apply) return applyVersionMigration(args);
@@ -5728,6 +5748,10 @@ function cmdVersionMigrate(args) {
       ...(t.claimed_by ? { note: `claimed by ${t.claimed_by} — release or finish it before applying` } : {}),
     })),
   };
+  for (const x of strandedCarries(new Map(batch.tasks.map((t) => [t.id, t.decision])))) {
+    const row = batch.tasks.find((t) => t.id === x.id);
+    row.note = [row.note, `depends on parked ${x.parked.join(', ')} — park it too, or carry ${x.parked.length === 1 ? 'that one' : 'those'}`].filter(Boolean).join('; ');
+  }
   const out = typeof args.out === 'string' && args.out.trim() ? args.out.trim() : `artifacts/versions/migration-${loop.id}.yaml`;
   const abs = isAbsolute(out) ? out : p(out);
   ensureDir(dirname(abs));
@@ -5770,6 +5794,8 @@ function applyVersionMigration(args) {
         if (t.placement === 'open' && !['carry', 'park'].includes(d)) versionRefusal('V4', `${id}: decision must be carry or park (got ${JSON.stringify(d ?? null)})`);
         if (t.placement === 'open' && t.claimed_by) versionRefusal('V6', `${id} is claimed by ${t.claimed_by}; release or finish it before migrating (a parked card's holder could no longer record)`);
       }
+      const stranded = strandedCarries(new Map([...scope.keys()].map((id) => [id, scope.get(id).placement === 'open' ? decided.get(id)?.decision : scope.get(id).placement])));
+      if (stranded.length) versionRefusal('V4', `A carried card would wait forever on a parked one: ${stranded.map((x) => `${x.id} → ${x.parked.join(', ')}`).join('; ')}. Park it too, or carry its dependency`);
       const ts = nowISO();
       const old = { ...loop, version: batch.close.version, title: batch.close.title || batch.close.version, state: 'closed', status: 'done',
         description: loop.stop || null, stop_checks: [],
@@ -5779,7 +5805,7 @@ function applyVersionMigration(args) {
       const nu = { id: nextLoopId(state), version: batch.open.version, title: batch.open.title || batch.open.version, state: 'open', status: 'active',
         goal: String(batch.open.goal).trim(), stop: String(batch.open.goal).trim(), stop_checks: checks,
         created_at: ts, started_at: ts, closed_at: null, migrated_from: old.id,
-        journal: { first_line: journalLineCount() + 3, last_line: null }, artifacts: null };
+        journal: { first_line: journalLineCount() + 2, last_line: null }, artifacts: null };
       nu.artifacts = loopArtifactsRel(nu.id);
       const assignments = {};
       const snapshot = [];

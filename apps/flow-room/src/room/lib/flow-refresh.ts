@@ -88,10 +88,11 @@ export function createPoller(minutes: RefreshMinutes, deps: PollerDeps): Poller 
   };
   arm();
   return {
-    setMinutes(next) { m = next; arm(); },
+    // turning refresh off forgets a poll missed while hidden: off means no poll on return either
+    setMinutes(next) { m = next; if (!m) missed = false; arm(); },
     visibilityChanged() {
       if (deps.isHidden()) return;
-      if (missed || (m && deps.clock() - lastPoll >= m * 60_000)) { missed = false; fire(); }
+      if (m && (missed || deps.clock() - lastPoll >= m * 60_000)) { missed = false; fire(); }
       else arm();
     },
     now() { lastPoll = deps.clock(); missed = false; deps.poll(); arm(); },

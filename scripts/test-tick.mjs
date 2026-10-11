@@ -11,7 +11,7 @@
 //  starting anything, stops when paused, and proposes — never performs — the close.
 //  V8: with no open version the tick does nothing but record why.
 // ----------------------------------------------------------------------------
-import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { makeFixture, makeSuite, pbJson, readJournal, runPb } from './test-fixture-playbook.mjs';
 
@@ -21,10 +21,10 @@ const NOW = Date.parse('2026-10-12T12:00:00.000Z');
 const at = (min) => new Date(NOW + min * 60000).toISOString();
 const ORCH = '\norchestrator:\n  every_minutes: 15\n  stale_claim_minutes: 30\n  reprompt_minutes: [60, 240, 1440]\n';
 
-function versionedFixture(tasks, { orchestrator = ORCH, open = true } = {}) {
+function versionedFixture(tasks, { orchestrator = ORCH, open = true, stopCheck = 'node -e process.exit(0)' } = {}) {
   const root = t.track(makeFixture({ prefix: 'pbtick-', loops: 'active: null\nloops: []\n', tasks: tasks.map((x) => ({ ...x, extra: [...(x.extra || []), 'version: v0.1', 'kind: feature'] })) }));
   appendFileSync(join(root, 'playbook.yaml'), orchestrator);
-  const v = runPb(root, ['version', 'new', '--name', 'v0.1', '--goal', 'the fixture goal', '--stop-check', 'node -e process.exit(0)', ...(open ? [] : ['--draft'])]);
+  const v = runPb(root, ['version', 'new', '--name', 'v0.1', '--goal', 'the fixture goal', '--stop-check', stopCheck, ...(open ? [] : ['--draft'])]);
   if (v.code !== 0) throw new Error(v.combined);
   return root;
 }
@@ -122,6 +122,34 @@ setState(root, {
   const rows = readJournal(done).slice(before);
   ok('all done + stop checks pass → it proposes closing', rows.length === 1 && rows[0].tick.stop_reason === 'goal-met-propose-close' && /a person closes/.test(rows[0].notes), JSON.stringify(rows));
   ok('O2: …and the version stays open', pbJson(done, ['version', 'list', '--json']).versions[0].state === 'open');
+}
+
+// checker finding (seq 289): a quiet journal is not a dead worker — a claim whose tracked
+// process is still running (a lifecycle lease, or a live pid) is never released
+{
+  const r = versionedFixture([{ id: 'busy', title: 'a worker is running, quietly' }, { id: 'gone', title: 'its worker is gone' }]);
+  const loopId = pbJson(r, ['state', '--json']).version.id;
+  setState(r, {
+    busy: { status: 'in_progress', claimed_by: 'w1', agent_id: 'w1', claim_token: 'tok-b', seq: 2, updated_at: at(-120) },
+    gone: { status: 'in_progress', claimed_by: 'w2', agent_id: 'w2', claim_token: 'tok-g', seq: 3, updated_at: at(-120) },
+  }, [
+    { ts: at(-120), task: 'busy', agent: 'w1', action: 'claim', status: 'in_progress', checks: 'none', notes: 'claimed', seq: 20 },
+    { ts: at(-120), task: 'gone', agent: 'w2', action: 'claim', status: 'in_progress', checks: 'none', notes: 'claimed', seq: 21 },
+  ]);
+  appendFileSync(join(r, 'memory/processes.ndjson'),
+    JSON.stringify({ ts: at(-120), loop_id: loopId, task: 'busy', pid: process.pid, status: 'running', lifecycle_lease: true }) + '\n'
+    + JSON.stringify({ ts: at(-120), loop_id: loopId, task: 'gone', pid: 2147480000, status: 'running' }) + '\n');
+  const p = pbJson(r, ['tick', '--dry-run', '--json', '--now', at(0)]);
+  ok('a claim whose worker process still runs is not released; a dead one is', p.release.map((x) => x.task).join() === 'gone', JSON.stringify(p.release));
+}
+// checker finding (seq 289): --dry-run does not run the version's stop checks
+{
+  const r = versionedFixture([{ id: 'only', title: 'the only task' }], { stopCheck: 'node -e "require(\'fs\').writeFileSync(\'side-effect.txt\',\'x\')"' });
+  setState(r, { only: { status: 'done', seq: 2, updated_at: at(-10) } });
+  const p = pbJson(r, ['tick', '--dry-run', '--json', '--now', at(0)]);
+  ok('a dry run does not run the stop checks; it says they would run', !existsSync(join(r, 'side-effect.txt')) && p.goal_check?.ran === false && p.goal_check.would_run?.length === 1, JSON.stringify(p.goal_check));
+  const real = tick(r, ['--json']);
+  ok('a real tick runs them', existsSync(join(r, 'side-effect.txt')), real.combined.slice(0, 400));
 }
 
 t.finish();

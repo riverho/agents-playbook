@@ -129,7 +129,12 @@ function runPb(root, args, { timeoutMs = 60000, env } = {}) {
 // the journal file's identity at the last /api/state answer: unchanged → 304 without pb
 let stateCache = null;
 function journalStat() {
-  try { const st = statSync(join(ROOT, 'memory', 'journal.ndjson')); return { size: st.size, mtimeMs: st.mtimeMs }; } catch { return null; }
+  // the journal and the master (its orchestrator: block is part of the state's change token)
+  try {
+    const j = statSync(join(ROOT, 'memory', 'journal.ndjson'));
+    const m = statSync(join(ROOT, 'playbook.yaml'));
+    return { size: `${j.size}:${m.size}`, mtimeMs: `${j.mtimeMs}:${m.mtimeMs}` };
+  } catch { return null; }
 }
 
 let askSlots = 0;

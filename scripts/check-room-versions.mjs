@@ -105,7 +105,8 @@ const snap = (evaluate) => evaluate(`(() => {
   };
 })()`);
 const NET = `(() => { window.__net = []; if (window.__netWrapped) return; window.__netWrapped = true; const f = window.fetch;
-  window.fetch = async (u, o) => { const r = await f(u, o); window.__net.push({ url: String(u).replace(location.origin, ''), method: (o && o.method) || 'GET', status: r.status }); return r; }; })()`;
+  window.fetch = async (u, o) => { const graphFail = window.__failGraph && String(u).includes('/api/graph'); if (graphFail) window.__failGraph = false;
+    const r = graphFail ? new Response(JSON.stringify({ error: 'injected by the gate' }), { status: 500, headers: { 'content-type': 'application/json' } }) : await f(u, o); window.__net.push({ url: String(u).replace(location.origin, ''), method: (o && o.method) || 'GET', status: r.status }); return r; }; })()`;
 
 let room;
 try {
@@ -176,6 +177,20 @@ try {
   if (glow.join() !== 'new-2') problems.push(`S2: the card that moved should glow once — glowing [${glow}], expected [new-2]`);
   const writes = [...unchanged, ...changed].filter((r) => r.method !== 'GET');
   if (writes.length) problems.push(`S3: refresh sent write request(s): ${JSON.stringify(writes)}`);
+  // a graph read that FAILS keeps the last good graph, says so, and is retried on the next
+  // refresh — the change is not swallowed into a 304 (checker, seq 290)
+  appendFileSync(join(root, 'memory/journal.ndjson'), JSON.stringify({ ts: new Date().toISOString(), task: 'new-1', agent: 'lead', agent_id: 'lead', action: 'comment', status: 'todo', checks: 'none', notes: 'another note', seq: fixtureSeq + 2 }) + '\n');
+  await evaluate(NET);
+  await evaluate('window.__failGraph = true');
+  const failed = await evaluate(refresh);
+  const failBar = (await snap(evaluate)).bar ?? '';
+  await evaluate(NET);
+  const retried = await evaluate(refresh);
+  const okBar = (await snap(evaluate)).bar ?? '';
+  console.log(`  failed graph read: ${JSON.stringify(failed)} · bar "${failBar.slice(0, 60)}" · retry ${JSON.stringify(retried)}`);
+  if (!/Refresh failed/.test(failBar)) problems.push(`S2: a failed graph read does not say so: "${failBar}"`);
+  if (!retried.some((r) => r.url.startsWith('/api/state') && r.status === 200) || !retried.some((r) => r.url.startsWith('/api/graph') && r.status === 200)) problems.push(`S2: after a failed graph read the next refresh did not re-read the graph: ${JSON.stringify(retried)}`);
+  if (/Refresh failed/.test(okBar)) problems.push(`S2: the bar still reports a failure after a good refresh: "${okBar}"`);
 
   // S5: History, newest first
   const hist = await evaluate(`(async () => {

@@ -219,9 +219,11 @@ function LiveRoom({ apiBase, initial }: { apiBase: string; initial: FlowAdapter 
       if (s) {
         setProj(s);
         if (s.change_token !== token.current) {
-          const first = token.current === null;
+          // the token moves only once the graph it stands for is on screen: advancing it first
+          // turned a failed graph read into a 304 on the next poll — "read just now" over a
+          // stale graph until the journal moved again (checker, seq 290)
+          if (token.current !== null) await reread(pickedRef.current, true);
           token.current = s.change_token;
-          if (!first) await reread(pickedRef.current, true);
         }
       }
       setLastOkAt(Date.now());

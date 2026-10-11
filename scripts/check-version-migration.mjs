@@ -148,5 +148,18 @@ writeFileSync(join(root, 'memory/cycle.md'), answeredBrief);
 const next = runPb(root, ['next'], { agent: 'lead' });
 ok('pb next offers the open version\'s work, never a parked or closed card',
   /Next task: \[(o1|c1)\]/.test(next.combined), next.combined.slice(0, 600));
+const v8row = rows.find((r) => r.action === 'version' && r.version === 'v0.8');
+const lines = readFileSync(join(root, 'memory/journal.ndjson'), 'utf8').split(/\r?\n/).filter((l) => l.trim());
+ok('v0.8\'s journal range starts at its own version row', JSON.parse(lines[v8.journal.first_line - 1] ?? 'null')?.seq === v8row?.seq, `first_line ${v8.journal.first_line}`);
+
+// a carried card that depends on a parked one would wait forever (checker note, seq 291)
+{
+  const r2 = t.track(makeFixture({ prefix: 'pbmig2-', tasks: [{ id: 'base', title: 'parked base' }, { id: 'top', title: 'carried, depends on base', dependencies: ['base'] }] }));
+  const p2 = runPb(r2, ['version', 'migrate', '--loop', 'loop-fix-001', '--name', 'v0.1', '--next', 'v0.2', '--next-goal', 'g', '--stop-check', 'node -e process.exit(0)', '--park', 'base']);
+  const b2 = yaml.load(readFileSync(join(r2, 'artifacts/versions/migration-loop-fix-001.yaml'), 'utf8'));
+  ok('the batch warns that a carried card depends on a parked one', p2.code === 0 && /depends on parked base/.test(b2.tasks.find((x) => x.id === 'top')?.note ?? ''), JSON.stringify(b2.tasks));
+  const a2 = runPb(r2, ['version', 'migrate', '--apply', 'artifacts/versions/migration-loop-fix-001.yaml'], PERSON);
+  ok('apply refuses to carry a card whose dependency is parked', a2.code !== 0 && /top → base/.test(a2.combined), a2.combined);
+}
 
 t.finish();
