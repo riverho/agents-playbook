@@ -67,7 +67,7 @@ import {
   FlowTaskCard,
 } from "./FlowCards";
 import { FlowViewContext } from "@/lib/flow-view";
-import { ageLabel, zoomTier } from "@/lib/flow-face";
+import { agoLabel, zoomTier } from "@/lib/flow-face";
 import { presence } from "@/lib/flow-open";
 import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion";
 import {
@@ -294,19 +294,26 @@ function FlowCanvas({
   }), [openPlus, active, layout, filtered]);
   const openNode = openId ? filtered.nodes.find(node => node.id === openId) : undefined;
 
-  // Escape unwinds exactly one level: selection → inspector → the stage.
+  // A1: closing a card hands focus back to it, so a keyboard user is where they were
+  const closeCard = useCallback(() => {
+    const id = openId;
+    setOpenId(null);
+    if (id) window.setTimeout(() => (document.querySelector(`.flow-face[data-id="${CSS.escape(id)}"]`) as HTMLElement | null)?.focus(), 0);
+  }, [openId]);
+
+  // Escape unwinds one level, the nearest first: the open card, then the selection.
   useStageEscape(useCallback(() => {
+    if (openNode) {
+      closeCard();
+      return true;
+    }
     if (selectedIds.length > 0) {
       setNodes(current => current.map(node => ({ ...node, selected: false })));
       setSelectedIds([]);
       return true;
     }
-    if (openNode) {
-      setOpenId(null);
-      return true;
-    }
     return false;
-  }, [selectedIds.length, openNode, setNodes]));
+  }, [selectedIds.length, openNode, setNodes, closeCard]));
 
   const runSteering = useCallback(
     async (mode: FlowSteeringMode) => {
@@ -439,7 +446,7 @@ function FlowCanvas({
               <span className="flow-face__av" aria-hidden>{p.name.charAt(0).toUpperCase()}</span>
               <b>{p.name}</b>
               <span className="flow-presence__on">on {p.taskTitle}</span>
-              <span className="flow-presence__m">{p.lastSpoke ? `spoke ${ageLabel(p.lastSpoke) ?? ""} ago` : "has not spoken"}</span>
+              <span className="flow-presence__m">{p.lastSpoke ? `spoke ${agoLabel(p.lastSpoke) ?? ""}` : "has not spoken"}</span>
             </button>
           ))
         )}
@@ -503,7 +510,7 @@ function FlowCanvas({
       {openNode && openNode.kind !== "gatepost" && (
         <FlowInspector
           node={openNode}
-          onClose={() => setOpenId(null)}
+          onClose={closeCard}
           readOnly={!active.sendMessage}
           onSend={async (text, intent) => {
             if (!active.sendMessage) return { ok: false, note: "This view is a snapshot — nothing was written." };

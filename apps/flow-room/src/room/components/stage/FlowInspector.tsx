@@ -15,11 +15,11 @@
 // engine's refusal verbatim. The file keeps its old name: it is a pinned copy
 // (PROVENANCE.json), so the history of the inspector stays one history.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { checksOutcome, flowRail, isHollow, journalTime, railAttrs } from "@/lib/flow-derive";
 import { FlowStateChip } from "./FlowCards";
-import { agentDisplayName, ageLabel, faceOwner, faceState, isLive, lastMoved } from "@/lib/flow-face";
+import { agentDisplayName, agoLabel, faceOwner, faceState, isLive, lastMoved } from "@/lib/flow-face";
 import { brief, conversation, nextLine, PLAIN_STEPS, proofRows, type MessageIntent } from "@/lib/flow-open";
 import type { FlowNode } from "@/lib/flow-types";
 
@@ -63,16 +63,27 @@ export function FlowInspector({
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
   const [outcome, setOutcome] = useState<SendOutcome | null>(null);
-  useEffect(() => { setOutcome(null); setText(""); setIntent("comment"); }, [node.id]);
+  // A1: opening a card moves focus into it; the title is the landing point
+  const titleRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => { setOutcome(null); setText(""); setIntent("comment"); titleRef.current?.focus(); }, [node.id]);
 
+  // one send at a time, even for two clicks in the same tick (state alone lags a tick)
+  const sending = useRef(false);
   const send = async () => {
+    if (sending.current) return;
+    sending.current = true;
     setPending(true);
-    const r = await onSend(text.trim(), intent);
-    setPending(false);
-    setOutcome(r);
-    if (r.ok) setText("");
+    try {
+      const r = await onSend(text.trim(), intent);
+      setOutcome(r);
+      if (r.ok) setText("");
+    } finally {
+      sending.current = false;
+      setPending(false);
+    }
   };
-  const held = owner ? `${owner.name} picked this up ${ageLabel(lastMoved(node)) ?? ""} ago` : null;
+  const moved = agoLabel(lastMoved(node));
+  const held = owner ? `${owner.name} picked this up${moved ? ` ${moved}` : ""}` : null;
   const passing = proof.filter(p => p.result === "passed").length;
 
   return (
@@ -86,7 +97,7 @@ export function FlowInspector({
             <X size={16} aria-hidden />
           </button>
         </div>
-        <h2 className="flow-oc__title">{node.headline ?? node.title}</h2>
+        <h2 className="flow-oc__title" ref={titleRef} tabIndex={-1}>{node.headline ?? node.title}</h2>
         <div className="flow-oc__muted">
           {[held, node.declared_layer ?? node.layer].filter(Boolean).join(" · ")}
         </div>
@@ -140,8 +151,8 @@ export function FlowInspector({
         <section className="flow-oc__sec">
           <h3>Proof <span className="flow-oc__muted">{proof.length ? `${passing} of ${proof.length} passing` : "no checks declared"}</span></h3>
           <ul className="flow-oc__proof">
-            {proof.map(p => (
-              <li key={p.command} data-result={p.result}>
+            {proof.map((p, i) => (
+              <li key={`${i}:${p.command}`} data-result={p.result}>
                 <div><b>{p.name}</b><span className="flow-oc__res">{p.word}</span></div>
                 <code>{p.command}</code>
               </li>
@@ -192,9 +203,9 @@ export function FlowInspector({
       </div>
 
       <form className="flow-oc__composer" onSubmit={e => { e.preventDefault(); if (text.trim() && !pending && !readOnly) void send(); }}>
-        <div className="flow-oc__intents" role="radiogroup" aria-label="What kind of message">
+        <div className="flow-oc__intents" role="group" aria-label="What kind of message">
           {INTENTS.map(i => (
-            <button key={i.id} type="button" role="radio" aria-checked={intent === i.id} className="flow-oc__intent" onClick={() => setIntent(i.id)}>
+            <button key={i.id} type="button" aria-pressed={intent === i.id} className="flow-oc__intent" onClick={() => setIntent(i.id)}>
               {i.label}
             </button>
           ))}

@@ -68,7 +68,8 @@ describe("the open card's sections", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     const beforeEngine = html.slice(0, html.indexOf("Engine details"));
     expect(beforeEngine.includes("plan-x")).toBe(false);
-    expect(html).toMatch(/role="radio" aria-checked="true"[^>]*>Comment</);
+    expect(html).toMatch(/aria-pressed="true"[^>]*>Comment</);
+    expect(html).not.toMatch(/role="radio"/);
     expect(html).toMatch(/>Change direction</);
     expect(html).toMatch(/>Ask the agent</);
   });

@@ -233,7 +233,7 @@ try {
       if (!panel) return { error: 'clicking a card did not open it' };
       const heads = [...panel.querySelectorAll('h3, summary')].map((h) => h.textContent.trim().split(/\\s{2,}| step| \\d| no checks/)[0]);
       const idBeforeEngine = (panel.querySelector('.flow-oc__head')?.textContent ?? '').includes('live-claim');
-      [...panel.querySelectorAll('[role=radio]')].find((b) => /Change direction/.test(b.textContent))?.click(); await wait(100);
+      [...panel.querySelectorAll('.flow-oc__intent')].find((b) => /Change direction/.test(b.textContent))?.click(); await wait(100);
       const ta = panel.querySelector('textarea');
       const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
       set.call(ta, 'Write the POSIX path conservatively.'); ta.dispatchEvent(new Event('input', { bubbles: true })); await wait(150);
@@ -255,6 +255,35 @@ try {
       else if (last.action !== 'comment' || last.intent !== 'steer' || last.task !== 'live-claim' || last.notes !== 'Write the POSIX path conservatively.') {
         problems.push(`M3: the row written is ${JSON.stringify({ action: last.action, intent: last.intent, task: last.task, notes: last.notes })}`);
       }
+    }
+  }
+
+  // ── A1: a card opens and closes by keyboard, and focus goes where it should ──
+  {
+    await evaluate(`(() => { document.querySelector('.flow-oc .flow-oc__close')?.click(); })()`);
+    await sleep(300);
+    const kb = await evaluate(`(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const card = document.querySelector('.flow-face[data-live][tabindex="0"]');
+      if (!card) return { error: 'no task card is keyboard-focusable' };
+      card.focus();
+      const focused = document.activeElement === card;
+      card.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await wait(400);
+      const panel = document.querySelector('.flow-oc');
+      const inPanel = !!panel && panel.contains(document.activeElement);
+      document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await wait(400);
+      return { focused, opened: !!panel, inPanel, closed: !document.querySelector('.flow-oc'), back: document.activeElement === card || document.activeElement?.dataset?.id === card.dataset.id };
+    })()`);
+    console.log(`  A1 keyboard: ${JSON.stringify(kb)}`);
+    if (kb.error) problems.push(`A1: ${kb.error}`);
+    else {
+      if (!kb.focused) problems.push('A1: a task card cannot take keyboard focus');
+      if (!kb.opened) problems.push('A1: Enter on a focused card does not open it');
+      if (!kb.inPanel) problems.push('A1: opening a card does not move focus into it');
+      if (!kb.closed) problems.push('A1: Escape does not close the open card');
+      if (!kb.back) problems.push('A1: closing the card does not return focus to it');
     }
   }
 

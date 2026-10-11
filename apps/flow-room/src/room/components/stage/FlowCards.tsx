@@ -13,6 +13,7 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { Ban, Check, Circle, Hand, MessageSquare, Minus } from "lucide-react";
 import { FlowPlus } from "./FlowLayerView";
+import { useFlowJump } from "@/lib/flow-jump";
 import {
   ageLabel,
   beaconFor,
@@ -233,6 +234,7 @@ export function FlowTaskCard({ data, selected }: NodeProps<FlowTaskNode>) {
   const proof = faceProof(node);
   const messages = messageRows(node).length;
   const beacon = beaconFor(node);
+  const jump = useFlowJump();
   // glance tier: the title is 28px, so a short card shows fewer of its lines (T3)
   const glanceLines = Math.max(1, Math.min(3, Math.floor((height - 104) / 32)));
   const classes = [
@@ -245,6 +247,13 @@ export function FlowTaskCard({ data, selected }: NodeProps<FlowTaskNode>) {
   ].filter(Boolean).join(" ");
   return (
     <div className={classes} title={`${node.id} — ${node.title}`} data-beacon={beacon}
+      data-id={node.id}
+      tabIndex={0}
+      role="group"
+      aria-label={`${state.label}: ${title.text}. Press Enter to open.`}
+      onKeyDown={e => {
+        if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) { e.preventDefault(); jump.openCard(node.id); }
+      }}
       data-hil={state.kind === "you" ? "asking" : undefined}
       data-live={live ? "true" : "false"}
       style={{ width, height, ["--glance-lines" as string]: glanceLines }}>

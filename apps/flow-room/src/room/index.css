@@ -1856,7 +1856,7 @@ code,
   color: var(--text-primary);
   cursor: pointer;
 }
-.flow-oc__intent[aria-checked="true"] {
+.flow-oc__intent[aria-pressed="true"] {
   background: var(--text-primary);
   border-color: var(--text-primary);
   color: var(--surface-1);

@@ -139,9 +139,9 @@
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "b0d636ee12ef1d57a6e41ef102f7ef58124ca0ab667123b4baf9d84e14554057",
-      "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view and jump-in, ?gate seam; the open card sends through adapter.sendMessage; the presence strip (M1)",
-      "recorded": "2026-10-11T03:55:27.783Z",
+      "sha256": "b8ba8bf1ce12a816c98dacb25d682516bcbb9f24dab08b17857685f3bf7d8dfb",
+      "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view, jump-in, open card via adapter.sendMessage, presence strip; Escape closes the open card first and focus returns to the card (A1)",
+      "recorded": "2026-10-11T08:00:56.118Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -166,6 +166,10 @@
         {
           "sha256": "380e2a0e2af6540ac13058ebc894b571374f803f198f4d317e86c57f6acad17c",
           "reason": "plan-20261010-030/031 (v2): zoom tiers, minZoom 5%, reduced motion read once; the canvas is the layer view with the jump-in context; a new draft is brought into view; ?gate seam (viewport, center, nodes) for the browser gate"
+        },
+        {
+          "sha256": "b0d636ee12ef1d57a6e41ef102f7ef58124ca0ab667123b4baf9d84e14554057",
+          "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view and jump-in, ?gate seam; the open card sends through adapter.sendMessage; the presence strip (M1)"
         }
       ]
     },
@@ -192,9 +196,9 @@
       ]
     },
     "components/stage/FlowCards.tsx": {
-      "sha256": "64b8077cffb2aded91d8f1aca9b7186e3cf699266fb88daddedcac66656666f2",
-      "reason": "plan-20261010-030/031 (v2): the five-slot face from lib/flow-face.ts, data-live, sweep/beacon only when live (F1), unproven done neutral (C4); every task card carries the + (J1)",
-      "recorded": "2026-10-11T03:39:09.558Z",
+      "sha256": "4f4f970265d0067d7c175b93a0a85a392388ae7986225ec04fdace6a9e709f9a",
+      "reason": "plan-20261010-030/031/034 (v2): the five-slot face, data-live, + on every card; the card is keyboard-focusable and Enter/Space opens it (A1)",
+      "recorded": "2026-10-11T08:00:55.872Z",
       "superseded": [
         {
           "sha256": "b7ffdddba6b596037b4c5935e69279476bf6eb88ccedfc0e38ea0713de04f315",
@@ -211,6 +215,10 @@
         {
           "sha256": "fe45cc0ab730f6a4560289897a0b68c47c2dbe9fec57d9f3b64be2baa542687e",
           "reason": "plan-20261010-030 (v2 card face) + checker seq 158 fixes: the five-slot face from lib/flow-face.ts; no ID/skill/mode/layer on the face; data-live on the card; the bar sweeps and the beacon pulses only when LIVE (F1); unproven done is a neutral beacon (C4)"
+        },
+        {
+          "sha256": "64b8077cffb2aded91d8f1aca9b7186e3cf699266fb88daddedcac66656666f2",
+          "reason": "plan-20261010-030/031 (v2): the five-slot face from lib/flow-face.ts, data-live, sweep/beacon only when live (F1), unproven done neutral (C4); every task card carries the + (J1)"
         }
       ]
     },
@@ -230,9 +238,9 @@
       ]
     },
     "components/stage/FlowInspector.tsx": {
-      "sha256": "295ca3a1d29ecede50c0c93543687d574075adeaabbcfe803661f24ba005643d",
-      "reason": "plan-20261010-034 (v2 open card, D15/D16; M2, M3): rewritten as the open card in the approved order — title first, what this is, where it stands in plain step names + next line, proof by name, conversation with summaries/intents/folding, engine details folded, composer with intent chips writing one pb comment --intent row",
-      "recorded": "2026-10-11T03:55:27.711Z",
+      "sha256": "766dba173e347f110548c0e8060fdc8f758289c1dffd936413d7c86e8c01154a",
+      "reason": "plan-20261010-034 (v2 open card, D15/D16; M2, M3): approved order; focus lands on the title; intent chips are toggle buttons (aria-pressed); one send at a time",
+      "recorded": "2026-10-11T08:00:56.380Z",
       "superseded": [
         {
           "sha256": "c8d736e211db101abc94be970815a63c74799b7707512a31c84bd483da78e153",
@@ -241,6 +249,10 @@
         {
           "sha256": "878bbb2b0a0983a0a5b5753def0e08a0d965c06c8d872d6ea2d76e030bca62ce",
           "reason": "plan-20261010-028 (v2 contract) + checker seq 151 fixes: the big rail takes railAttrs(node) (C4/C5); sizes 9/9.5/10px moved to 12px (T2); the needs-a-human badge is --you, not failure red (C3); IDs and branches in the code face (T4)"
+        },
+        {
+          "sha256": "295ca3a1d29ecede50c0c93543687d574075adeaabbcfe803661f24ba005643d",
+          "reason": "plan-20261010-034 (v2 open card, D15/D16; M2, M3): rewritten as the open card in the approved order — title first, what this is, where it stands in plain step names + next line, proof by name, conversation with summaries/intents/folding, engine details folded, composer with intent chips writing one pb comment --intent row"
         }
       ]
     },
@@ -305,6 +317,11 @@
           "reason": "plan-20261010-031 (v2 layer view + jump-in, D21/D22; G1-G5, J1-J3): node types for bands, layer gates, stacks and drafts; buildLayerNodes / buildLayerEdges (edges re-pointed to stacks, bookend fan-out dropped)"
         }
       ]
+    },
+    "lib/stage-escape.ts": {
+      "sha256": "7e578790a82de3c75d57c103e183ffd645a0b4eb81ffbc43dbe701a934bed202",
+      "reason": "plan-20261010-034 (A1): with no host shell providing the context (the extracted app) the room listens for Escape itself — Escape never worked standalone",
+      "recorded": "2026-10-11T08:00:56.634Z"
     }
   }
 }

@@ -131,6 +131,12 @@ export function ageLabel(iso: string | null | undefined, now = Date.now()): stri
   return `${d} day${d === 1 ? "" : "s"}`;
 }
 
+/** "5 min ago", "3 days ago", or "just now" — never "just now ago". */
+export function agoLabel(iso: string | null | undefined, now = Date.now()): string | null {
+  const a = ageLabel(iso, now);
+  return a === null ? null : a === "just now" ? a : `${a} ago`;
+}
+
 export function lastMoved(node: FlowNode): string | null {
   const rows = node.journal ?? [];
   const last = rows.length ? rows[rows.length - 1] : undefined;
