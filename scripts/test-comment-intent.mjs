@@ -72,6 +72,9 @@ for (const intent of ['steer', 'question', 'finding', 'comment']) {
   // an untouched todo (no rows at all) gets the documented sentence
   const root2 = t.track(makeFixture({ tasks: [{ id: 'fresh', title: 'Nothing has happened here' }] }));
   const fresh = pbJson(root2, ['graph', '--json']).nodes.find((x) => x.id === 'fresh');
+  runPb(root2, ['comment', '--task', 'fresh', '--text', 'IMPORTANT: the YAML and JSON CSRF path on POSIX. Then more.'], { agent: 'human' });
+  const calm = pbJson(root2, ['graph', '--json']).nodes.find((x) => x.id === 'fresh').journal.pop().summary;
+  ok('a summary calms shouting but keeps acronyms', calm === 'Important: the YAML and JSON CSRF path on POSIX.', calm);
   ok('an untouched todo says "Nobody has picked this up"', fresh.now === 'Nobody has picked this up' && fresh.now_source === 'fallback', JSON.stringify(fresh.now));
 }
 
