@@ -1,4 +1,5 @@
-import { makeFixture, makeSuite, runPb, pbJson, readJournal } from './test-fixture-playbook.mjs';
+import { makeFixture, makeSuite, runPb, pbJson, readJournal, BASE_ENV } from './test-fixture-playbook.mjs';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 const s = makeSuite('versions');
@@ -88,4 +89,7 @@ const duplicate = runPb(red, ['version', 'new', '--name', 'draft1', '--draft', '
 s.ok('staging another draft preserves active version', duplicate.code === 0 && pbJson(red, ['version', 'list', '--json']).versions.find(v => v.version === 'red').state === 'open');
 const legacy = s.track(makeFixture());
 s.ok('plain playbook remains compatible', runPb(legacy, ['plan', '--goal', 'legacy', '--check', 'node -v']).code === 0);
+const races = spawnSync(process.execPath, ['scripts/test-version-races.mjs'], { encoding: 'utf8', env: BASE_ENV });
+console.log(races.stdout || '');
+s.ok('V6/V7 permission checks hold at transaction commit', races.status === 0, races.stderr);
 s.finish();

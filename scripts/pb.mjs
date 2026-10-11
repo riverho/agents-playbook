@@ -233,6 +233,13 @@ function appendJournal(entry) {
   ensureDir(MEMORY_DIR);
   const agent = entry.agent || resolveAgentId({});
   const stamped = stampOrigin(entry, agent);
+  if (versionWorkerTxn) {
+    const ctx = versionWorkerTxn;
+    ctx.seq = Math.max(ctx.seq, (ctx.lastJournalSeq ?? ctx.seq - 1) + 1);
+    ctx.lastJournalSeq = ctx.seq;
+    ctx.draft.__seq = ctx.seq;
+    stamped.seq = ctx.seq;
+  }
   if (typeof stamped.seq === 'number') {
     appendFileSync(p(JOURNAL), JSON.stringify(stamped) + '\n', 'utf8');
     return stamped;
@@ -270,15 +277,25 @@ function applyTaskMutation(taskId, mutator, ctx, agent) {
 // before this existed).
 //   journalEntry: row WITHOUT `seq` (the transaction allocates it)
 //   mutator: (existing, ctx) => patch   — must NOT call appendJournal (same lock)
-function commitIteration(taskId, journalEntry, mutator, { agent = 'agent', timeoutMs = 30000 } = {}) {
+function commitIteration(taskId, journalEntry, mutator, { agent = 'agent', timeoutMs = 30000, versionAction = null } = {}) {
   ensureDir(MEMORY_DIR);
   try {
-    return withStateTxn((draft, ctx) => {
+    const perform = (draft, ctx) => {
       ctx.draft = draft;
+      const task = backlogTasks().find(t => t.id === taskId);
+      const prior = versionInTxn;
+      versionInTxn = true;
+      try {
+        versionWriteGuard(task, versionAction || journalEntry.action);
+        if (task?.version && journalEntry.loop_id !== task.loop_id) versionRefusal('V4', 'The card moved versions while this writer waited; reload it and retry');
+      } finally { versionInTxn = prior; }
       appendJournal({ ...journalEntry, seq: ctx.seq });
       return applyTaskMutation(taskId, mutator, ctx, agent);
-    }, { agent, timeoutMs });
+    };
+    if (versionWorkerTxn) return perform(versionWorkerTxn.draft, versionWorkerTxn);
+    return withStateTxn(perform, { agent, timeoutMs });
   } catch (e) {
+    if (e instanceof VersionRefused) return null;
     if (!(e instanceof StateTxnBusy)) throw e;
     console.error('ERROR: could not acquire the state lock (another agent is writing). Nothing was recorded — re-run.');
     return null;
@@ -502,6 +519,7 @@ function withStateTxn(mutator, { agent = 'agent', timeoutMs = 5 * 60_000 } = {})
 // writer can never claim an earlier position), and `updated_by` is the writer.
 function updateBacklogState(taskId, mutator, { agent } = {}) {
   const who = agent || resolveAgentId({});
+  if (versionWorkerTxn) return applyTaskMutation(taskId, mutator, versionWorkerTxn, who);
   try {
     return withStateTxn((draft, ctx) => {
       ctx.draft = draft;
@@ -828,6 +846,10 @@ function findVersion(name, state = readLoops()) { return state.loops.find(l => l
 function openVersion(state = readLoops()) { return state.loops.find(l => l.version && ['open', 'frozen', 'closing'].includes(l.state)); }
 class VersionRefused extends Error {}
 let versionInTxn = false;
+let versionCycleTxn = null;
+let versionWorkerTxn = null;
+class WorkerExit extends Error { constructor(code) { super('worker exit'); this.code = code; } }
+function workerExit(code) { if (versionWorkerTxn) throw new WorkerExit(code); process.exit(code); }
 function versionRefusal(rule, message) {
   console.error(`${rule}: ${message}. Nothing was written.`);
   if (versionInTxn) throw new VersionRefused(message);
@@ -2114,7 +2136,7 @@ function statusPayload() {
   const journal = readJournal();
   const loop = activeLoop();
   const failures = runValidate();
-  const next = tasks.filter((t) => t.status === 'todo').sort((a, b) => prio(a) - prio(b))[0] || null;
+  const next = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t)).sort((a, b) => prio(a) - prio(b))[0] || null;
   return {
     schema: 'agent-playbook.status.v1',
     name: master?.name || 'playbook',
@@ -2763,7 +2785,7 @@ function gitToplevel() {
     return execSync('git rev-parse --show-toplevel', { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     console.error('Not inside a git repository — `pb worker` needs git worktrees. Run `git init` first.');
-    process.exit(1);
+    workerExit(1);
   }
 }
 // Worker git calls send their chatter to stderr, never stdout: `--json` consumers
@@ -2976,14 +2998,31 @@ function workerRemovePayload(taskId, agent, worker, { execute, force, deleteBran
 }
 function cmdWorker(args) {
   const sub = args._[0];
+  const writes = ['exec', 'verify', 'checker', 'provider-rate-limit'].includes(sub) || (args.execute && ['create', 'remove', 'merge'].includes(sub));
+  if (writes && versionMode() && !versionWorkerTxn) {
+    const task = backlogTasks().find(t => t.id === args._[1]);
+    if (task && !task.version) versionRefusal('V2', 'Migrate the card into a version before operating its worker');
+    try {
+      return withStateTxn((draft, ctx) => {
+        ctx.draft = draft;
+        const prior = versionInTxn; versionInTxn = true; versionWorkerTxn = ctx;
+        try { return cmdWorker(args); } finally { versionInTxn = prior; versionWorkerTxn = null; }
+      }, { agent: resolveAgentId(args) });
+    } catch (err) {
+      if (err instanceof VersionRefused) workerExit(1);
+      if (err instanceof WorkerExit) workerExit(err.code);
+      if (!(err instanceof StateTxnBusy)) throw err;
+      console.error('Worker lifecycle state is busy; nothing was executed. Retry after the current writer finishes.'); workerExit(1);
+    }
+  }
   if (!['status', 'merge-ready'].includes(sub) && args._[1]) {
     versionWriteGuard(backlogTasks().find(t => t.id === args._[1]), `worker ${sub}`, args);
   }
   if (sub === 'create') {
     const taskId = args._[1];
-    if (!taskId) { console.error('Usage: pb worker create <task-id> --agent <agent> [--base <ref>] [--worktree <path>] [--execute] [--json]'); process.exit(1); }
+    if (!taskId) { console.error('Usage: pb worker create <task-id> --agent <agent> [--base <ref>] [--worktree <path>] [--execute] [--json]'); workerExit(1); }
     const task = backlogTasks().find((t) => t.id === taskId);
-    if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!task) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const agent = args.agent || resolveAgentId(args);
     const opts = { base: typeof args.base === 'string' ? args.base : undefined, worktreeOverride: typeof args.worktree === 'string' ? args.worktree : undefined };
     const payload = workerCreatePayload(taskId, agent, !!args.execute, opts);
@@ -2999,24 +3038,24 @@ function cmdWorker(args) {
     if (!acquireLock(WORKER_LOCK, { staleMs: WORKER_LOCK_STALE_MS })) {
       console.error(`Could not acquire the worker slot for [${taskId}] (another agent is opening a worker). Re-run.`);
       console.error('If no worker create is actually running, clear the leaked lock with: pb unlock');
-      process.exit(1);
+      workerExit(1);
     }
     try {
       // Refuse before mutating: a half-made worktree is worse than a clean error.
       if (gitBranchExists(payload.branch)) {
         console.error(`Branch already exists: ${payload.branch}`);
         console.error(`A worker for [${taskId}] is already open. Reuse it, or clean up with:\n  pb worker remove ${taskId} --agent ${agent} --delete-branch --execute`);
-        process.exit(1);
+        workerExit(1);
       }
       if (existsSync(payload.worktree)) {
         console.error(`Worktree path already exists: ${payload.worktree}`);
         console.error('Remove or rename it, then retry.');
-        process.exit(1);
+        workerExit(1);
       }
       const baseCommit = gitIn(ROOT, ['rev-parse', args.base && typeof args.base === 'string' ? args.base : 'HEAD']);
       if (!baseCommit) {
         console.error(`Could not resolve base ref "${payload.base}" — the worker would fork from nothing.`);
-        process.exit(1);
+        workerExit(1);
       }
       // ONE live worker per task. The branch name embeds the agent, so two agents
       // racing for the same task would otherwise both pass the branch/path checks
@@ -3028,13 +3067,13 @@ function cmdWorker(args) {
           console.error(`[${taskId}] already has a live worker slot held by "${live.agent}" (${live.status}, since ${live.created_at || 'unknown'}).`);
           console.error(`  Reuse it, tear it down with \`pb worker remove ${taskId} --agent ${live.agent} --execute\`,`);
           console.error('  or pass --force to open a second slot (two workers editing one task will collide).');
-          process.exit(1);
+          workerExit(1);
         }
         const clash = liveWorkerAt(payload.worktree);
         if (clash) {
           console.error(`Worktree path is already held by [${clash.taskId}] (agent ${clash.rec.agent}): ${payload.worktree}`);
           console.error(`Pick another path with --worktree, or tear that slot down first.`);
-          process.exit(1);
+          workerExit(1);
         }
       }
       try {
@@ -3044,7 +3083,7 @@ function cmdWorker(args) {
         runGit(['worktree', 'add', '--quiet', '-b', payload.branch, payload.worktree, payload.base]);
       } catch {
         console.error(`\nFailed to create the worker worktree for [${taskId}] (see git output above). No state was recorded.`);
-        process.exit(1);
+        workerExit(1);
       }
       const branchHead = gitIn(payload.worktree, ['rev-parse', 'HEAD']);
       updateBacklogState(taskId, () => ({
@@ -3071,9 +3110,9 @@ function cmdWorker(args) {
   }
   if (sub === 'status') {
     const taskId = args._[1];
-    if (!taskId) { console.error('Usage: pb worker status <task-id> [--json]'); process.exit(1); }
+    if (!taskId) { console.error('Usage: pb worker status <task-id> [--json]'); workerExit(1); }
     const task = backlogTasks().find((t) => t.id === taskId);
-    if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!task) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const worker = taskState(taskId).worker || null;
     const payload = workerStatusPayload(taskId, worker);
     if (args.json) return printJson(payload);
@@ -3091,10 +3130,10 @@ function cmdWorker(args) {
   if (sub === 'exec') {
     const taskId = args._[1];
     const argv = Array.isArray(args['--']) ? args['--'] : [];
-    if (!taskId || !argv.length) { console.error('Usage: pb worker exec <task-id> -- <command> [args...]'); process.exit(1); }
+    if (!taskId || !argv.length) { console.error('Usage: pb worker exec <task-id> -- <command> [args...]'); workerExit(1); }
     const worker = taskState(taskId).worker || null;
-    if (!worker?.worktree_path) { console.error(`[${taskId}] has no worker worktree — run \`pb worker create ${taskId} --execute\` first.`); process.exit(1); }
-    if (!existsSync(worker.worktree_path)) { console.error(`The worker worktree is missing on disk: ${worker.worktree_path}`); process.exit(1); }
+    if (!worker?.worktree_path) { console.error(`[${taskId}] has no worker worktree — run \`pb worker create ${taskId} --execute\` first.`); workerExit(1); }
+    if (!existsSync(worker.worktree_path)) { console.error(`The worker worktree is missing on disk: ${worker.worktree_path}`); workerExit(1); }
     const [file, ...rest] = argv;
     // Commands run with cwd = the WORKER's tree, so "the work" is exercised in the
     // isolated checkout that will actually be merged.
@@ -3105,17 +3144,17 @@ function cmdWorker(args) {
     } catch (err) {
       if (err?.stdout?.length) process.stderr.write(err.stdout.toString());
       console.error(`\nworker exec failed for [${taskId}] (exit ${err?.status ?? 'unknown'}).`);
-      process.exit(err?.status || 1);
+      workerExit(err?.status || 1);
     }
   }
   if (sub === 'verify') {
     const taskId = args._[1];
-    if (!taskId) { console.error('Usage: pb worker verify <task-id> [--json]'); process.exit(1); }
+    if (!taskId) { console.error('Usage: pb worker verify <task-id> [--json]'); workerExit(1); }
     const task = backlogTasks().find((t) => t.id === taskId);
-    if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!task) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const worker = taskState(taskId).worker || null;
-    if (!worker?.worktree_path) { console.error(`[${taskId}] has no worker worktree — run \`pb worker create ${taskId} --execute\` first.`); process.exit(1); }
-    if (!existsSync(worker.worktree_path)) { console.error(`The worker worktree is missing on disk: ${worker.worktree_path}`); process.exit(1); }
+    if (!worker?.worktree_path) { console.error(`[${taskId}] has no worker worktree — run \`pb worker create ${taskId} --execute\` first.`); workerExit(1); }
+    if (!existsSync(worker.worktree_path)) { console.error(`The worker worktree is missing on disk: ${worker.worktree_path}`); workerExit(1); }
     const checks = taskChecks(task);
     const commands = taskCommands(task);
     const checkResults = checks.length ? runChecks(task, worker.worktree_path) : [];
@@ -3148,13 +3187,13 @@ function cmdWorker(args) {
     if (checks.length || commands.length) printCheckResults([...commandResults, ...checkResults]);
     if (!checks.length && !commands.length) console.log(`[${taskId}] has no acceptance_checks — verification is honor-only.`);
     console.log(passed ? `[${taskId}] worker verify PASSED at ${head || '(unknown commit)'}` : `[${taskId}] worker verify FAILED at ${head || '(unknown commit)'}`);
-    if (!passed) process.exit(1);
+    if (!passed) workerExit(1);
     return;
   }
   if (sub === 'remove') {
     const taskId = args._[1];
-    if (!taskId) { console.error('Usage: pb worker remove <task-id> [--agent <agent>] [--delete-branch] [--force] [--execute] [--json]'); process.exit(1); }
-    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!taskId) { console.error('Usage: pb worker remove <task-id> [--agent <agent>] [--delete-branch] [--force] [--execute] [--json]'); workerExit(1); }
+    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const worker = taskState(taskId).worker || null;
     const agent = args.agent || worker?.agent || resolveAgentId(args);
     const payload = workerRemovePayload(taskId, agent, worker, {
@@ -3172,14 +3211,14 @@ function cmdWorker(args) {
           console.error(`  ! ${payload.worktree}`);
           console.error('    Deleting it would either destroy its target or leave git\'s worktree bookkeeping inconsistent.');
           console.error('    Unlink it by hand (Windows: `cmd /c rmdir "<path>"`), then re-run.');
-          process.exit(1);
+          workerExit(1);
         }
         const { removed, failed } = unlinkTreeLinks(payload.worktree);
         if (failed.length) {
           console.error(`\nRefusing to remove the worker worktree for [${taskId}]: ${failed.length} link(s) inside it could not be unlinked.`);
           for (const f of failed) console.error(`  ! ${f.path} (${f.error}) — a recursive delete would follow it into its target.`);
           console.error('Nothing was deleted. Remove those links by hand (Windows: `cmd /c rmdir "<path>"`), then re-run.');
-          process.exit(1);
+          workerExit(1);
         }
         if (removed.length) {
           console.log(`Unlinked ${removed.length} link(s) without following them: ${removed.map((r) => r.path).join(', ')}`);
@@ -3191,7 +3230,7 @@ function cmdWorker(args) {
       } catch {
         console.error(`\nFailed to remove the worker worktree for [${taskId}] (see git output above).`);
         console.error('Uncommitted work in the worktree? Re-run with --force to discard it.');
-        process.exit(1);
+        workerExit(1);
       }
       updateBacklogState(taskId, () => ({
         worker: { ...(worker || {}), agent, branch: payload.branch, worktree_path: payload.worktree, status: 'removed', removed_at: nowISO() },
@@ -3207,9 +3246,9 @@ function cmdWorker(args) {
     const verdict = args.verdict;
     if (!taskId || !['pass', 'risk', 'block'].includes(verdict)) {
       console.error('Usage: pb worker checker <task-id> --verdict pass|risk|block [--notes "..."]');
-      process.exit(1);
+      workerExit(1);
     }
-    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const checker = { verdict, notes: args.notes || null, recorded_at: nowISO(), agent: resolveAgentId(args) };
     const checkerCommit = commitIteration(
       taskId,
@@ -3217,15 +3256,15 @@ function cmdWorker(args) {
       () => ({ checker, updated_at: checker.recorded_at }),
       { agent: checker.agent },
     );
-    if (!checkerCommit) process.exit(1);
+    if (!checkerCommit) workerExit(1);
     console.log(`Checker [${taskId}] → ${verdict} (seq ${checkerCommit.seq})`);
     return;
   }
   if (sub === 'merge') {
     const taskId = args._[1];
-    if (!taskId) { console.error('Usage: pb worker merge <task-id> [--agent <agent>] [--execute] [--json]'); process.exit(1); }
+    if (!taskId) { console.error('Usage: pb worker merge <task-id> [--agent <agent>] [--execute] [--json]'); workerExit(1); }
     const task = backlogTasks().find((t) => t.id === taskId);
-    if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!task) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const worker = taskState(taskId).worker || null;
     const agent = args.agent || worker?.agent || resolveAgentId(args);
     const derived = workerNames(taskId, agent);
@@ -3252,7 +3291,7 @@ function cmdWorker(args) {
         for (const r of gate.reasons) console.error(`  ! ${r}`);
         for (const w of gate.warnings) console.error(`  ⚠ ${w}`);
       }
-      process.exit(1);
+      workerExit(1);
     }
     if (!args.execute) {
       if (args.json) printJson(payload);
@@ -3266,7 +3305,7 @@ function cmdWorker(args) {
     } catch {
       console.error(`\nMerge of "${branch}" failed (see git output above). The checkout may be mid-conflict.`);
       console.error('Resolve it, or abort with: git merge --abort');
-      process.exit(1);
+      workerExit(1);
     }
     const head = gitIn(ROOT, ['rev-parse', 'HEAD']);
     const mergedAt = nowISO();
@@ -3300,7 +3339,7 @@ function cmdWorker(args) {
       notes: `merged ${branch} into the root checkout at ${head}`,
       worker: workerRecord,
     }, () => ({ worker: workerRecord, updated_at: mergedAt }), { agent });
-    if (!mergeCommit) process.exit(1);
+    if (!mergeCommit) workerExit(1);
     if (args.json) {
       printJson({ ...payload, merge_commit: head, journal_seq: mergeCommit.seq });
       return;
@@ -3312,7 +3351,7 @@ function cmdWorker(args) {
   if (sub === 'merge-ready') {
     const taskId = args._[1];
     const task = backlogTasks().find((t) => t.id === taskId);
-    if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!task) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const payload = mergeReadyPayload(task);
     if (args.json) {
       printJson(payload);
@@ -3321,13 +3360,13 @@ function cmdWorker(args) {
       for (const w of payload.warnings) console.log(`  ⚠ ${w}`);
     }
     // Exit code is the gate: `pb worker merge-ready <id> && git merge ...`
-    if (!payload.ready) process.exit(1);
+    if (!payload.ready) workerExit(1);
     return;
   }
   if (sub === 'provider-rate-limit') {
     const taskId = args._[1];
-    if (!taskId || !args.provider) { console.error('Usage: pb worker provider-rate-limit <task-id> --provider <name> [--retry-after 5h]'); process.exit(1); }
-    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!taskId || !args.provider) { console.error('Usage: pb worker provider-rate-limit <task-id> --provider <name> [--retry-after 5h]'); workerExit(1); }
+    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const provider = { name: args.provider, status: 'rate_limited', retry_after: args['retry-after'] || '5h', recorded_at: nowISO() };
     const providerAgent = resolveAgentId(args);
     const providerCommit = commitIteration(
@@ -3336,12 +3375,12 @@ function cmdWorker(args) {
       () => ({ provider, updated_at: provider.recorded_at }),
       { agent: providerAgent },
     );
-    if (!providerCommit) process.exit(1);
+    if (!providerCommit) workerExit(1);
     console.log(`Provider ${provider.name} for [${taskId}] rate_limited; retry_after=${provider.retry_after}`);
     return;
   }
   console.error('Usage: pb worker create|status|exec|verify|remove|checker|merge-ready|merge|provider-rate-limit ...');
-  process.exit(1);
+  workerExit(1);
 }
 
 // ============================================================================
@@ -3362,7 +3401,7 @@ function cmdStatus(args = {}) {
   const highLessons = openLessons().filter((l) => l.severity === 'high').length;
   console.log(`  Loop:    ${loop ? `${loop.id} active` : '(none active)'}  •  ${highLessons} high-severity lesson(s) open`);
 
-  const next = tasks.filter((t) => t.status === 'todo').sort((a, b) => prio(a) - prio(b))[0];
+  const next = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t)).sort((a, b) => prio(a) - prio(b))[0];
   if (next) console.log(`  Next up: [${next.id}] ${next.title}  → skill: ${next.skill || '(none)'}`);
   const wip = tasks.filter((t) => t.status === 'in_progress');
   if (wip.length) console.log(`  In progress: ${wip.map((t) => `[${t.id}] ${t.title}`).join('; ')}`);
@@ -4134,7 +4173,25 @@ function cmdPlan(args) {
       process.exit(1);
     }
   }
-  appendBacklogTask(task);
+  // A close holds this same lock through its stop checks. Planning must re-read the
+  // active version after waiting, or a feature can arrive in an already closed version.
+  try {
+    withStateTxn(() => {
+      const prior = versionInTxn;
+      versionInTxn = true;
+      try {
+        const stamp = versionPlanStamp(args, depIds);
+        if (task.version !== stamp.version) versionRefusal('V4', 'The active version changed while planning; retry against its current goal');
+        Object.assign(task, stamp);
+        task.id = nextPlanId();
+        appendBacklogTask(task);
+      } finally { versionInTxn = prior; }
+    }, { agent: resolveAgentId(args) });
+  } catch (err) {
+    if (err instanceof VersionRefused) process.exit(1);
+    if (!(err instanceof StateTxnBusy)) throw err;
+    console.error('Planning state is busy; nothing was written. Retry after the current writer finishes.'); process.exit(1);
+  }
   console.log(`Planned [${task.id}] ${task.title}`);
   console.log(`  skill: ${skill}`);
   console.log(`  priority: ${priority}`);
@@ -4303,7 +4360,7 @@ function cmdRecord(args) {
       updated_at: entry.ts,
       loop_id: existing.loop_id || (loop ? loop.id : undefined),
     };
-  }, { agent: agentId });
+  }, { agent: agentId, versionAction: 'record' });
   if (!commit) process.exit(1);
   console.log(`Recorded [${entry.task}] ${entry.action} → ${entry.status}${checksOutcome !== 'none' ? ` (checks: ${checksOutcome})` : ''} (seq ${commit.seq})`);
   if (endsIteration) console.log(`Backlog [${task.id}] → ${args.status}.`);
@@ -4471,19 +4528,26 @@ function cmdAttach(args) {
     console.error('A recorded path that is not there is a claim, not a document — pb validate would fail on it.');
     process.exit(1);
   }
-  const written = backlogAttachDoc(taskId, rel);
-  if (!written.ok) { console.error(`Refusing: ${written.reason}`); process.exit(1); }
-  if (written.already) {
-    console.log(`[${taskId}] already lists ${rel}; nothing written.`);
-    return;
-  }
   const label = typeof args.label === 'string' && args.label.trim() ? args.label.trim() : null;
-  const row = appendJournal({
-    action: 'attach',
-    status: 'in_progress',
-    task: taskId,
-    notes: `docs: + ${rel}${label ? ` (${label})` : ''}`,
-  });
+  const agent = resolveAgentId(args);
+  let written, row;
+  try {
+    withStateTxn((draft, ctx) => {
+      const fresh = backlogTasks().find(t => t.id === taskId);
+      const prior = versionInTxn; versionInTxn = true;
+      try { versionWriteGuard(fresh, 'attach', args); } finally { versionInTxn = prior; }
+      written = backlogAttachDoc(taskId, rel);
+      if (!written.ok || written.already) return;
+      row = appendJournal({ seq: ctx.seq, ts: nowISO(), loop_id: fresh?.version ? fresh.loop_id : activeLoop()?.id || 'legacy', agent,
+        action: 'attach', status: fresh.status, task: taskId, notes: `docs: + ${rel}${label ? ` (${label})` : ''}` });
+    }, { agent });
+  } catch (err) {
+    if (err instanceof VersionRefused) process.exit(1);
+    if (!(err instanceof StateTxnBusy)) throw err;
+    console.error('Attachment state is busy; nothing was written. Retry after the current writer finishes.'); process.exit(1);
+  }
+  if (!written.ok) { console.error(`Refusing: ${written.reason}`); process.exit(1); }
+  if (written.already) { console.log(`[${taskId}] already lists ${rel}; nothing written.`); return; }
   const listed = backlogTasks().find((t) => t.id === taskId)?.docs ?? [];
   console.log(`[${taskId}] documents (${listed.length}): ${listed.join(', ')}`);
   console.log(`Journalled as seq ${row.seq}${label ? `, label "${label}"` : ''}. The room sees this through pb graph's per-node docs.`);
@@ -4836,6 +4900,7 @@ function cmdLoop(args) {
   const sub = args._[0] || 'status';
   if (sub === 'new' && versionMode()) versionRefusal('V1', 'This playbook uses versions; use pb version new');
   if (sub === 'close' && activeLoop()?.version) versionRefusal('V6', 'Use pb version close so stop checks and explicit carry/drop are enforced');
+  if (sub === 'quarantine' && findVersion(args._[1] || args.loop)) versionRefusal('V7', 'Use version lifecycle commands for a versioned loop');
   if (sub === 'new') {
     const state = readLoops();
     const active = state.active ? state.loops.find((l) => l.id === state.active) : null;
@@ -5778,7 +5843,7 @@ function cmdCheckpoint(args) {
   const journal = readJournal().filter((e) => !e.__malformed);
   const lastTs = journal.length ? journal[journal.length - 1].ts : null;
   const wip = tasks.filter((t) => t.status === 'in_progress');
-  const nextTodo = tasks.filter((t) => t.status === 'todo').sort((a, b) => prio(a) - prio(b))[0];
+  const nextTodo = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t)).sort((a, b) => prio(a) - prio(b))[0];
   const loopState = readLoops();
   const loop = activeLoop();
   const openHighLessons = openLessons().filter((l) => l.severity === 'high');
@@ -5950,6 +6015,18 @@ function rewriteCycleBrief(text, wanted) {
   return out;
 }
 function cmdCycle(args) {
+  if ((args.edit || args.new) && versionMode() && !versionCycleTxn) {
+    try {
+      return withStateTxn((draft, ctx) => {
+        const prior = versionInTxn; versionInTxn = true; versionCycleTxn = ctx;
+        try { return cmdCycle(args); } finally { versionInTxn = prior; versionCycleTxn = null; }
+      }, { agent: resolveAgentId(args) });
+    } catch (err) {
+      if (err instanceof VersionRefused) process.exit(1);
+      if (!(err instanceof StateTxnBusy)) throw err;
+      console.error('Cycle state is busy; nothing was written. Retry after the current writer finishes.'); process.exit(1);
+    }
+  }
   const cur = readCycle();
   if ((args.edit || args.new) && versionMode() && !['open', 'frozen'].includes(openVersion()?.state)) versionRefusal('V7', 'Open a version before changing the cycle brief');
   // `pb cycle --edit --stop "..."` — the OPEN brief is editable state, not a fossil. The goal
@@ -5961,16 +6038,19 @@ function cmdCycle(args) {
     if (typeof args.stop === 'string' && args.stop.trim()) wanted.stop = args.stop.trim();
     if (!Object.keys(wanted).length) {
       console.error('Nothing to change: pass --stop "<text>" and/or --goal "<text>".');
+      if (versionCycleTxn) throw new VersionRefused('Nothing to change');
       process.exit(2);
     }
     if (!cur.exists) {
       console.error(`No cycle brief at ${CYCLE} — open the phase with \`pb cycle --new\` first.`);
+      if (versionCycleTxn) throw new VersionRefused('No cycle brief');
       process.exit(1);
     }
     const before = readText(CYCLE);
     let after;
     try { after = rewriteCycleBrief(before, wanted); } catch (err) {
       console.error(`Refusing to edit: ${err.message}`);
+      if (versionCycleTxn) throw new VersionRefused(err.message);
       process.exit(1);
     }
     if (after === before) {
@@ -5980,6 +6060,10 @@ function cmdCycle(args) {
     writeFileSync(p(CYCLE), after, 'utf8');
     const loop = activeLoop();
     const row = appendJournal({
+      seq: versionCycleTxn?.seq,
+      ts: nowISO(),
+      loop_id: loop?.id || 'legacy',
+      agent: resolveAgentId(args),
       action: 'cycle-edit',
       status: 'in_progress',
       task: null,
@@ -6004,6 +6088,7 @@ function cmdCycle(args) {
     const phase = (Number.isInteger(cur.phase) ? cur.phase : 0) + 1;
     ensureDir(dirname(CYCLE));
     writeFileSync(p(CYCLE), cycleTemplate({ phase, goal: args.goal, stop: args.stop }), 'utf8');
+    if (versionCycleTxn) appendJournal({ seq: versionCycleTxn.seq, ts: nowISO(), loop_id: activeLoop()?.id, agent: resolveAgentId(args), action: 'cycle-open', status: 'event', task: null, phase, notes: `Opened phase ${phase}` });
     console.log(`Opened cycle brief: ${CYCLE} (phase ${phase}). Fill the five questions, then \`pb status\`.`);
     return;
   }
@@ -6603,7 +6688,7 @@ const api = {
 // same choice the CLI would make.
 function cmdNextPayload() {
   const tasks = backlogTasks();
-  const todo = tasks.filter((t) => t.status === 'todo');
+  const todo = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t));
   // Mirrors cmdNext's selection rules exactly, including the layer gate, so a host
   // previewing the next task cannot be told about work the CLI would refuse.
   const plan = computeLayerPlan({ checkGates: true, allTasks: tasks });
