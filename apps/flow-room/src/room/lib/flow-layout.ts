@@ -30,10 +30,12 @@
 
 import dagre from "@dagrejs/dagre";
 import { flowLegendRequiredSize, gateLabelText } from "./flow-derive";
+import { FACE_W, faceHeight } from "./flow-face";
 import type { FlowEdge, FlowGraph, FlowNode } from "./flow-types";
 
 /** Card geometry, measured from the painted frames (flow.css `.card`). */
-export const FLOW_CARD_W = 236;
+/** v2: the task card face is 288 wide (contract K5; FACE_W in flow-face.ts). */
+export const FLOW_CARD_W = FACE_W;
 export const FLOW_CARD_H = 104;
 export const FLOW_COLUMN_GAP = 36;
 /** Vertical gap between two cards in a column (frame 1: 44 → 164 with h104). */
@@ -121,7 +123,8 @@ export function flowNodeSize(node: FlowNode): FlowSize {
     case "batch":
       return { width: FLOW_CARD_W, height: FLOW_BATCH_H };
     default:
-      return { width: FLOW_CARD_W, height: FLOW_CARD_H };
+      // K5: a task card is as tall as what it draws (120–220), known before render.
+      return { width: FLOW_CARD_W, height: faceHeight(node) };
   }
 }
 

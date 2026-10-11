@@ -28,6 +28,7 @@ import {
   ViewportPortal,
   useNodesState,
   useReactFlow,
+  useStore,
   type NodeTypes,
   type EdgeTypes,
 } from "@xyflow/react";
@@ -45,6 +46,7 @@ import {
 import {
   DEFAULT_FLOW_ADAPTER,
   SAMPLE_LAYERED_ADAPTER,
+  sourceChipText,
   type FlowAdapter,
   type FlowSteeringMode,
 } from "@/lib/flow-adapter";
@@ -52,7 +54,6 @@ import {
   FLOW_FIT_PADDING,
   FLOW_MARGIN,
   flowFitBounds,
-  layoutFlow,
   layoutNodeById,
   type FlowRect,
 } from "@/lib/flow-layout";
@@ -67,10 +68,13 @@ import {
   FlowTaskCard,
 } from "./FlowCards";
 import { FlowViewContext } from "@/lib/flow-view";
+import { agoLabel, zoomTier } from "@/lib/flow-face";
+import { presence } from "@/lib/flow-open";
+import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion";
 import {
   STEERING_NODE_ID,
-  buildEdges,
-  buildNodes,
+  buildLayerEdges,
+  buildLayerNodes,
   spawnTargets,
   type FlowAnyNode,
   type FlowCardData,
@@ -81,6 +85,11 @@ import {
   FlowEdge as FlowEdgeComponent,
 } from "./FlowEdges";
 import { FlowInspector } from "./FlowInspector";
+import { FlowDecisions } from "./FlowDecisions";
+import { decisionItems, type DecisionRow } from "@/lib/flow-decisions";
+import { FlowBandCard, FlowDraftCard, FlowLayerGateCard, FlowStackCard } from "./FlowLayerView";
+import { layoutLayers, nextBandId, type BandDraft } from "@/lib/flow-bands";
+import { FlowJumpContext, type FlowJump } from "@/lib/flow-jump";
 import { FlowSteeringDock, FlowSteeringToast, type SteeringToast } from "./FlowSteeringDock";
 
 /** Node/edge component registries — module scope, so React Flow never re-creates them. */
@@ -92,6 +101,10 @@ const NODE_TYPES = {
   flowBatch: FlowBatchCard,
   flowGatepost: FlowGatepostCard,
   flowSteering: FlowSteeringCard,
+  flowBand: FlowBandCard,
+  flowLayerGate: FlowLayerGateCard,
+  flowStack: FlowStackCard,
+  flowDraft: FlowDraftCard,
 } as unknown as NodeTypes;
 
 const EDGE_TYPES = { flow: FlowEdgeComponent } as unknown as EdgeTypes;
@@ -159,9 +172,22 @@ function FlowCanvas({
   // this repo's live snapshot and the labelled three-layer sample.
   const [showSample, setShowSample] = useState(false);
   const active = adapter ?? (showSample ? SAMPLE_LAYERED_ADAPTER : DEFAULT_FLOW_ADAPTER);
-  const graph = useMemo(() => active.load(), [active]);
+  const sourceGraph = useMemo(() => active.load(), [active]);
+  const [recorded, setRecorded] = useState<Record<string, DecisionRow>>({});
+  const graph = useMemo(() => ({ ...sourceGraph, nodes: sourceGraph.nodes.map(n => recorded[n.id] ? {
+    ...n, human: { ...n.human, decided: { option: recorded[n.id].option, reason: recorded[n.id].reason, by: recorded[n.id].agent, ts: recorded[n.id].ts, seq: recorded[n.id].seq } },
+  } : n) }), [sourceGraph, recorded]);
+  useEffect(() => { setRecorded({}); }, [active]);
+  const inbox = useMemo(() => decisionItems(graph), [graph]);
+  const [showDecisions, setShowDecisions] = useState(false);
   const filtered = useMemo(() => filterGraph(graph, view, query), [graph, view, query]);
-  const layout = useMemo(() => layoutFlow(filtered), [filtered]);
+  // v2 layer view (D21): bands from the plan's layers; done stacked unless expanded;
+  // drafts are view state until Create (J3).
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const [drafts, setDrafts] = useState<BandDraft[]>([]);
+  const [openPlus, setOpenPlus] = useState<string | null>(null);
+  const layout = useMemo(() => layoutLayers(filtered, { expanded, drafts }), [filtered, expanded, drafts]);
+  // Refit only when the GRAPH changes — never while a person types into a draft.
   const layoutKey = `${view}|${query}|${filtered.nodes.length}|${filtered.edges.length}`;
   const spawned = useMemo(() => spawnTargets(graph), [graph]);
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowAnyNode>([]);
@@ -176,7 +202,10 @@ function FlowCanvas({
   // Seed positions whenever the filter (and therefore the layering) changes,
   // then fit the viewport once the new nodes have been committed.
   useEffect(() => {
-    setNodes(buildNodes(filtered, layout, spawned));
+    setNodes(buildLayerNodes(filtered, layout, spawned) as FlowAnyNode[]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout]);
+  useEffect(() => {
     setSelectedIds([]);
     setOpenId(null);
     const timer = window.setTimeout(() => {
@@ -198,9 +227,10 @@ function FlowCanvas({
   );
   const plan = useMemo(() => steeringPlan(selection), [selection]);
   const multi = selection.length > 1;
+  const reducedMotion = usePrefersReducedMotion();
   const viewState = useMemo(
-    () => ({ goalDiff, steeredIds }),
-    [goalDiff, steeredIds]
+    () => ({ goalDiff, steeredIds, reducedMotion }),
+    [goalDiff, steeredIds, reducedMotion]
   );
 
   // The frame-3 summary card: view state, placed under the orchestrator.
@@ -232,22 +262,69 @@ function FlowCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [multi, plan, steeredIds, layoutKey]);
 
-  const edges = useMemo(() => buildEdges(filtered, layout), [filtered, layout]);
+  const edges = useMemo(() => buildLayerEdges(filtered, layout), [filtered, layout]);
+  // A new draft may land in a band that is off screen: bring it into view, at the current zoom.
+  const lastDraft = drafts[drafts.length - 1]?.id;
+  useEffect(() => {
+    if (!lastDraft) return;
+    const placed = layout.nodes.find(n => n.id === `draft:${lastDraft}`);
+    if (placed) void reactFlow.setCenter(placed.x + placed.width / 2, placed.y + placed.height / 2, { zoom: Math.max(reactFlow.getZoom(), 0.75), duration: 250 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastDraft]);
+  const bands = layout.bands.map(b => b.band);
+  const jump: FlowJump = useMemo(() => ({
+    openPlus,
+    setOpenPlus,
+    addDraft: (kind, band, from) => {
+      const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      setDrafts(list => [...list, { id, band, kind, from, title: "" }]);
+    },
+    updateDraft: (id, title) => setDrafts(list => list.map(d => (d.id === id ? { ...d, title } : d))),
+    discardDraft: id => setDrafts(list => list.filter(d => d.id !== id)),
+    createDraft: async draft => {
+      if (!active.createTask) return { ok: false, note: "this view is a snapshot — nothing was written. Open the room against a playbook to create tasks." };
+      const declared = bands.some(b => b.id === draft.band && b.source === "declared");
+      const r = await active.createTask({ goal: draft.title.trim(), from: draft.kind === "follow-up" ? draft.from : undefined, layer: declared ? draft.band : undefined });
+      return r;
+    },
+    forkCard: async id => {
+      if (!active.forkTask) return { ok: false, note: "this view is a snapshot — nothing was written." };
+      return active.forkTask(id);
+    },
+    toggleStack: band => setExpanded(list => (list.includes(band) ? list.filter(b => b !== band) : [...list, band])),
+    openCard: id => setOpenId(id),
+    followUpBand: taskId => {
+      const node = filtered.nodes.find(n => n.id === taskId);
+      const from = node ? bands.find(b => b.open.includes(node) || b.done.includes(node))?.id : undefined;
+      return from ? nextBandId(bands, from) : bands[bands.length - 1]?.id ?? "L1";
+    },
+    isDeclared: band => bands.some(b => b.id === band && b.source === "declared"),
+    readOnly: !active.createTask,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [openPlus, active, layout, filtered]);
   const openNode = openId ? filtered.nodes.find(node => node.id === openId) : undefined;
 
-  // Escape unwinds exactly one level: selection → inspector → the stage.
+  // A1: closing a card hands focus back to it, so a keyboard user is where they were
+  const closeCard = useCallback(() => {
+    const id = openId;
+    setOpenId(null);
+    if (id) window.setTimeout(() => (document.querySelector(`.flow-face[data-id="${CSS.escape(id)}"]`) as HTMLElement | null)?.focus(), 0);
+  }, [openId]);
+
+  // Escape unwinds one level, the nearest first: the open card, then the selection.
   useStageEscape(useCallback(() => {
+    if (showDecisions) { setShowDecisions(false); return true; }
+    if (openNode) {
+      closeCard();
+      return true;
+    }
     if (selectedIds.length > 0) {
       setNodes(current => current.map(node => ({ ...node, selected: false })));
       setSelectedIds([]);
       return true;
     }
-    if (openNode) {
-      setOpenId(null);
-      return true;
-    }
     return false;
-  }, [selectedIds.length, openNode, setNodes]));
+  }, [showDecisions, selectedIds.length, openNode, setNodes, closeCard]));
 
   const runSteering = useCallback(
     async (mode: FlowSteeringMode) => {
@@ -267,35 +344,45 @@ function FlowCanvas({
         plan: result.wrote,
         goalEdited: mode === "steer" && !!result.goal_diff,
         persisted: result.persisted,
+        applied: result.applied,
+        // The verb the toast reports must be the verb that ran: attach writes a card's docs:,
+        // it does not comment, and saying "commented on" for it would be the same lie the
+        // orchestrator used to tell about writing nothing.
+        verb: mode === "attach" ? "attach" : "comment",
         note: result.note,
       });
     },
     [active, prompt, selection]
   );
 
-  /** A single card's inspector actions steer just that card. */
-  const runForOne = useCallback(
-    async (node: FlowNode, mode: FlowSteeringMode) => {
-      const result = await active.applySteering([node], prompt.trim() || node.title, mode);
-      if (mode === "steer") setGoalDiff(result.goal_diff);
-      setSteeredIds([node.id]);
-      setToast({
-        plan: result.wrote,
-        goalEdited: mode === "steer" && !!result.goal_diff,
-        persisted: result.persisted,
-        note: result.note,
-      });
-    },
-    [active, prompt]
-  );
+  // The browser gate's seam (scripts/check-room-browser.mjs): drive the zoom from outside
+  // and read it back. Read-only apart from the viewport, which is view state anyway.
+  useEffect(() => {
+    // only when asked for (?gate): a production build does not expose it by default
+    if (!/[?&]gate\b/.test(window.location.search)) return;
+    const w = window as unknown as { __flowRoom?: unknown };
+    w.__flowRoom = { setViewport: reactFlow.setViewport, getZoom: reactFlow.getZoom, setCenter: reactFlow.setCenter, getNodes: reactFlow.getNodes };
+    return () => { delete w.__flowRoom; };
+  }, [reactFlow]);
+
+  // T3: the zoom tier decides what text exists at all, so nothing renders under 9px.
+  const zoom = useStore(state => state.transform[2]);
+  const tier = zoomTier(zoom);
+
+  const present = useMemo(() => presence(graph), [graph]);
 
   const counts = {
-    hil: graph.human.batch.length,
+    hil: inbox.length,
     forks: graph.nodes.filter(node => node.kind === "fork").length,
   };
 
   return (
-    <div className="flow-room">
+    <div
+      className="flow-room"
+      data-tier={tier}
+      style={{ ["--inv" as string]: (1 / Math.max(zoom, 0.01)).toFixed(3) }}
+    >
+      <FlowJumpContext.Provider value={jump}>
       <FlowViewContext.Provider value={viewState}>
         <ReactFlow
         nodes={nodes}
@@ -305,15 +392,19 @@ function FlowCanvas({
         onNodesChange={onNodesChange}
         onNodeClick={(_event, node) => {
           if (node.id === STEERING_NODE_ID) return;
+          if (node.type === "flowBatch") { setOpenId(null); setShowDecisions(true); return; }
+          // bands, gate posts, stacks and drafts are places and view state, not cards to open
+          if (node.type === "flowBand" || node.type === "flowLayerGate" || node.type === "flowStack" || node.type === "flowDraft") return;
           setOpenId(node.id);
         }}
-        onPaneClick={() => setOpenId(null)}
+        onPaneClick={() => { setOpenId(null); setOpenPlus(null); }}
         onSelectionChange={({ nodes: selected }) =>
           setSelectedIds(selected.map(node => node.id))
         }
         // No `fitView` prop: the fit happens in the seed effect below, because it
         // must fit the layout rect (legend included) rather than the node box.
-        minZoom={0.2}
+        // 5% is the overview the layer view is designed for (D22, G5)
+        minZoom={0.05}
         maxZoom={1.6}
         nodesConnectable={false}
         edgesFocusable={false}
@@ -360,6 +451,23 @@ function FlowCanvas({
         />
         </ReactFlow>
       </FlowViewContext.Provider>
+      </FlowJumpContext.Provider>
+
+      {/* M1: who is in the room — each active agent, what it is on, when it last spoke */}
+      <div className="flow-presence" role="group" aria-label="Who is working">
+        {present.length === 0 ? (
+          <span className="flow-presence__none">No agent holds a card right now</span>
+        ) : (
+          present.map(p => (
+            <button key={`${p.agent}:${p.task}`} type="button" className="flow-presence__pp" data-live={p.live ? "true" : "false"} onClick={() => setOpenId(p.task)} title={p.taskTitle}>
+              <span className="flow-face__av" aria-hidden>{p.name.charAt(0).toUpperCase()}</span>
+              <b>{p.name}</b>
+              <span className="flow-presence__on">on {p.taskTitle}</span>
+              <span className="flow-presence__m">{p.lastSpoke ? `spoke ${agoLabel(p.lastSpoke) ?? ""}` : "has not spoken"}</span>
+            </button>
+          ))
+        )}
+      </div>
 
       {/* the room's own status chips — the shared top strip has no slot for them.
           They live in the chipbar rect the layout reserves. */}
@@ -370,9 +478,9 @@ function FlowCanvas({
           right: FLOW_MARGIN,
         }}
       >
-        <span className={`flow-chip${counts.hil > 0 ? " flow-chip--hil" : ""}`}>
-          🧑 HIL {counts.hil}
-        </span>
+        <button type="button" className={`flow-chip${counts.hil > 0 ? " flow-chip--hil" : ""}`} onClick={() => { setOpenId(null); setShowDecisions(true); }} aria-label={`Waiting on you: ${counts.hil}`}>
+          🧑 Waiting on you {counts.hil}
+        </button>
         {graph.nodes.find(node => node.kind === "start")?.cron && (
           <span className="flow-chip">
             ⏱ {graph.nodes.find(node => node.kind === "start")?.cron?.every}
@@ -380,13 +488,15 @@ function FlowCanvas({
         )}
         <span className="flow-chip">{view === "all" ? "all layers" : `layer ${view}`}</span>
         {query && <span className="flow-chip flow-chip--on">filter: {query}</span>}
-        {/* Truth about the source: a payload with no declared layers gets ONE
-            column, and the room says so instead of implying strata. */}
+        {/* Truth about the source, FROM THE ADAPTER rather than a hardcoded string: a payload with
+            no declared layers gets ONE column, and the room says so instead of implying strata.
+            The label is the only field that distinguishes the live projection read from the
+            running engine from the bundled snapshot of this repo, so the chip renders it. */}
         <span
           className={`flow-chip${active.kind === "sample" ? " flow-chip--on" : ""}`}
           title={active.label}
         >
-          {active.kind === "sample" ? "sample · unprovable detail" : "snapshot · pb graph --json"}
+          {sourceChipText(active)}
         </span>
         {!hasDeclaredLayers(graph) && (
           <span className="flow-chip flow-chip--ghost">no layers declared — flat view</span>
@@ -416,16 +526,19 @@ function FlowCanvas({
 
       {toast && <FlowSteeringToast toast={toast} onDismiss={() => setToast(null)} />}
 
-      {openNode && openNode.kind !== "gatepost" && (
+      {showDecisions && <FlowDecisions items={inbox} onClose={() => setShowDecisions(false)} onDecide={active.decide} onRecorded={(task, row) => setRecorded(previous => ({ ...previous, [task]: row }))} />}
+
+      {!showDecisions && openNode && openNode.kind !== "gatepost" && (
         <FlowInspector
           node={openNode}
-          onClose={() => setOpenId(null)}
-          onComment={text => {
-            setPrompt(text);
-            runForOne(openNode, "comment");
+          onClose={closeCard}
+          readOnly={!active.sendMessage}
+          onSend={async (text, intent) => {
+            if (!active.sendMessage) return { ok: false, note: "This view is a snapshot — nothing was written." };
+            const r = await active.sendMessage(openNode.id, text, intent === "steer" || intent === "question" ? intent : "comment");
+            if (r.ok) setSteeredIds([openNode.id]);
+            return r;
           }}
-          onSteer={() => runForOne(openNode, "steer")}
-          onFork={() => runForOne(openNode, "fork")}
         />
       )}
     </div>

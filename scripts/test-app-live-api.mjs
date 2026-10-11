@@ -96,6 +96,9 @@ try {
 
   const backlogFile = join(pbRoot, 'memory', 'backlog.yaml');
   const journalFile = join(pbRoot, 'memory', 'journal.ndjson');
+  const decisionPlan = step(['plan', '--goal', 'decision fixture', '--check', 'node -v', '--manual'], 'seed a human ask');
+  const decisionTask = /Planned \[([^\]]+)\]/.exec(decisionPlan.stdout)?.[1];
+  check(Boolean(decisionTask), 'decision fixture has no task id');
   const backlogBefore = readFileSync(backlogFile);
   const journalBeforeBoot = readFileSync(journalFile).length;
 
@@ -182,9 +185,83 @@ try {
     'the comment is not visible to `pb runcard show --json` — it did not land as a journal row');
   check(/comment/i.test(runcard.stdout), 'the journal row does not carry action: comment');
 
+  // 7b. M3: the message's intent reaches the journal row; an unknown intent is refused
+  const asked = await fetch(`${base}/api/comment`, {
+    method: 'POST', headers: { ...CSRF, cookie },
+    body: JSON.stringify({ task: taskId, text: 'what does the launcher cost?', intent: 'question' }),
+  });
+  check(asked.status === 200, `a question returned ${asked.status}`);
+  const lastRow = readFileSync(journalFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).pop();
+  check(lastRow.intent === 'question' && lastRow.notes === 'what does the launcher cost?', `the question's row carries intent ${lastRow.intent}`);
+  const shout = await fetch(`${base}/api/comment`, {
+    method: 'POST', headers: { ...CSRF, cookie },
+    body: JSON.stringify({ task: taskId, text: 'x', intent: 'shout' }),
+  });
+  check(shout.status === 400, `an unknown intent returned ${shout.status}, expected 400`);
+
   // 8. the engine still owns state: backlog.yaml is untouched by the whole run
+  const beforeDecide = readFileSync(journalFile, 'utf8').trim().split('\n').length;
+  const decisionPayload = { task: decisionTask, option: 'approve', reason: 'Proceed with the verified path.' };
+  const unauthDecision = await fetch(`${base}/api/decide`, { method: 'POST', headers: CSRF, body: JSON.stringify(decisionPayload) });
+  check(unauthDecision.status === 403, 'a decision without a cookie was not refused');
+  const invalidDecision = await fetch(`${base}/api/decide`, { method: 'POST', headers: { ...CSRF, cookie }, body: JSON.stringify({ ...decisionPayload, option: 'nonexistent' }) });
+  const refusal = await invalidDecision.json();
+  check(invalidDecision.status === 422 && /has no option/.test(refusal.detail ?? ''), 'an unknown decision option did not show the engine refusal');
+  check(readFileSync(journalFile, 'utf8').trim().split('\n').length === beforeDecide, 'a refused decision wrote a row');
+  const decisionRes = await fetch(`${base}/api/decide`, { method: 'POST', headers: { ...CSRF, cookie }, body: JSON.stringify(decisionPayload) });
+  const decision = await decisionRes.json();
+  check(decisionRes.status === 200 && decision.row?.action === 'decide' && decision.row.option === 'approve' && decision.row.reason === decisionPayload.reason,
+    `decision did not return its recorded row: ${JSON.stringify(decision)}`);
+  const decidedRows = readFileSync(journalFile, 'utf8').trim().split('\n').map(JSON.parse);
+  check(decidedRows.length === beforeDecide + 1 && decidedRows.at(-1).seq === decision.row?.seq, 'a successful decision did not write exactly one matching row');
+  check(decidedRows.at(-1).status === 'todo', 'recording a decision changed task status');
+  for (const field of ['task', 'option', 'reason']) {
+    const r = await fetch(`${base}/api/decide`, { method: 'POST', headers: { ...CSRF, cookie }, body: JSON.stringify({ ...decisionPayload, [field]: '--force' }) });
+    check(r.status === 400, `decision ${field} accepted an argument shaped as a flag`);
+  }
   check(readFileSync(backlogFile).equals(backlogBefore),
     'memory/backlog.yaml changed during the run — the app must never edit state directly');
+
+  // 10. v2 jump-in (D22, J2/J3): Create is the only write, and it goes through the engine.
+  //     A follow-up is `pb plan --dep <card>`: a new task linked at birth.
+  const follow = await fetch(`${base}/api/fork`, {
+    method: 'POST', headers: { ...CSRF, cookie },
+    body: JSON.stringify({ goal: 'follow-up drafted in the room', from: taskId }),
+  });
+  const followBody = await follow.json().catch(() => null);
+  check(follow.status === 200 && followBody?.task, `a follow-up Create returned ${follow.status}: ${JSON.stringify(followBody)}`);
+  const afterFollow = readFileSync(backlogFile, 'utf8');
+  check(afterFollow.includes('follow-up drafted in the room') && new RegExp(`dependencies:\\s*\\n\\s*-\\s*${taskId}`).test(afterFollow),
+    'the follow-up was not written by pb plan with its --dep link to the card it came from');
+  //     A layer the playbook does not declare is REFUSED by the engine, verbatim.
+  const badLayer = await fetch(`${base}/api/fork`, {
+    method: 'POST', headers: { ...CSRF, cookie },
+    body: JSON.stringify({ goal: 'card in a layer that does not exist', layer: 'L9' }),
+  });
+  const badLayerBody = await badLayer.json().catch(() => null);
+  check(badLayer.status === 422 && /layer/i.test(badLayerBody?.detail ?? ''), `a card in an undeclared layer returned ${badLayer.status}: ${JSON.stringify(badLayerBody)}`);
+  //     A fork is `pb worker create`; outside a git repository the engine refuses, and the
+  //     room shows that refusal instead of pretending (this scratch playbook has no git).
+  const forkRes = await fetch(`${base}/api/worker`, {
+    method: 'POST', headers: { ...CSRF, cookie },
+    body: JSON.stringify({ task: taskId }),
+  });
+  const forkBody = await forkRes.json().catch(() => null);
+  check(forkRes.status === 422 && /git/i.test(forkBody?.detail ?? ''), `a fork outside git returned ${forkRes.status}: ${JSON.stringify(forkBody)}`);
+  const badId = await fetch(`${base}/api/worker`, {
+    method: 'POST', headers: { ...CSRF, cookie },
+    body: JSON.stringify({ task: '../etc; rm -rf /' }),
+  });
+  check(badId.status === 400, `a fork with a malformed task id returned ${badId.status}, expected 400`);
+  //     nothing the room sends may become a pb flag (checker note on plan-20261010-031)
+  for (const [payload, why] of [
+    [{ goal: 'ok goal', layer: '--force' }, 'a layer that is a flag'],
+    [{ goal: 'ok goal', from: '--x' }, 'a from that is a flag'],
+    [{ goal: '--skip-checks' }, 'a goal that is a flag'],
+  ]) {
+    const res = await fetch(`${base}/api/fork`, { method: 'POST', headers: { ...CSRF, cookie }, body: JSON.stringify(payload) });
+    check(res.status === 400, `/api/fork with ${why} returned ${res.status}, expected 400`);
+  }
 } catch (err) {
   problems.push(`harness error: ${err instanceof Error ? err.message : String(err)}`);
 } finally {

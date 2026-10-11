@@ -199,8 +199,9 @@ function ruleT5({ rules, ts }) {
   return p;
 }
 
-const TEXT_TOKEN = /^--(text-|ink|tone-|on-|you$|accent(-[a-z]+)?$)/;
-const SURFACE_TOKEN = /^--(surface-[0-9]|surface|bg)$/;
+const TEXT_TOKEN = /^--(text-|ink|tone-|on-|you$|accent(-(?!tint|wash)[a-z]+)?$)/;
+// bands (v2 layer view) are surfaces too: band headers sit on them
+const SURFACE_TOKEN = /^--(surface-[0-9]|surface|bg|band-[0-9x])$/;
 function ruleC1({ rules, ts }) {
   const p = [];
   const themes = [['light', tokensFrom(rules, lightRoot)]];
@@ -232,14 +233,51 @@ function ruleC1({ rules, ts }) {
       if (c < 4.5) p.push(`${name}: ${k} ${v} on --${m[1]} ${under} is ${c.toFixed(2)}:1 (needs 4.5)`);
     }
   }
+  // The two dark blocks must AGREE. A dark theme is written twice — behind prefers-color-scheme and
+  // behind the explicit [data-theme] escape hatch — because CSS cannot share one declaration block
+  // across a media query and a plain selector. tokensFrom merges in order, so the
+  // [data-theme="dark"] value silently WINS: a token that fails only in the media block is not
+  // measured by the loop above. That is how a failing dark token hides, so the blocks are compared
+  // rather than trusted to stay in step.
+  const mediaDark = tokensFrom(rules, (r) => /prefers-color-scheme:\s*dark/.test(r.media || ''));
+  const attrDark = tokensFrom(rules, (r) => /\[data-theme="dark"\]/.test(r.selector));
+  if (Object.keys(mediaDark).length && Object.keys(attrDark).length) {
+    const mediaOnly = Object.keys(mediaDark).filter((k) => !(k in attrDark));
+    const attrOnly = Object.keys(attrDark).filter((k) => !(k in mediaDark));
+    if (mediaOnly.length || attrOnly.length) {
+      p.push(`the two dark blocks define different tokens (only under prefers-color-scheme: ${mediaOnly.join(', ') || 'none'}; only under [data-theme="dark"]: ${attrOnly.join(', ') || 'none'}) — one of them would never be measured`);
+    }
+    const differing = Object.keys(mediaDark).filter((k) => k in attrDark && attrDark[k].trim().toLowerCase() !== mediaDark[k].trim().toLowerCase());
+    if (differing.length) {
+      p.push(`the two dark blocks disagree on ${differing.length} token(s): ${differing.slice(0, 4).map((k) => `${k} (prefers-color-scheme ${mediaDark[k]} vs [data-theme="dark"] ${attrDark[k]})`).join('; ')} — the [data-theme] value wins, so the other is not measured`);
+    }
+  }
   for (const r of rules) for (const d of r.decls) {
     if (d.prop === 'color' && !/^(var\(--[\w-]+\)|inherit|currentColor|transparent)$/i.test(d.value)) p.push(`${r.selector}: literal text colour ${d.value} — use a measured token`);
+  }
+  // A painted SURFACE is a token too. Six near-white literals used to sit outside the token block:
+  // legible in light, unchanged in dark, so those panels stayed white while everything around them
+  // switched themes. A gradient is allowed — it is composed of stops and cannot be one token — but
+  // a literal hex hidden INSIDE one is still a surface that cannot switch. rgba()/hsl stay allowed:
+  // a translucent wash is theme-independent by intent (the tone bar and the working shimmer use it).
+  const NAMED_COLOR = /\b(?:white|black|red|blue|green|gray|grey|silver|maroon|navy|teal|olive|lime|aqua|fuchsia|purple|yellow|orange)\b/i;
+  for (const r of rules) for (const d of r.decls) {
+    if (!/^background(-color)?$/.test(d.prop)) continue;
+    const value = d.value.trim();
+    if (/^(var\(--[\w-]+\)|transparent|inherit|none|currentColor|rgba?\(|hsla?\()/i.test(value)) continue;
+    const gradient = /^(?:repeating-)?(?:linear|radial|conic)-gradient\(/i.test(value);
+    if (gradient && !/#[0-9a-f]{3,8}\b/i.test(value) && !NAMED_COLOR.test(value)) continue;
+    p.push(`${r.selector}: literal background ${d.value} — a painted surface must be a token, or it does not switch with the theme`);
   }
   // Inline text colours in components: a token, never a literal (and never a literal fallback,
   // which is the colour a missing token silently falls back to).
   for (const f of ts) {
-    for (const m of f.text.matchAll(/(?<![\w-])color\s*:\s*["'`]([^"'`]+)["'`]/g)) {
-      if (!/^(var\(--[\w-]+\)|inherit|currentColor|transparent)$/i.test(m[1])) p.push(`${f.rel}: literal text colour ${m[1]} — use a measured token`);
+    // every quoted value in the expression counts, so a literal inside a ternary is caught too
+    // (a comma inside a quoted string does not end the expression: var(--x, #fff) is one value)
+    for (const m of f.text.matchAll(/(?<![\w-])color\s*:\s*((?:[^,}\n"'`]|"[^"\n]*"|'[^'\n]*'|`[^`\n]*`)+)/g)) {
+      for (const q of m[1].matchAll(/["'`]([^"'`]+)["'`]/g)) {
+        if (/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i.test(q[1])) p.push(`${f.rel}: literal text colour ${q[1]} — use a measured token`);
+      }
     }
   }
   // A rule that paints its own background under a text token is measured on THAT background.
@@ -312,6 +350,8 @@ function ruleC5({ rules, ts }) {
   }
   const cards = ts.find((f) => /FlowCards\.tsx$/.test(f.rel));
   if (!cards || !/railAttrs\(/.test(cards.text)) p.push('FlowCards.tsx does not set the rail attributes through railAttrs(node)');
+  const insp = ts.find((f) => /FlowInspector\.tsx$/.test(f.rel));
+  if (insp && /flow-cycle/.test(insp.text) && !/railAttrs\(/.test(insp.text)) p.push('FlowInspector.tsx draws a rail without railAttrs(node)');
   return p;
 }
 
@@ -372,7 +412,19 @@ const BAD_EXTRA = {
        (s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'className="tracking-[0.2em]"' }] })],
   C1: [(s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ color: "#bbbbbb" }}' }] }),
        (s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ color: "var(--text-tertiary, #9a9590)" }}' }] }),
-       (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} :root { --accent-teal: #43b3a0; }`) })],
+       (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} :root { --accent-teal: #43b3a0; }`) }),
+       (s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ color: ok ? "#bbbbbb" : "var(--text-primary)" }}' }] }),
+       // The two dark blocks disagreeing on a value that PASSES contrast in both: only the
+       // agreement check can catch it, because the [data-theme] copy silently wins the merge.
+       (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT}
+         @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --surface-0: #161514; --text-secondary: #c9c4bc; } }
+         :root[data-theme="dark"] { --surface-0: #161514; --text-secondary: #d8d4cc; }`) }),
+       (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT}
+         @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --surface-0: #161514; --text-secondary: #c9c4bc; } }
+         :root[data-theme="dark"] { --surface-0: #161514; }`) }),
+       // A literal background: a surface that cannot switch with the theme (the six near-white
+       // panels that stayed white in dark).
+       (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} .flow-doc { background: #fcfbfa; }`) })],
   C3: [(s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: '<span style={{ color: "var(--you)" }}/>' }] }),
        (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} .flow-card__title, .flow-hil { color: var(--you); }`) })],
   C5: [(s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} .flow-rail[data-done] i { background: var(--s6); }`) }),

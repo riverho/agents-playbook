@@ -52,6 +52,17 @@
   /* needs a person — fuchsia, kept off the progress ramp (C3) */
   --you: #b4167f;
   --you-tint: rgba(180, 22, 127, 0.1);
+  /* v2 state washes (chips sit on these; text on them measured >= 4.5:1) */
+  --accent-tint: #e3f1ee;
+  --line-strong: #d9d5cf;
+  /* v2 layer bands (D21): darker for lower layers; text on them measured (C1) */
+  --band-0: #ddd6cb;
+  --band-1: #e6e0d7;
+  --band-2: #eee9e2;
+  --band-x: #f2eee8;
+  --band-edge: rgba(60, 45, 30, 0.1);
+  --warn-tint: #f6ecd9;
+  --done-tint: #e2f0e6;
   /* the six loop steps, red (1) to green (6) (C5, D19) */
   --s1: #d64541;
   --s2: #e06a2e;
@@ -59,6 +70,89 @@
   --s4: #a9a21c;
   --s5: #5fa03f;
   --s6: #23955a;
+}
+
+/* ─── Dark theme (contract C1: light AND dark) ───
+   The dark half of the token table in artifacts/graph-flow-ui/v2/CONTRACT.md, with the brighter
+   ramp and bands from the approved illustration (proposal.html, the "brighter set in the mock" the
+   table refers to). Every text token below is measured >= 4.5:1 against every painted surface IN
+   THIS THEME by scripts/check-room-contract.mjs, which switches to the dark token set as soon as
+   one exists — so a value that fails is a failing gate, not a matter of taste.
+
+   The block is written twice on purpose: once behind the OS preference and once behind the
+   explicit [data-theme] escape hatch, and CSS cannot share one declaration block across a media
+   query and a plain selector. The mock duplicates it the same way. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface-0: #161514;
+    --surface-1: #232220;
+    --surface-2: #2a2826;
+    --surface-3: #34312d;
+    --surface-glass: rgba(35, 34, 32, 0.65);
+    --text-primary: #f1eee9;
+    --text-secondary: #c9c4bc;
+    --text-tertiary: #a29c93;
+    --tone-ok: #8fc7a2;
+    --tone-risk: #e2b55a;
+    --tone-bad: #ff8a80;
+    --tone-muted: #a29c93;
+    --tone-note: #b3b1f0;
+    --accent-teal: #4cc3ac;
+    --on-accent-teal: #161514;
+    --you: #ff6ccb;
+    --you-tint: #3a1a30;
+    --accent-tint: #173530;
+    --line-strong: #46423d;
+    --band-0: #2b2824;
+    --band-1: #26231f;
+    --band-2: #211f1c;
+    --band-x: #1e1c1a;
+    --band-edge: rgba(0, 0, 0, 0.45);
+    --warn-tint: #3a2f17;
+    --done-tint: #1e3126;
+    --s1: #ff6b63;
+    --s2: #ff8c4a;
+    --s3: #f2b440;
+    --s4: #cfc54a;
+    --s5: #84c95e;
+    --s6: #45c47d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --surface-0: #161514;
+  --surface-1: #232220;
+  --surface-2: #2a2826;
+  --surface-3: #34312d;
+  --surface-glass: rgba(35, 34, 32, 0.65);
+  --text-primary: #f1eee9;
+  --text-secondary: #c9c4bc;
+  --text-tertiary: #a29c93;
+  --tone-ok: #8fc7a2;
+  --tone-risk: #e2b55a;
+  --tone-bad: #ff8a80;
+  --tone-muted: #a29c93;
+  --tone-note: #b3b1f0;
+  --accent-teal: #4cc3ac;
+  --on-accent-teal: #161514;
+  --you: #ff6ccb;
+  --you-tint: #3a1a30;
+  --accent-tint: #173530;
+  --line-strong: #46423d;
+  --band-0: #2b2824;
+  --band-1: #26231f;
+  --band-2: #211f1c;
+  --band-x: #1e1c1a;
+  --band-edge: rgba(0, 0, 0, 0.45);
+  --warn-tint: #3a2f17;
+  --done-tint: #1e3126;
+  --s1: #ff6b63;
+  --s2: #ff8c4a;
+  --s3: #f2b440;
+  --s4: #cfc54a;
+  --s5: #84c95e;
+  --s6: #45c47d;
+  color-scheme: dark;
 }
 
 /* ─── Flow room (playground) ───
@@ -221,7 +315,7 @@
 }
 .flow-card--fork {
   border-style: dashed;
-  background: #fcfbfa;
+  background: var(--surface-1);
 }
 .flow-card--steered {
   border-color: var(--accent-teal);
@@ -438,7 +532,7 @@
   border: 1px solid var(--surface-3);
   border-radius: 6px;
   padding: 7px 8px;
-  background: #fbfaf9;
+  background: var(--surface-2);
 }
 .flow-cronrow {
   display: flex;
@@ -533,7 +627,7 @@
 .flow-edgepill--teal {
   border-color: var(--accent-teal);
   color: var(--accent-teal);
-  background: #f2fbf9;
+  background: var(--accent-tint);
 }
 .flow-edgepill--hil {
   border-color: var(--you);
@@ -698,7 +792,7 @@
   height: 40px;
   border: 1px solid var(--surface-3);
   border-radius: 6px;
-  background: #fcfbfa;
+  background: var(--surface-1);
   padding: 6px 8px;
   font-size: 12px;
   font-family: inherit;
@@ -792,7 +886,7 @@
   flex: none;
   border-top: 1px solid var(--surface-3);
   padding: 9px 13px;
-  background: #fbfaf9;
+  background: var(--surface-2);
 }
 .flow-sec {
   margin-top: 11px;
@@ -831,7 +925,7 @@
   padding: 5px 7px;
   border: 1px solid var(--surface-2);
   border-radius: 5px;
-  background: #fcfbfa;
+  background: var(--surface-1);
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -948,3 +1042,1023 @@ code,
 .flow-panel__cmd {
   font-family: var(--f-code);
 }
+
+/* ─── v2 card face (contract K1–K5, F1–F4, T3, C2; D13, D14, D19, D20) ───
+   Five slots: state + owner → title → bar → now → proof + messages. Every flash is
+   slower than 3 per second (F3) and every flash has a steady reduced-motion form (F4). */
+
+.flow-face {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 14px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-3);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(17, 17, 17, 0.06);
+  font-family: var(--f-ui);
+  color: var(--text-primary);
+  overflow: hidden;
+  transition: box-shadow 160ms ease, border-color 160ms ease;
+}
+.flow-face:hover {
+  border-color: var(--text-tertiary);
+}
+.flow-face--selected {
+  border-color: var(--accent-teal);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.flow-face__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.flow-face__who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.flow-face__av {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-tint);
+  color: var(--accent-teal);
+  font-size: 12px;
+  font-weight: 700;
+}
+.flow-face__age {
+  white-space: nowrap;
+}
+.flow-face__title {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 21px;
+  font-weight: 600;
+  overflow-wrap: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.flow-face__now {
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: var(--now-lines, 2);
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.flow-face__now b {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.flow-face__foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--surface-2);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.flow-face__proof,
+.flow-face__msgs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.flow-meter {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 2px;
+}
+.flow-meter i {
+  width: 10px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+.flow-meter i.is-ok {
+  background: var(--s6);
+}
+.flow-meter i.is-no {
+  background: var(--tone-bad);
+}
+
+/* the bar: the 6-step rail at face size (C5 colours come from .flow-cycle[data-step]) */
+.flow-face__bar {
+  height: 6px;
+  gap: 3px;
+  margin: 0;
+}
+.flow-face__bar i {
+  height: 6px;
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+.flow-face__bar--working i.flow-cycle__cur::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+  transform: translateX(-100%);
+  animation: flow-sweep 1.2s linear infinite;
+}
+
+/* state chips: a word and an icon for every state (C2) */
+.flow-st {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.flow-st__sh {
+  display: none;
+}
+.flow-st--working {
+  background: var(--accent-tint);
+  color: var(--accent-teal);
+}
+.flow-st--blocked {
+  background: var(--warn-tint);
+  color: var(--tone-risk);
+}
+.flow-st--done {
+  background: var(--done-tint);
+  color: var(--tone-ok);
+}
+/* decided is steady but not finished, and closed-not-proven is not a pass (F2, C4) */
+.flow-st--decided,
+.flow-st--closed,
+.flow-st--ready {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+.flow-st--asking {
+  background: var(--you-tint);
+  color: var(--you);
+  animation: flow-asking 1s steps(1, end) infinite;
+}
+
+/* F1: the working light, only on a LIVE card (claim held + journal moved) */
+.flow-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: flow-led 1.2s ease-in-out infinite;
+}
+.flow-face--live {
+  animation: flow-breathe 2.4s ease-in-out infinite;
+}
+/* F2: the card that needs a person rings until it is answered */
+.flow-face[data-hil="asking"] {
+  border-color: var(--you);
+  animation: flow-hil-halo 1.6s ease-out infinite;
+}
+
+@keyframes flow-led {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 1px currentColor; }
+  50% { opacity: 0.25; box-shadow: 0 0 0 0 currentColor; }
+}
+@keyframes flow-breathe {
+  50% { box-shadow: 0 0 0 4px var(--accent-tint); }
+}
+@keyframes flow-asking {
+  0% { background: var(--you); color: var(--surface-1); }
+  50% { background: var(--you-tint); color: var(--you); }
+}
+@keyframes flow-hil-halo {
+  0% { box-shadow: 0 0 0 0 rgba(180, 22, 127, 0.5); }
+  100% { box-shadow: 0 0 0 14px rgba(180, 22, 127, 0); }
+}
+@keyframes flow-sweep {
+  to { transform: translateX(100%); }
+}
+@keyframes flow-sonar {
+  0% { transform: scale(0.6); opacity: 1; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+
+/* ── zoom tiers (T3): full ≥ 75 % · glance 40–75 % · overview < 40 % ── */
+.flow-beacon {
+  display: none;
+}
+/* glance: state + title + bar, at sizes that stay ≥ 9px on screen at 40 % */
+.flow-room[data-tier="glance"] .flow-face [data-slot="now"],
+.flow-room[data-tier="glance"] .flow-face [data-slot="foot"],
+.flow-room[data-tier="glance"] .flow-face__who,
+.flow-room[data-tier="glance"] .flow-face__age {
+  display: none;
+}
+.flow-room[data-tier="glance"] .flow-face {
+  gap: 6px;
+  padding: 12px 14px;
+}
+.flow-room[data-tier="glance"] .flow-face__title {
+  font-size: 28px;
+  line-height: 32px;
+  -webkit-line-clamp: var(--glance-lines, 2);
+}
+.flow-room[data-tier="glance"] .flow-st {
+  font-size: 28px;
+  padding: 2px 12px;
+}
+.flow-room[data-tier="glance"] .flow-st__lg {
+  display: none;
+}
+.flow-room[data-tier="glance"] .flow-st__sh {
+  display: inline;
+}
+.flow-room[data-tier="glance"] .flow-face__bar,
+.flow-room[data-tier="glance"] .flow-face__bar i {
+  height: 14px;
+}
+/* overview: no card text at all; a beacon per card that matters, at a fixed screen size */
+.flow-room[data-tier="overview"] .flow-face > :not(.flow-beacon):not(.flow-handle) {
+  visibility: hidden;
+}
+.flow-room[data-tier="overview"] .flow-face {
+  overflow: visible;
+}
+.flow-room[data-tier="overview"] .flow-beacon {
+  display: block;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(var(--inv, 1));
+  background: var(--text-tertiary);
+  box-shadow: 0 0 0 2px var(--surface-1);
+}
+.flow-beacon--done {
+  background: var(--s6) !important;
+}
+/* a held but quiet claim: a still teal ring, never a pulse (F1) */
+.flow-beacon--held {
+  background: var(--surface-1) !important;
+  box-shadow: 0 0 0 3px var(--accent-teal) !important;
+}
+/* closed without proof, or decided and waiting: neutral, never the done green (C4) */
+.flow-beacon--closed {
+  background: var(--text-tertiary) !important;
+  width: 11px !important;
+  height: 11px !important;
+}
+.flow-beacon--ready {
+  background: var(--surface-1) !important;
+  box-shadow: 0 0 0 2px var(--text-tertiary) !important;
+}
+.flow-beacon--block {
+  background: var(--tone-risk) !important;
+}
+.flow-beacon--work {
+  background: var(--accent-teal) !important;
+  color: var(--accent-teal);
+  animation: flow-led 1.2s ease-in-out infinite;
+}
+.flow-beacon--hil {
+  background: var(--you) !important;
+  width: 22px !important;
+  height: 22px !important;
+}
+.flow-beacon--work::before,
+.flow-beacon--hil::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 3px solid currentColor;
+  animation: flow-sonar 1.6s ease-out infinite;
+}
+.flow-beacon--hil::before {
+  border-color: var(--you);
+}
+/* below full size the old canvas labels would render under 9px: hide them (T3) */
+.flow-room:not([data-tier="full"]) .flow-legend,
+.flow-room:not([data-tier="full"]) .flow-gatepill,
+.flow-room:not([data-tier="full"]) .flow-edgepill,
+.flow-room:not([data-tier="full"]) .flow-card > *,
+.flow-room:not([data-tier="full"]) .flow-bookend > * {
+  visibility: hidden;
+}
+
+/* F4: reduced motion — nothing flashes; a solid ring and the label carry the state */
+@media (prefers-reduced-motion: reduce) {
+  .flow-led,
+  .flow-face--live,
+  .flow-st--asking,
+  .flow-face[data-hil="asking"],
+  .flow-face__bar--working i.flow-cycle__cur::after,
+  .flow-beacon--work,
+  .flow-beacon--work::before,
+  .flow-beacon--hil::before {
+    animation: none !important;
+  }
+  .flow-st--asking {
+    background: var(--you);
+    color: var(--surface-1);
+    outline: 2px solid var(--you);
+    outline-offset: 2px;
+  }
+  .flow-face[data-hil="asking"] {
+    box-shadow: 0 0 0 3px var(--you);
+  }
+  .flow-face--live {
+    box-shadow: 0 0 0 3px var(--accent-teal);
+  }
+}
+
+/* ─── v2 layer view (D21, D22; contract G1–G5, J1–J3) ───
+   Bands are surfaces text sits on: their tokens are measured like any surface (C1).
+   Lower layers are darker (the substrate), derived layers are hatched. */
+
+.flow-band {
+  position: relative;
+  box-sizing: border-box;
+  border-radius: 22px;
+  background: linear-gradient(180deg, var(--band-bg) 0%, var(--band-bg) 40%, var(--band-fade) 100%);
+  box-shadow: inset -18px 0 36px -18px var(--band-edge), 14px 18px 40px -10px var(--band-edge);
+  overflow: visible;
+}
+.flow-band[data-shade="0"] { --band-bg: var(--band-0); --band-fade: var(--band-1); }
+.flow-band[data-shade="1"] { --band-bg: var(--band-1); --band-fade: var(--band-2); }
+.flow-band[data-shade="2"] { --band-bg: var(--band-2); --band-fade: var(--band-x); }
+.flow-band[data-shade="x"] { --band-bg: var(--band-x); --band-fade: var(--band-x); }
+/* perspective: a lit top edge narrowing away from the viewer */
+.flow-band::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 110px;
+  border-radius: 22px 22px 0 0;
+  background: linear-gradient(180deg, rgba(17, 17, 17, 0.06), transparent);
+  clip-path: polygon(0 0, 100% 0, 96% 100%, 4% 100%);
+  pointer-events: none;
+}
+.flow-band--derived {
+  background: repeating-linear-gradient(135deg, var(--band-x) 0 14px, var(--band-2) 14px 28px);
+}
+.flow-band__head {
+  position: absolute;
+  left: 32px;
+  right: 32px;
+  top: 26px;
+  display: grid;
+  gap: 6px;
+}
+.flow-band__name {
+  font-size: 28px;
+  line-height: 32px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.flow-band__name span {
+  margin-left: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.flow-band__about {
+  font-size: 16px;
+  line-height: 22px;
+  color: var(--text-secondary);
+}
+.flow-band__label {
+  display: none;
+}
+.flow-bandplus {
+  position: absolute;
+  left: 32px;
+  bottom: 28px;
+  height: 44px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 2px dashed var(--line-strong);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--f-ui);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.flow-bandplus:hover,
+.flow-bandplus:focus-visible {
+  border-color: var(--accent-teal);
+  color: var(--accent-teal);
+}
+
+/* the gate post between two bands (G4): the last real result, or "not run" */
+.flow-lgate {
+  position: relative;
+  width: 0;
+  border-left: 3px dashed var(--line-strong);
+}
+.flow-lgate__pill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translateX(-50%);
+  transform-origin: 50% 0;
+  white-space: nowrap;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+}
+.flow-lgate[data-state="pass"] .flow-lgate__pill { background: var(--done-tint); color: var(--tone-ok); }
+.flow-lgate[data-state="fail"] .flow-lgate__pill { background: var(--warn-tint); color: var(--tone-bad); }
+
+/* the stack of a band's finished cards (G3) */
+.flow-face--stack {
+  box-shadow: 6px 6px 0 -1px var(--surface-1), 6px 6px 0 0 var(--surface-3), 12px 12px 0 -1px var(--surface-1), 12px 12px 0 0 var(--surface-3);
+}
+.flow-linkbtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-family: var(--f-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-teal);
+  cursor: pointer;
+}
+
+/* a draft below full size shows only its chip (glance, 28px) and nothing in the overview:
+   a 14px textarea at 40% would be 5.6px on screen (T3) */
+.flow-room:not([data-tier="full"]) .flow-face--draft > :not(.flow-face__top) {
+  display: none;
+}
+.flow-room[data-tier="overview"] .flow-face--draft > * {
+  visibility: hidden;
+}
+/* a draft: written here, created only by Create (J3) */
+.flow-face--draft {
+  border: 2px dashed var(--accent-teal);
+  background: var(--surface-1);
+}
+.flow-draft__goal {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  border: 1px solid var(--surface-3);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-family: var(--f-ui);
+  font-size: 14px;
+  line-height: 19px;
+  color: var(--text-primary);
+  background: var(--surface-1);
+}
+.flow-draft__cmd {
+  display: block;
+  font-family: var(--f-code);
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.flow-draft__note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--tone-ok);
+}
+.flow-draft__note.is-refused {
+  color: var(--tone-bad);
+}
+
+/* J1: a + on every task card — faint at rest, full on hover or focus */
+.flow-plus {
+  position: absolute;
+  right: -15px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid var(--accent-teal);
+  background: var(--surface-1);
+  color: var(--accent-teal);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  opacity: 0.45;
+  cursor: pointer;
+  z-index: 3;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+.flow-face:hover .flow-plus,
+.flow-plus:focus-visible,
+.flow-plus[aria-expanded="true"] {
+  opacity: 1;
+  transform: translateY(-50%) scale(1.12);
+}
+.flow-plus:focus-visible,
+.flow-bandplus:focus-visible,
+.flow-pop button:focus-visible {
+  outline: 3px solid var(--accent-teal);
+  outline-offset: 2px;
+}
+.flow-face {
+  overflow: visible;
+}
+.flow-face > :not(.flow-plus):not(.flow-pop):not(.flow-beacon):not(.react-flow__handle) {
+  min-width: 0;
+}
+.flow-pop {
+  position: absolute;
+  left: calc(100% + 22px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 20;
+  width: 280px;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-3);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(17, 17, 17, 0.14);
+  cursor: default;
+}
+.flow-pop__h {
+  padding: 6px 10px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+.flow-pop__p {
+  margin: 0;
+  padding: 0 10px 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.flow-pop button {
+  display: grid;
+  gap: 1px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  font-family: var(--f-ui);
+  cursor: pointer;
+}
+.flow-pop button:hover {
+  background: var(--surface-2);
+}
+.flow-pop button b {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.flow-pop button span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.flow-pop .flow-draft__cmd {
+  padding: 0 10px;
+}
+
+/* tiers for the layer view (T3): glance drops the small band text; overview swaps the
+   header for a fixed-size label and pins gate pills to a fixed screen size (G5) */
+.flow-room[data-tier="glance"] .flow-band__about,
+.flow-room[data-tier="glance"] .flow-bandplus,
+.flow-room[data-tier="glance"] .flow-plus,
+.flow-room[data-tier="overview"] .flow-plus,
+.flow-room[data-tier="overview"] .flow-bandplus,
+.flow-room[data-tier="overview"] .flow-band__head,
+.flow-room:not([data-tier="full"]) .flow-pop {
+  display: none;
+}
+/* below full size a gate is a fixed-size dot in its state colour (G4 still holds: pass,
+   fail and not run stay distinct); the words return at full size */
+.flow-room:not([data-tier="full"]) .flow-lgate__txt {
+  display: none;
+}
+.flow-room:not([data-tier="full"]) .flow-lgate__pill {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-width: 3px;
+  box-sizing: border-box;
+  transform: translateX(-50%) scale(var(--inv, 1));
+}
+.flow-room:not([data-tier="full"]) .flow-bookend,
+.flow-room:not([data-tier="full"]) .flow-card {
+  visibility: hidden;
+}
+.flow-room[data-tier="overview"] .flow-band__label {
+  display: grid;
+  position: absolute;
+  left: 50%;
+  top: 0;
+  justify-items: center;
+  gap: 2px;
+  padding-bottom: 8px;
+  white-space: nowrap;
+  transform: translate(-50%, -100%) scale(var(--inv, 1));
+  transform-origin: 50% 100%;
+}
+.flow-band__label b {
+  font-size: 16px;
+  color: var(--text-primary);
+}
+.flow-band__label span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* ─── v2 open card (D15, D16; contract M2, M3) ─── */
+.flow-inspector.flow-oc {
+  width: 440px;
+  font-family: var(--f-ui);
+  color: var(--text-primary);
+}
+.flow-oc__head {
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--surface-2);
+  display: grid;
+  gap: 8px;
+}
+.flow-oc__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.flow-oc__title {
+  margin: 0;
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 700;
+}
+.flow-oc__muted {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.flow-oc__muted.is-refused {
+  color: var(--tone-bad);
+}
+.flow-oc__close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.flow-oc__close:hover,
+.flow-oc__close:focus-visible {
+  background: var(--surface-2);
+}
+.flow-oc__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 18px 12px;
+}
+.flow-oc__sec {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--surface-2);
+}
+.flow-oc__sec h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 700;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.flow-oc__sec p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 21px;
+}
+.flow-oc__sec details summary,
+.flow-oc__engine > summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-teal);
+  margin-top: 6px;
+}
+.flow-oc__engine > summary {
+  font-size: 16px;
+  color: var(--text-primary);
+  margin: 0;
+}
+.flow-oc__steps {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+.flow-oc__steps li {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.flow-oc__steps li i {
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-2);
+}
+.flow-oc__steps li[data-current] span {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+.flow-oc__next {
+  font-weight: 600;
+  color: var(--tone-ok);
+}
+.flow-oc__next--hil {
+  color: var(--you);
+}
+.flow-oc__decision {
+  border: 2px solid var(--you);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin: 12px 0;
+}
+.flow-oc__decision h3 {
+  color: var(--you);
+}
+.flow-oc__q {
+  font-weight: 600;
+}
+.flow-oc__decision ul,
+.flow-oc__proof,
+.flow-oc__msgs,
+.flow-oc__docs {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.flow-oc__decision li,
+.flow-oc__proof li {
+  display: grid;
+  gap: 2px;
+  font-size: 14px;
+}
+.flow-oc__decision li span {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.flow-oc__proof li > div {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.flow-oc__proof code,
+.flow-oc__docs code,
+.flow-oc__engine code {
+  font-family: var(--f-code);
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.flow-oc__res {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.flow-oc__proof li[data-result="passed"] .flow-oc__res {
+  color: var(--tone-ok);
+}
+.flow-oc__proof li[data-result="failed"] .flow-oc__res {
+  color: var(--tone-bad);
+}
+.flow-oc__msgs li {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-0);
+}
+.flow-oc__mh {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.flow-oc__tag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.flow-oc__tag--steer {
+  background: var(--accent-tint);
+  color: var(--accent-teal);
+}
+.flow-oc__tag--question,
+.flow-oc__tag--decision {
+  background: var(--done-tint);
+  color: var(--tone-ok);
+}
+.flow-oc__full {
+  white-space: pre-wrap;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.flow-oc__engine dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+.flow-oc__engine dt {
+  color: var(--text-secondary);
+}
+.flow-oc__engine dd {
+  margin: 0;
+}
+.flow-oc__composer {
+  display: grid;
+  gap: 8px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--surface-3);
+  background: var(--surface-1);
+}
+.flow-oc__intents {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.flow-oc__intent {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--surface-3);
+  background: var(--surface-1);
+  font-family: var(--f-ui);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.flow-oc__intent[aria-pressed="true"] {
+  background: var(--text-primary);
+  border-color: var(--text-primary);
+  color: var(--surface-1);
+}
+.flow-oc__composer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid var(--surface-3);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: var(--f-ui);
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text-primary);
+  background: var(--surface-1);
+}
+.flow-oc__close:focus-visible,
+.flow-oc__intent:focus-visible,
+.flow-oc__composer textarea:focus-visible,
+.flow-presence__pp:focus-visible {
+  outline: 3px solid var(--accent-teal);
+  outline-offset: 2px;
+}
+
+/* ─── v2 presence strip (M1) ─── */
+.flow-presence {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: calc(100% - 520px);
+  font-family: var(--f-ui);
+}
+.flow-presence__pp {
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 4px;
+  border-radius: 999px;
+  border: 1px solid var(--surface-3);
+  background: var(--surface-1);
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+  max-width: 460px;
+}
+.flow-presence__on {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.flow-presence__m,
+.flow-presence__none {
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.flow-presence__none {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-3);
+}
+.flow-presence__pp[data-live="true"] {
+  border-color: var(--accent-teal);
+}
+
+/* D17: the decision inbox and panel use the room's existing semantic tokens. */
+.flow-decisions {
+  position: absolute;
+  inset: 60px 16px 16px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  border: 1px solid var(--surface-3);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+  font-family: var(--f-ui);
+  font-size: 14px;
+}
+.flow-decisions__head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--surface-3); }
+.flow-decisions__head h2 { margin: 0; font-size: 20px; }
+.flow-decisions__head > svg { color: var(--you); }
+.flow-decisions__head > button { margin-left: auto; }
+.flow-decisions button { border: 1px solid var(--surface-3); border-radius: 8px; background: var(--surface-1); color: var(--text-primary); font-family: var(--f-ui); font-size: 14px; cursor: pointer; padding: 8px 12px; }
+.flow-decisions button:disabled { cursor: default; }
+.flow-decisions__body { display: grid; grid-template-columns: minmax(220px, 32%) minmax(0, 1fr); min-height: 0; flex: 1; }
+.flow-decisions__inbox { overflow: auto; padding: 12px; border-right: 1px solid var(--surface-3); }
+.flow-decisions__inbox > button { display: grid; gap: 8px; width: 100%; text-align: left; margin-bottom: 8px; }
+.flow-decisions__inbox > button[aria-current="true"] { border-color: var(--you); background: var(--surface-2); }
+.flow-decisions__inbox > button > span:last-child { color: var(--text-secondary); font-size: 12px; }
+.flow-decisions__kind { color: var(--you); font-size: 12px; font-weight: 600; }
+.flow-decisions__detail { overflow: auto; }
+.flow-decisions__panel { display: grid; gap: 12px; padding: 20px; }
+.flow-decisions__panel h3 { font-size: 20px; margin: 0; overflow-wrap: anywhere; }
+.flow-decisions__panel h4 { font-size: 14px; margin: 8px 0 0; }
+.flow-decisions__panel p { margin: 0; color: var(--text-secondary); line-height: 1.5; }
+.flow-decisions__panel fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.flow-decisions__panel legend { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+.flow-decisions__option { display: flex; align-items: flex-start; gap: 10px; padding: 12px; margin-bottom: 8px; border: 1px solid var(--surface-3); border-radius: 8px; cursor: pointer; }
+.flow-decisions__option > span { display: grid; gap: 6px; }
+.flow-decisions__option > span > span { font-size: 13px; color: var(--text-secondary); }
+.flow-decisions__option:has(input:checked) { border-color: var(--you); }
+.flow-decisions__rec { font-weight: 600; }
+.flow-decisions__panel textarea { min-height: 80px; resize: vertical; padding: 10px; border: 1px solid var(--surface-3); border-radius: 8px; font-family: var(--f-ui); font-size: 14px; background: var(--surface-1); color: var(--text-primary); }
+.flow-decisions__panel > button { justify-self: end; border-color: var(--accent-teal); }
+.flow-decisions pre { font-family: var(--f-code); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-decisions code { font-family: var(--f-code); font-size: 13px; }
+.flow-decisions__receipt { margin: 16px 20px 0; padding: 12px; border: 1px solid var(--accent-teal); border-radius: 8px; }
+.flow-decisions__result { white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-decisions__empty { padding: 20px; }
+.flow-decisions button:focus-visible, .flow-decisions textarea:focus-visible, .flow-decisions input:focus-visible, .flow-chipbar button:focus-visible { outline: 3px solid var(--accent-teal); outline-offset: 2px; }
+@media (max-width: 700px) { .flow-decisions__body { grid-template-columns: minmax(0, 1fr); overflow: auto; } .flow-decisions__inbox { max-height: 200px; border-right: 0; border-bottom: 1px solid var(--surface-3); } .flow-decisions__detail { overflow: visible; } }
