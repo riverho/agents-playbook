@@ -482,6 +482,21 @@ export const SAMPLE_LAYERED_ADAPTER: FlowAdapter = {
 export const DEFAULT_FLOW_ADAPTER: FlowAdapter = LIVE_SNAPSHOT_ADAPTER;
 
 /**
+ * The chipbar's source chip. It answers "what am I looking at?" from the ADAPTER, which knows:
+ * the room used to print `snapshot · pb graph --json` for every non-sample adapter, so the live
+ * projection read from the running engine was labelled a snapshot while the adapter's own label —
+ * the one field that distinguishes them — was demoted to a tooltip.
+ *
+ * The sample keeps stronger wording than its label: a painted frame's detail cannot be proven
+ * against anything, and saying so is the point of the chip.
+ */
+export function sourceChipText(adapter: FlowAdapter): string {
+  if (adapter.kind === "sample") return "sample · unprovable detail";
+  // The parenthetical is provenance for the tooltip; the chip itself stays one glance wide.
+  return adapter.label.split(" (")[0];
+}
+
+/**
  * P3: the live adapter. `read` is a thunk around `pb graph --json` (the Rust
  * allowlist gains `graph`), `write` around `pb comment --task … --goal …`.
  */

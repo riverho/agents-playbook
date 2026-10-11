@@ -46,6 +46,7 @@ import {
 import {
   DEFAULT_FLOW_ADAPTER,
   SAMPLE_LAYERED_ADAPTER,
+  sourceChipText,
   type FlowAdapter,
   type FlowSteeringMode,
 } from "@/lib/flow-adapter";
@@ -476,13 +477,15 @@ function FlowCanvas({
         )}
         <span className="flow-chip">{view === "all" ? "all layers" : `layer ${view}`}</span>
         {query && <span className="flow-chip flow-chip--on">filter: {query}</span>}
-        {/* Truth about the source: a payload with no declared layers gets ONE
-            column, and the room says so instead of implying strata. */}
+        {/* Truth about the source, FROM THE ADAPTER rather than a hardcoded string: a payload with
+            no declared layers gets ONE column, and the room says so instead of implying strata.
+            The label is the only field that distinguishes the live projection read from the
+            running engine from the bundled snapshot of this repo, so the chip renders it. */}
         <span
           className={`flow-chip${active.kind === "sample" ? " flow-chip--on" : ""}`}
           title={active.label}
         >
-          {active.kind === "sample" ? "sample · unprovable detail" : "snapshot · pb graph --json"}
+          {sourceChipText(active)}
         </span>
         {!hasDeclaredLayers(graph) && (
           <span className="flow-chip flow-chip--ghost">no layers declared — flat view</span>
