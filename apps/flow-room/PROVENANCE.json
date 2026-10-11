@@ -312,9 +312,9 @@
       "recorded": "2026-10-11T03:20:37.780Z"
     },
     "lib/flow-types.ts": {
-      "sha256": "b8e0d8481ab4c6cd6400fd006157f14b838fb1ac46ccedfafb0988ac4c976064",
-      "reason": "plan-20261010-030/031/034 (v2): headline, now, live, human (+ decided, sources), check_names, journal summary/intent; layers[]; node kinds stack and draft",
-      "recorded": "2026-10-11T03:55:27.929Z",
+      "sha256": "319c3349efa9c95037f07d2b59bf0e6d655b923cceeef7fed31b161ed164e3d8",
+      "reason": "plan-20261010-030/031/034/008 (v2): headline, now, live, human, check_names, journal summary/intent; layers[] with gate_result states incl. timeout and output-limit; node kinds stack and draft",
+      "recorded": "2026-10-11T08:26:50.443Z",
       "superseded": [
         {
           "sha256": "012a4f1a3ba99b14bb1028155fc845e2353114c4e69dc7b7bb70e7d1c21dc00e",
@@ -323,6 +323,10 @@
         {
           "sha256": "b7506a09e3467fce635d669ba354719d43878297d3327fde10d9557c0cf1d182",
           "reason": "plan-20261010-030/031 (v2): headline, now, live, human, journal summary/intent; layers[] (FlowLayerInfo); node kinds stack and draft"
+        },
+        {
+          "sha256": "b8e0d8481ab4c6cd6400fd006157f14b838fb1ac46ccedfafb0988ac4c976064",
+          "reason": "plan-20261010-030/031/034 (v2): headline, now, live, human (+ decided, sources), check_names, journal summary/intent; layers[]; node kinds stack and draft"
         }
       ]
     },

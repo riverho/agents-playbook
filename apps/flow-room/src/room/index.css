@@ -1418,6 +1418,8 @@ code,
 }
 .flow-lgate[data-state="pass"] .flow-lgate__pill { background: var(--done-tint); color: var(--tone-ok); }
 .flow-lgate[data-state="fail"] .flow-lgate__pill { background: var(--warn-tint); color: var(--tone-bad); }
+.flow-lgate[data-state="timeout"] .flow-lgate__pill,
+.flow-lgate[data-state="output-limit"] .flow-lgate__pill { background: var(--warn-tint); color: var(--tone-risk); border-style: dashed; }
 
 /* the stack of a band's finished cards (G3) */
 .flow-face--stack {

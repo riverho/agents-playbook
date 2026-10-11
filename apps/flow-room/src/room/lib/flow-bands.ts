@@ -179,6 +179,11 @@ export function gatePostText(band: Band): { text: string; state: GatePost["state
   if (!band.gate) return { text: "no gate", state: "no-gate", title: `${band.id} declares no gate` };
   const when = r.at ? ` (${r.at.slice(0, 16).replace("T", " ")})` : "";
   if (r.state === "pass") return { text: `${band.id} gate: pass`, state: "pass", title: `${band.gate}\nlast run passed${when}` };
+  // a gate past its limit reached no verdict: not a pass, and never called a failure
+  if (r.state === "timeout") return { text: `${band.id} gate: timed out`, state: "timeout", title: `${band.gate}
+the last run passed its time limit${r.limit_ms ? ` (${r.limit_ms}ms)` : ""}${when} — no verdict, the layers above stay blocked` };
+  if (r.state === "output-limit") return { text: `${band.id} gate: output limit`, state: "output-limit", title: `${band.gate}
+the last run printed more than the runner accepts${when} — no verdict` };
   if (r.state === "fail") return { text: `${band.id} gate: fail`, state: "fail", title: `${band.gate}\nlast run failed${when}${r.output ? `\n${r.output}` : ""}` };
   return { text: `${band.id} gate: not run`, state: "not-run", title: `${band.gate}\n${r.reason ?? "no claim has evaluated this gate yet"}` };
 }
