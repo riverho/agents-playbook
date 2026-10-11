@@ -1,9 +1,10 @@
 {
   "schema": "agent-playbook.app-source-provenance.v1",
   "source": {
-    "repo": "D:\\HermesProjects\\Wenmei\\wenmei\\.worktrees\\graph-room",
+    "repo": "D:/HermesProjects/Wenmei/wenmei",
     "path_prefix": "app_design/src",
-    "commit": "33fdcea43af6a47df6d40028e749118ca61a0dea"
+    "commit": "33fdcea43af6a47df6d40028e749118ca61a0dea",
+    "repo_note": "the durable checkout; the extraction worktree (.worktrees/graph-room) was de-registered after its branch merged (plan-20261010-016)"
   },
   "note": "Copied verbatim. `node scripts/check-app-source-provenance.mjs` re-verifies; --write re-pins.",
   "files": {
