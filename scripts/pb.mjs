@@ -2229,9 +2229,63 @@ function liveForCard(card, now = Date.now()) {
     window_s: GRAPH_LIVE_WINDOW_MS / 1000,
   };
 }
+// ── the human-facing text fields (D16; contract K2, M2) ─────────────────────
+// Each is optional on the task and has the fallback proposal.html §8 documents, and
+// each says where it came from (`*_source`), so a room never mistakes a guess for
+// something an agent wrote.
+const HEADLINE_MAX = 72;
+// "DEMONSTRATED, not just described" → "Demonstrated, not just described": shouting is
+// how a note marks emphasis in a terminal; a one-line lead should read as a sentence.
+function deShout(text) {
+  const out = String(text).replace(/\b([A-Z][A-Z'-]{3,})\b/g, (w) => w.toLowerCase());
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+function firstSentence(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  const m = /^(.{12,}?[.!?])(\s|$)/.exec(t);
+  return m ? m[1] : t;
+}
+function cutAtWord(text, max) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length <= max) return t;
+  const head = t.slice(0, max - 1);
+  const sp = head.lastIndexOf(' ');
+  return `${(sp > max * 0.4 ? head.slice(0, sp) : head).replace(/[\s,;:(—-]+$/, '')}…`;
+}
+function graphHeadline(task) {
+  if (typeof task.headline === 'string' && task.headline.trim()) return { headline: task.headline.trim(), headline_source: 'task' };
+  const title = String(task.title || '').replace(/\s+/g, ' ').trim();
+  // a clause boundary first ("P2: …", "Engine (D16): …" keep their head), else the sentence
+  const sentence = firstSentence(title).replace(/[.]$/, '');
+  return { headline: cutAtWord(sentence, HEADLINE_MAX), headline_source: 'title' };
+}
+function rowSummary(row) {
+  if (typeof row.summary === 'string' && row.summary.trim()) return row.summary.trim();
+  return deShout(firstSentence(row.notes || ''));
+}
+function graphNow(task, status, journal) {
+  if (typeof task.now === 'string' && task.now.trim()) return { now: task.now.trim(), now_source: 'task' };
+  if (status === 'todo' && !journal.some((r) => r.action !== 'spawn' && r.action !== 'comment')) {
+    return { now: 'Nobody has picked this up', now_source: 'fallback' };
+  }
+  const last = [...journal].reverse().find((r) => (r.notes || r.summary));
+  return last ? { now: rowSummary(last), now_source: 'journal' } : { now: null, now_source: 'none' };
+}
+// "node scripts/test-graph-layers-live.mjs" → "test graph layers live". A check may also
+// declare its own name: `acceptance_checks: [{ run: "…", name: "…" }]` is not the format,
+// so names come from the task's optional `check_names: [..]`, index for index.
+function checkName(command, declared) {
+  if (typeof declared === 'string' && declared.trim()) return declared.trim();
+  const tokens = String(command || '').trim().split(/\s+/);
+  const script = tokens.find((t) => /\.(mjs|cjs|js|ts|sh|py|ps1)$/i.test(t));
+  if (script) return basename(script).replace(/\.[^.]+$/, '').replace(/[-_.]+/g, ' ').trim();
+  return tokens.slice(0, 4).join(' ');
+}
+
 function graphNodeFor(task, planned) {
   const card = runCardForTask(task);
   const live = liveForCard(card);
+  const declaredNames = Array.isArray(task.check_names) ? task.check_names : [];
   const state = taskState(task.id);
   const gate = mergeReadyPayload(task);
   const declared = planned?.layer || null;
@@ -2267,10 +2321,14 @@ function graphNodeFor(task, planned) {
     merge_reasons: gate.reasons,
     merge_warnings: gate.warnings,
     cycle: cycleForJournal(card.journal),
+    ...graphHeadline(task),
+    ...graphNow(task, card.status, card.journal),
+    check_names: card.checks.map((c, i) => checkName(c.command, declaredNames[i])),
     live: live.live,
     live_detail: live,
     docs: docsOfTask(task),
-    journal: card.journal,
+    // rows verbatim, plus a one-line `summary` (the row's own, or its first sentence)
+    journal: card.journal.map((row) => ({ ...row, summary: rowSummary(row) })),
     updated_at: card.updated_at,
   };
 }
@@ -4023,11 +4081,19 @@ function cmdRecord(args) {
 // scripts/test-pb-graph.mjs — a "comment" that could close a task would be a status
 // change wearing a note's clothes.
 // ============================================================================
+// M3: a person's message says WHY it was written. `steer` changes direction, `question`
+// asks the agent something, `finding` reports something learned; a plain note is `comment`.
+const COMMENT_INTENTS = ['comment', 'steer', 'question', 'finding'];
 function cmdComment(args) {
   const taskId = typeof args.task === 'string' ? args.task.trim() : '';
   const text = typeof args.text === 'string' ? args.text : '';
   if (!taskId || !text.trim()) {
-    console.error('Usage: pb comment --task <id> --text "..." [--agent <name>] [--token <claim-token>] [--chain <a,b>]');
+    console.error('Usage: pb comment --task <id> --text "..." [--intent comment|steer|question|finding] [--agent <name>] [--token <claim-token>] [--chain <a,b>]');
+    process.exit(1);
+  }
+  const intent = args.intent === undefined ? 'comment' : String(args.intent).trim();
+  if (!COMMENT_INTENTS.includes(intent)) {
+    console.error(`--intent must be one of: ${COMMENT_INTENTS.join(', ')} (got "${intent}"). Nothing was written.`);
     process.exit(1);
   }
   const task = backlogTasks().find((t) => t.id === taskId);
@@ -4054,6 +4120,7 @@ function cmdComment(args) {
     // declared path unconditionally instead of inheriting that hole.)
     agent_chain: resolveAgentChain(args),
     action: 'comment',
+    intent,
     status: task.status,          // current status, so a replay cannot move it
     checks: 'none',
     result: null,
@@ -4062,7 +4129,7 @@ function cmdComment(args) {
   };
   const commit = commitIteration(taskId, entry, () => ({}), { agent });
   if (!commit) process.exit(1);
-  console.log(`Comment on [${taskId}] recorded (seq ${commit.seq}, ownership: ${entry.ownership}) — status unchanged (${task.status}).`);
+  console.log(`Comment on [${taskId}] recorded (seq ${commit.seq}, intent: ${intent}, ownership: ${entry.ownership}) — status unchanged (${task.status}).`);
 }
 
 // ============================================================================
@@ -5775,6 +5842,8 @@ function cmdHelp() {
                            OUTPUT-LIMIT, a third outcome — not a timeout, not a failure.
     comment --task <id> --text "..."   Journal-native steering note (action: comment).
                            Append-only and attributable; it cannot change task status.
+                           --intent comment|steer|question|finding (default comment) is
+                           stamped on the row, so a steer or a question is a distinct message.
     report [--since DATE]  Roll the journal up into ${REPORTS_DIR}/report-<date>.md
     plan --goal ".." [--skill <id>] [--priority <n>] [--check <cmd>] [--dep <task-id>] [--manual] [--layer <id>]
                           Convert a goal into a backlog task with acceptance_checks.
