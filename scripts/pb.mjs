@@ -358,6 +358,32 @@ function recordAuto(loop, task, status, checksOutcome, notes, { agent = 'auto', 
 }
 
 const BACKLOG_STATE = join(dirname(BACKLOG), 'backlog-state.json');
+// The last REAL result of each layer gate, written only by paths that already mutate
+// (a claim, an autonomous run) — never by `pb plan` (a dry run writes nothing) and
+// never by `pb graph` (which never runs a gate). It is a cache of evidence, not a
+// source of truth: the graph shows it WITH its timestamp, or says "not run".
+const GATE_RESULTS = join(dirname(BACKLOG), 'gate-results.json');
+function readGateResults() {
+  try {
+    const parsed = JSON.parse(readFileSync(p(GATE_RESULTS), 'utf8'));
+    return parsed && typeof parsed.layers === 'object' && parsed.layers ? parsed.layers : {};
+  } catch { return {}; }
+}
+function persistGateResults(defs, results) {
+  const layers = readGateResults();
+  const at = nowISO();
+  for (const def of defs) {
+    const r = results[def.id];
+    if (!def.gate || !r) continue;
+    layers[def.id] = { ok: !!r.ok, at, gate: def.gate, output: String(r.output || '').slice(-2000) };
+  }
+  try {
+    ensureDir(dirname(GATE_RESULTS));
+    writeFileSync(p(GATE_RESULTS), JSON.stringify({ schema: 'agent-playbook.gate-results.v1', layers }, null, 2) + '\n', 'utf8');
+  } catch (e) {
+    console.error(`pb: could not record layer gate results (${e.message}) — the graph will show them as not run`);
+  }
+}
 
 // --- shared-state transaction (multi-agent safety) ---------------------------
 // Every mutation of the shared state file goes through withStateTxn. The naive
@@ -1007,7 +1033,7 @@ function evalLayerGate(gate) {
 // no journal row, no state touch. The only side effect is running a layer GATE
 // command, and only when `checkGates` is set (the caller opts in, and only AFTER
 // taking the confirmation snapshot it uses to prove the dry run stayed read-only).
-function computeLayerPlan({ checkGates = false, allTasks = null } = {}) {
+function computeLayerPlan({ checkGates = false, allTasks = null, persistGates = false } = {}) {
   const tasks = allTasks || backlogTasks();
   // A fresh plan re-evaluates gates: a memo from an earlier plan describes an earlier
   // tree, and a stale gate verdict is exactly the kind of confident-but-wrong answer
@@ -1117,6 +1143,7 @@ function computeLayerPlan({ checkGates = false, allTasks = null } = {}) {
       if (!def.gate) continue;
       gateResults[def.id] = evalLayerGate(def.gate);
     }
+    if (persistGates) persistGateResults(defs.layers, gateResults);
   }
   // gateBlockersFor(task): the lower-layer gates that must pass before it is
   // claimable. Empty for an unlayered task or a layer-0 task.
@@ -2183,8 +2210,25 @@ function docsOfTask(task) {
   return (Array.isArray(task.docs) ? task.docs : [])
     .filter((d) => typeof d === 'string' && d.trim()).map((d) => d.trim());
 }
+// A card is LIVE (contract rule F1: flashing means live) only when BOTH hold: a claim
+// is held right now, and the task's journal moved within the window. A held claim with
+// a silent journal is a claim nobody is working — it must not flash.
+const GRAPH_LIVE_WINDOW_MS = 15 * 60 * 1000;
+function liveForCard(card, now = Date.now()) {
+  const held = card.status === 'in_progress' && !!card.agent;
+  const lastTs = card.journal.length ? Date.parse(card.journal[card.journal.length - 1].ts || '') : NaN;
+  const ageMs = Number.isFinite(lastTs) ? Math.max(0, now - lastTs) : null;
+  const recent = ageMs !== null && ageMs <= GRAPH_LIVE_WINDOW_MS;
+  return {
+    live: held && recent,
+    why: !held ? 'no claim held' : (ageMs === null ? 'claim held, no journal row' : (recent ? 'claim held and the journal moved recently' : 'claim held but the journal is quiet')),
+    last_row_age_s: ageMs === null ? null : Math.round(ageMs / 1000),
+    window_s: GRAPH_LIVE_WINDOW_MS / 1000,
+  };
+}
 function graphNodeFor(task, planned) {
   const card = runCardForTask(task);
+  const live = liveForCard(card);
   const state = taskState(task.id);
   const gate = mergeReadyPayload(task);
   const declared = planned?.layer || null;
@@ -2220,6 +2264,8 @@ function graphNodeFor(task, planned) {
     merge_reasons: gate.reasons,
     merge_warnings: gate.warnings,
     cycle: cycleForJournal(card.journal),
+    live: live.live,
+    live_detail: live,
     docs: docsOfTask(task),
     journal: card.journal,
     updated_at: card.updated_at,
@@ -2351,6 +2397,39 @@ function graphGoal(start) {
     : [];
   return { id: 'goal', stop, north_star: master?.north_star || null, conditions, conditions_evaluated: false };
 }
+// layers[] (contract D21, rules G1 and G4): one entry per band the room draws. Declared
+// layers come from the master; when a playbook declares none, the bands are DERIVED from
+// dependency depth and say so. A gate's result is the last REAL evaluation a claim or an
+// autonomous run recorded, with its time — or `not-run`. Never a guess, never a fresh run.
+function graphLayers(plan, nodes) {
+  const recorded = readGateResults();
+  if (plan.declared && plan.layers.length) {
+    return plan.layers.map((l) => {
+      const r = l.gate ? recorded[l.id] : null;
+      const fresh = r && r.gate === l.gate;
+      return {
+        id: l.id, name: l.name || null, about: l.about || null, position: l.position,
+        source: 'declared', gate: l.gate || null, human: !!l.human,
+        gate_result: !l.gate ? { state: 'no-gate' }
+          : fresh ? { state: r.ok ? 'pass' : 'fail', at: r.at, output: r.output || '' }
+          : { state: 'not-run', reason: r ? 'the gate command changed since it last ran' : 'no claim or autonomous run has evaluated this gate yet' },
+        counts: l.counts, total: l.total,
+        tasks: nodes.filter((n) => n.declared_layer === l.id).map((n) => n.id),
+      };
+    });
+  }
+  const depths = [...new Set(nodes.map((n) => n.derived_layer).filter((d) => typeof d === 'number'))].sort((a, b) => a - b);
+  return depths.map((d, i) => {
+    const members = nodes.filter((n) => n.derived_layer === d);
+    const counts = { todo: 0, in_progress: 0, blocked: 0, done: 0 };
+    for (const m of members) if (counts[m.status] !== undefined) counts[m.status]++;
+    return {
+      id: `L${d + 1}`, name: null, about: null, position: i, source: 'derived',
+      gate: null, human: false, gate_result: { state: 'no-gate' },
+      counts, total: members.length, tasks: members.map((m) => m.id),
+    };
+  });
+}
 function graphPayload() {
   const tasks = backlogTasks();
   const plan = computeLayerPlan({ checkGates: false, allTasks: tasks });
@@ -2362,6 +2441,7 @@ function graphPayload() {
     schema: GRAPH_SCHEMA,
     start,
     goal: graphGoal(start),
+    layers: graphLayers(plan, nodes),
     nodes,
     edges: graphEdges(nodes, plan),
     human: {
@@ -3036,7 +3116,7 @@ function cmdNext(args) {
   // point. `--force` remains the explicit, RECORDED escape hatch for a one-off
   // override; there is no configuration switch that silently relaxes the partition,
   // because the partition is the claim the plan is making.
-  const layerPlan = computeLayerPlan({ checkGates: true, allTasks: tasks });
+  const layerPlan = computeLayerPlan({ checkGates: true, allTasks: tasks, persistGates: !!args.claim });
   const openGateBlockers = (t) => gateBlockersFor(layerPlan, t);
   const claimable = todo.filter((t) => matchesMode(t) && unmetDeps(t, tasks).length === 0 && !openGateBlockers(t).length);
   const candidate = claimable.sort((a, b) => prio(a) - prio(b))[0];
@@ -4120,7 +4200,7 @@ function cmdLoopRunAuto(args) {
     const todo = tasks.filter((t) => t.status === 'todo');
     // Same two gates the interactive claim path applies: dependencies AND layer
     // gates. An autonomous run must not be the one path that can jump a layer.
-    const autoPlan = computeLayerPlan({ checkGates: true, allTasks: tasks });
+    const autoPlan = computeLayerPlan({ checkGates: true, allTasks: tasks, persistGates: !dryRun });
     const claimable = todo
       .filter((t) => unmetDeps(t, tasks).length === 0 && !gateBlockersFor(autoPlan, t).length)
       .sort((a, b) => prio(a) - prio(b));
@@ -5640,7 +5720,10 @@ function cmdHelp() {
                            start/goal bookends, task nodes with cycle+provenance+worker truth,
                            proven edges (dependencies inverted; a spawn comes from the row's
                            origin_task, i.e. the task that was in flight when it was planned),
-                           and the human batch. Never writes, and never executes a layer gate command.
+                           the human batch, layers[] (declared or derived bands; each gate's
+                           last REAL result from a claim or autonomous run, or not-run) and a
+                           per-node live flag (claim held + journal row within 15 min).
+                           Never writes, and never executes a layer gate command.
     worker create|status|exec|verify|merge|remove|checker|merge-ready|provider-rate-limit ...
                            Worker worktrees (dry-run; --execute to apply). create opens an
                            isolated slot (atomic: one winner per slot); status reports
