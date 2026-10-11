@@ -70,6 +70,30 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
   const base = createPbGraphAdapter(() => graph);
   return {
     ...base,
+    sendMessage: async (task, text, intent) => {
+      try {
+        const r = await comment(task, text, apiBase, intent);
+        return { ok: r.ok, note: `Saved to the project journal${r.seq !== null ? ` (row ${r.seq})` : ""} as a ${intent === "steer" ? "change of direction" : intent}.` };
+      } catch (err) {
+        return { ok: false, note: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    createTask: async ({ goal, from, layer }) => {
+      try {
+        const r = await fork(goal, from, undefined, apiBase, layer);
+        return { ok: r.ok, task: r.task, note: r.task ? `created ${r.task} — refresh to see it in its band` : "created" };
+      } catch (err) {
+        return { ok: false, note: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    forkTask: async (task) => {
+      try {
+        const r = await workerCreate(task, apiBase);
+        return { ok: r.ok, note: r.output.split(String.fromCharCode(10)).map((l) => l.trim()).filter(Boolean).slice(-2).join(" · ") || `forked ${task}` };
+      } catch (err) {
+        return { ok: false, note: err instanceof Error ? err.message : String(err) };
+      }
+    },
     applySteering: async (selection: FlowNode[], prompt: string, mode: FlowSteeringMode = "steer") => {
       const tasks = selection.map((node) => node.id);
       const wrote = steeringPlan(selection);
@@ -126,8 +150,8 @@ async function post<T>(route: string, payload: unknown, apiBase = ""): Promise<T
 }
 
 /** One journal row, written by `pb comment --task … --text …`. */
-export const comment = (task: string, text: string, apiBase = "") =>
-  post<{ ok: boolean; task: string; wrote: string }>("/api/comment", { task, text }, apiBase);
+export const comment = (task: string, text: string, apiBase = "", intent: "comment" | "steer" | "question" = "comment") =>
+  post<{ ok: boolean; task: string; wrote: string; seq: number | null }>("/api/comment", { task, text, intent }, apiBase);
 
 /** Comment on every selected card; the goal half is reported, never faked. */
 export const steer = (tasks: string[], text: string, goal?: string, apiBase = "") =>
@@ -139,5 +163,9 @@ export const steer = (tasks: string[], text: string, goal?: string, apiBase = ""
   }>("/api/steer", { tasks, text, goal }, apiBase);
 
 /** A new task, linked at birth with `pb plan --dep` so the graph shows the relation. */
-export const fork = (goal: string, from?: string, check?: string, apiBase = "") =>
-  post<{ ok: boolean; task: string | null }>("/api/fork", { goal, from, check }, apiBase);
+export const fork = (goal: string, from?: string, check?: string, apiBase = "", layer?: string) =>
+  post<{ ok: boolean; task: string | null }>("/api/fork", { goal, from, check, layer }, apiBase);
+
+/** A worker slot for a card: `pb worker create <task> --execute` (D22 fork). */
+export const workerCreate = (task: string, apiBase = "") =>
+  post<{ ok: boolean; task: string; output: string }>("/api/worker", { task }, apiBase);

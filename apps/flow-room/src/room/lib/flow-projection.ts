@@ -25,6 +25,7 @@ import type {
 } from "./flow-types";
 import type { SteeringPlan } from "./flow-derive";
 import { gateLabelText } from "./flow-derive";
+import type { BandRect, GatePost, LayerLayout } from "./flow-bands";
 
 /** What every flow card component receives. */
 export interface FlowCardData extends Record<string, unknown> {
@@ -78,7 +79,8 @@ export type FlowAnyNode =
   | FlowForkNode
   | FlowBatchNode
   | FlowGatepostNode
-  | FlowSteeringNode;
+  | FlowSteeringNode
+  | Node<Record<string, unknown>, "flowBand" | "flowLayerGate" | "flowStack" | "flowDraft">;
 
 /** What an edge carries: its kind, what proves it, and where its label may go. */
 export interface FlowEdgeData extends Record<string, unknown> {
@@ -104,6 +106,8 @@ export const NODE_TYPE_BY_KIND: Record<FlowNodeKind, string> = {
   fork: "flowFork",
   batch: "flowBatch",
   gatepost: "flowGatepost",
+  stack: "flowStack",
+  draft: "flowDraft",
 };
 
 /** Every node type the room registers (the steering card is view-only). */
@@ -115,6 +119,10 @@ export const FLOW_NODE_TYPES = [
   "flowBatch",
   "flowGatepost",
   "flowSteering",
+  "flowStack",
+  "flowDraft",
+  "flowBand",
+  "flowLayerGate",
 ] as const;
 
 /** View-only card id for the frame-3 summary; never a projection node. */
@@ -229,4 +237,83 @@ export function projectToCanvas(graph: FlowGraph): {
     edges: buildEdges(graph, layout),
     layout,
   };
+}
+
+// ─── v2 layer view (D21, D22): bands, gate posts, stacks and drafts ───
+
+export interface FlowBandData extends Record<string, unknown> {
+  band: BandRect;
+  width: number;
+  height: number;
+}
+export interface FlowLayerGateData extends Record<string, unknown> {
+  post: GatePost;
+  width: number;
+  height: number;
+}
+export type FlowBandNode = Node<FlowBandData, "flowBand">;
+export type FlowLayerGateNode = Node<FlowLayerGateData, "flowLayerGate">;
+export type FlowStackNode = Node<FlowCardData, "flowStack">;
+export type FlowDraftNode = Node<FlowCardData, "flowDraft">;
+
+/** Projection + layer layout → the canvas node list, bands first so they sit underneath. */
+export function buildLayerNodes(graph: FlowGraph, layout: LayerLayout, spawned: Set<string>): Node[] {
+  const out: Node[] = [];
+  for (const b of layout.bands) {
+    out.push({
+      id: b.id, type: "flowBand", position: { x: b.x, y: b.y }, width: b.width, height: b.height,
+      style: { width: b.width, height: b.height }, zIndex: -1,
+      data: { band: b, width: b.width, height: b.height },
+      draggable: false, selectable: false, focusable: false,
+    });
+  }
+  for (const g of layout.gateposts) {
+    out.push({
+      id: g.id, type: "flowLayerGate", position: { x: g.x, y: g.y }, width: 1, height: g.height,
+      style: { width: 1, height: g.height }, zIndex: 0,
+      data: { post: g, width: 1, height: g.height },
+      draggable: false, selectable: false, focusable: false,
+    });
+  }
+  const byId = new Map<string, FlowNode>(graph.nodes.map(n => [n.id, n]));
+  for (const extra of layout.extraNodes) byId.set(extra.id, extra);
+  const asLayout: FlowLayoutResult = layout;
+  for (const n of buildNodes({ ...graph, nodes: [...byId.values()] }, asLayout, spawned)) {
+    const kind = (n.data as FlowCardData).node.kind;
+    // stacks and drafts are view state: a person may open them, never drag them
+    if (kind === "stack" || kind === "draft") Object.assign(n, { draggable: false });
+    out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Edges for the layer view: an edge to or from a stacked done card is drawn to its
+ * stack, duplicates collapse, and an edge whose end is not on the canvas is dropped.
+ */
+export function buildLayerEdges(graph: FlowGraph, layout: LayerLayout): FlowEdgeType[] {
+  const onCanvas = new Set(layout.nodes.map(n => n.id));
+  const seen = new Set<string>();
+  const out: FlowEdgeType[] = [];
+  graph.edges.forEach((edge, index) => {
+    const from = layout.stackOf[edge.from] ?? edge.from;
+    const to = layout.stackOf[edge.to] ?? edge.to;
+    if (from === to || !onCanvas.has(from) || !onCanvas.has(to)) return;
+    // the bands already say where work sits: the bookends' spawn fan-out is noise here
+    if (from === "start" || to === "goal") return;
+    const key = `${from}->${to}:${edge.kind}`;
+    if (seen.has(key)) {
+      // a merged edge is only as proven as the weakest edge it stands for
+      const merged = out.find(e => e.id.startsWith(`${key}:`));
+      if (merged?.data && edge.proven !== true) merged.data.proven = false;
+      return;
+    }
+    seen.add(key);
+    out.push({
+      id: `${key}:${index}`, source: from, target: to, type: "flow",
+      data: { kind: edge.kind, proven: edge.proven, evidence: edge.evidence },
+      zIndex: edge.kind === "merge" ? 1 : 0,
+    });
+  });
+  return out;
 }
