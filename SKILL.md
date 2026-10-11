@@ -113,7 +113,7 @@ next run (`scripts/test-kill-failure-reported.mjs`). An autonomous run journals 
 `PB_TASKKILL` is for tests and unusual installs only: it must name a `taskkill.exe` (anything
 else is ignored) and replaces `%SystemRoot%\System32\taskkill.exe`. Layer gates run through the
 same launcher, with their own limit: `gate_timeout_ms` on the layer, then
-`layer_gate_timeout_ms` in the master, then `PB_GATE_TIMEOUT_MS`; a gate past it is TIMEOUT —
+`layer_gate_timeout_ms` in the master, then `PB_GATE_TIMEOUT_MS`, else 120 s (gates run inside every claim, so the default stays short); a gate past it is TIMEOUT —
 not a pass, never a failure. Each check costs one extra Node process (about 0.1 s).
 
 **The same contract covers mode checks, which are a different list with their own budget.**

@@ -1546,6 +1546,9 @@ function resolveModeCheckTimeout(principle, doc) {
 //  FAILING gate — which silently partitions every layer above it. Now a gate runs under
 //  the check launcher (tree kill, bounded output) with its own limit, and a timeout is a
 //  TIMEOUT: still not a pass (the layer above stays blocked), but never called a failure.
+// 120s by default, NOT the checks' 600s: gates run one after another inside every `pb next
+// --claim`, so one hung gate would stall each claim for ten minutes (checker note, seq 222).
+const DEFAULT_GATE_TIMEOUT_MS = 120_000;
 function resolveGateTimeout(def) {
   const warnings = [];
   const attempt = (raw, source) => {
@@ -1558,7 +1561,7 @@ function resolveGateTimeout(def) {
   return attempt(def?.gate_timeout_ms, `gate_timeout_ms on layer [${def?.id}]`)
     ?? attempt(master?.layer_gate_timeout_ms, 'master layer_gate_timeout_ms')
     ?? attempt(process.env.PB_GATE_TIMEOUT_MS, 'env PB_GATE_TIMEOUT_MS')
-    ?? { ms: DEFAULT_CHECK_TIMEOUT_MS, source: 'default', warnings };
+    ?? { ms: DEFAULT_GATE_TIMEOUT_MS, source: 'default', warnings };
 }
 function checkLimitNote(task) {
   const { ms, source } = resolveCheckTimeout(task);
@@ -2367,7 +2370,7 @@ function graphStepIds() {
 // nothing. An action the table does not know is work that happened — `act`.
 const GRAPH_STEP_ACTION = {
   claim: 'select', release: 'select',
-  verify: 'verify', checker: 'verify',
+  verify: 'verify', checker: 'verify', 'check-run': 'verify',
   record: 'record', comment: 'record', correct: 'record', provider_rate_limit: 'record',
   reflect: 'report', report: 'report',
 };
