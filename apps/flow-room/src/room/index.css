@@ -708,6 +708,10 @@
 
 /* ── legend (bottom-left, the frame's panel) ── */
 .flow-legend {
+  /* explicit, and equal to FLOW_LEGEND_METRICS.rowH: Tailwind's preflight gives html a
+     line-height of 1.5, which every row would otherwise inherit (18px rows in a 16px
+     budget spilled ~17px past the box) — plan-20261010-001 */
+  line-height: 16px;
   position: absolute;
   left: 60px;
   bottom: 16px;
@@ -1357,7 +1361,6 @@ code,
   border-color: var(--you);
 }
 /* below full size the old canvas labels would render under 9px: hide them (T3) */
-.flow-room:not([data-tier="full"]) .flow-legend,
 .flow-room:not([data-tier="full"]) .flow-gatepill,
 .flow-room:not([data-tier="full"]) .flow-edgepill,
 .flow-room:not([data-tier="full"]) .flow-card > *,
@@ -1497,6 +1500,8 @@ code,
 }
 .flow-lgate[data-state="pass"] .flow-lgate__pill { background: var(--done-tint); color: var(--tone-ok); }
 .flow-lgate[data-state="fail"] .flow-lgate__pill { background: var(--warn-tint); color: var(--tone-bad); }
+.flow-lgate[data-state="timeout"] .flow-lgate__pill,
+.flow-lgate[data-state="output-limit"] .flow-lgate__pill { background: var(--warn-tint); color: var(--tone-risk); border-style: dashed; }
 
 /* the stack of a band's finished cards (G3) */
 .flow-face--stack {
@@ -2013,6 +2018,29 @@ code,
   border-color: var(--accent-teal);
 }
 
+/* P4b: a question answered by a harness CLI (plan-20261010-015) */
+.flow-oc__harness select {
+  font-family: var(--f-ui);
+  font-size: 13px;
+  padding: 2px 6px;
+  border: 1px solid var(--surface-3);
+  border-radius: 6px;
+  background: var(--surface-1);
+  color: var(--text-primary);
+}
+.flow-oc__answer {
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-0);
+  font-family: var(--f-ui);
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
 /* D17: the decision inbox and panel use the room's existing semantic tokens. */
 .flow-decisions {
   position: absolute;

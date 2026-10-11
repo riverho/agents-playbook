@@ -32,6 +32,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildPrompt, detectHarnesses, sendToHarness } from './harness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, 'dist');
@@ -98,12 +99,22 @@ function findPlaybookRoot(start) {
 }
 
 /** Run a pb command IN the playbook root. Resolves with the exit code; never throws. */
-function runPb(root, args, { timeoutMs = 60000 } = {}) {
+// The identity a harness stamps on an AGENT shell. A person's decision made through the
+// room must not inherit it: a server started from an agent's terminal would otherwise have
+// every `pb decide` refused as an agent shell (checker note on plan-20261010-015).
+const AGENT_SHELL_VARS = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID', 'PB_CLAIM_TOKEN', 'PB_AGENT_ID'];
+function personEnv() {
+  const env = { ...process.env };
+  for (const k of AGENT_SHELL_VARS) delete env[k];
+  return env;
+}
+
+function runPb(root, args, { timeoutMs = 60000, env } = {}) {
   return new Promise((res) => {
     execFile(
       process.execPath,
       [join(root, 'scripts', 'pb.mjs'), ...args],
-      { cwd: root, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
+      { cwd: root, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, ...(env ? { env } : {}) },
       (err, stdout, stderr) => {
         res({
           code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
@@ -114,6 +125,9 @@ function runPb(root, args, { timeoutMs = 60000 } = {}) {
     );
   });
 }
+
+let askSlots = 0;
+const MAX_ASKS = 2;
 
 const args = parseArgs(process.argv.slice(2));
 const ROOT = args.root ? findPlaybookRoot(args.root) : findPlaybookRoot(process.cwd());
@@ -204,7 +218,7 @@ async function serveApi(req, res, url) {
       ok: true,
       root: ROOT,
       engine: v ? v[1] : null,
-      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/attach', '/api/fork', '/api/worker', '/api/decide'],
+      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/attach', '/api/fork', '/api/worker', '/api/decide', '/api/harness', '/api/ask'],
     });
   }
 
@@ -240,7 +254,7 @@ async function serveApi(req, res, url) {
         typeof body.reason !== 'string' || !body.reason.trim() || body.reason.trim().startsWith('-')) {
       return json(res, 400, { error: 'expected { task: id, option: id, reason: non-empty text not starting with "-" }' });
     }
-    const r = await runPb(ROOT, ['decide', '--task', body.task, '--option', body.option, '--reason', body.reason.trim(), '--agent', 'human']);
+    const r = await runPb(ROOT, ['decide', '--task', body.task, '--option', body.option, '--reason', body.reason.trim(), '--agent', 'human'], { env: personEnv() });
     if (r.code !== 0) return json(res, 422, { error: 'pb decide refused', detail: r.stderr.trim() || r.stdout.trim() });
     const seq = /\(seq (\d+)/.exec(r.stdout)?.[1];
     const shown = await runPb(ROOT, ['runcard', 'show', body.task, '--json']);
@@ -365,6 +379,55 @@ async function serveApi(req, res, url) {
       return json(res, 422, { error: 'pb worker create refused', detail: r.stderr.trim() || r.stdout.trim() });
     }
     return json(res, 200, { ok: true, task: body.task, output: r.stdout.trim() });
+  }
+
+  // ── P4b: chat with a harness, if one is on this machine (plan-20261010-015) ──
+  if (path === '/api/harness' && req.method === 'GET') {
+    const available = detectHarnesses();
+    return json(res, 200, {
+      available,
+      note: available.length ? undefined : 'no harness CLI found on PATH (claude, codex, opencode) — questions are recorded in the journal, not dispatched',
+    });
+  }
+  if (path === '/api/ask' && req.method === 'POST') {
+    // at most two harness runs at once: each is a model session, not a cheap request
+    if (askSlots >= MAX_ASKS) return json(res, 429, { error: `already answering ${askSlots} question(s); try again when one finishes` });
+    // reserve the slot NOW, before any await (simultaneous asks once all slipped past the
+    // check), and give it back when this response closes — whichever way it ends
+    askSlots += 1;
+    res.on('close', () => { askSlots -= 1; });
+    const body = await readBody(req);
+    if (!body || typeof body.task !== 'string' || !/^[\w.-]+$/.test(body.task) || typeof body.text !== 'string' || !body.text.trim()) {
+      return json(res, 400, { error: 'expected { task: task id, text: non-empty string, harness?: id }' });
+    }
+    // 1. ALWAYS record first: the question is a journal row whether or not anything answers
+    const recorded = await runPb(ROOT, ['comment', '--task', body.task, '--text', body.text, '--intent', 'question']);
+    if (recorded.code !== 0) {
+      return json(res, 422, { error: 'pb comment refused', detail: recorded.stderr.trim() || recorded.stdout.trim() });
+    }
+    const seq = /\(seq (\d+)/.exec(recorded.stdout);
+    const harness = typeof body.harness === 'string' ? detectHarnesses().find((h) => h.id === body.harness) : null;
+    if (!harness) {
+      return json(res, 200, {
+        ok: true, recorded: true, seq: seq ? Number(seq[1]) : null, dispatched: false,
+        note: body.harness ? `question recorded · not dispatched — no ${body.harness} harness on this machine` : 'question recorded · not dispatched — no harness chosen',
+      });
+    }
+    // 2. dispatch, streamed as server-sent events
+    const shown = await runPb(ROOT, ['task', 'show', body.task, '--json']);
+    let title = body.task;
+    try { title = JSON.parse(shown.stdout)?.task?.title ?? title; } catch { /* keep the id */ }
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
+    const emit = (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
+    emit({ type: 'recorded', seq: seq ? Number(seq[1]) : null, harness: harness.id });
+    const stop = sendToHarness(harness.id, buildPrompt({ task: body.task, title, text: body.text, root: ROOT }), {
+      cwd: ROOT,
+      onEvent: (ev) => { emit(ev); if (ev.type === 'done' || ev.type === 'error') res.end(); },
+    });
+    // the RESPONSE closing is the browser going away (the request body was read long ago,
+    // so req's own close has already fired): stop the harness, don't let it run to its cap
+    res.on('close', () => stop());
+    return undefined;
   }
 
   if (path === '/api/attach' && req.method === 'POST') {

@@ -16,6 +16,7 @@
 import { describe, expect, it } from "vitest";
 import { LIVE_SNAPSHOT_ADAPTER, SAMPLE_LAYERED_ADAPTER } from "@/lib/flow-adapter";
 import { readFileSync } from "node:fs";
+import { layoutLayers } from "@/lib/flow-bands";
 import {
   FLOW_LEGEND_METRICS,
   FLOW_MINIMAP_BG,
@@ -35,6 +36,7 @@ import {
   placeEdgeLabels,
   rectsIntersect,
   type FlowLayoutNode,
+  type FlowRect,
   type FlowLayoutResult,
 } from "@/lib/flow-layout";
 import { buildEdges } from "@/lib/flow-projection";
@@ -301,34 +303,55 @@ describe("5 — the legend is on screen after the initial fit", () => {
     });
   }
 
-  it("maps the whole legend, not a sliver, inside the frame viewport", () => {
-    const layout = layoutFlow(sample);
-    const fit = flowFitBounds(layout);
-    const legend = layout.chrome.legend;
-    const viewWidth = 1440;
-    const viewHeight = 920;
-    // React Flow's fit: scale the rect to the viewport minus the padding, centred.
+  // "Only its top sliver shows" is the regression: React Flow's default fit maps the
+  // NODES' bounding box, the legend lives below them, and on screen only its top few
+  // pixels were left. The measure is the VISIBLE FRACTION of the legend's area after the
+  // fit transform, clipped to the viewport — 1.0 means all of it is on screen. (The old
+  // assertion compared legend.height × scale with itself and could not fail.)
+  const VIEW = { width: 1440, height: 920 };
+  function visibleFraction(fit: FlowRect, legend: FlowRect): number {
+    // React Flow's fit: scale the rect to the viewport minus the padding, centred
     const scale = Math.min(
-      (viewWidth * (1 - 2 * FLOW_FIT_PADDING)) / fit.width,
-      (viewHeight * (1 - 2 * FLOW_FIT_PADDING)) / fit.height
+      (VIEW.width * (1 - 2 * FLOW_FIT_PADDING)) / fit.width,
+      (VIEW.height * (1 - 2 * FLOW_FIT_PADDING)) / fit.height
     );
-    const offsetX = (viewWidth - fit.width * scale) / 2;
-    const offsetY = (viewHeight - fit.height * scale) / 2;
-    const screen = {
-      x: offsetX + (legend.x - fit.x) * scale,
-      y: offsetY + (legend.y - fit.y) * scale,
-      width: legend.width * scale,
-      height: legend.height * scale,
+    const x = (VIEW.width - fit.width * scale) / 2 + (legend.x - fit.x) * scale;
+    const y = (VIEW.height - fit.height * scale) / 2 + (legend.y - fit.y) * scale;
+    const w = legend.width * scale;
+    const h = legend.height * scale;
+    const visW = Math.max(0, Math.min(x + w, VIEW.width) - Math.max(x, 0));
+    const visH = Math.max(0, Math.min(y + h, VIEW.height) - Math.max(y, 0));
+    return (visW * visH) / (w * h);
+  }
+  /** What React Flow's own fitView would fit: the nodes' bounding box, nothing else. */
+  function nodeBox(layout: FlowLayoutResult): FlowRect {
+    const xs = layout.nodes.map(n => n.x), ys = layout.nodes.map(n => n.y);
+    const x = Math.min(...xs), y = Math.min(...ys);
+    return {
+      x, y,
+      width: Math.max(...layout.nodes.map(n => n.x + n.width)) - x,
+      height: Math.max(...layout.nodes.map(n => n.y + n.height)) - y,
     };
-    expect(screen.x).toBeGreaterThanOrEqual(0);
-    expect(screen.y).toBeGreaterThanOrEqual(0);
-    expect(screen.x + screen.width).toBeLessThanOrEqual(viewWidth);
-    expect(screen.y + screen.height).toBeLessThanOrEqual(viewHeight);
-    // "Only its top sliver shows" is the regression this pins: the drawn legend
-    // must get its full budgeted height on screen, not a few pixels of it.
-    expect(
-      screen.height,
-      `legend on screen is only ${screen.height.toFixed(1)}px of ${legend.height}px`
-    ).toBeGreaterThanOrEqual(legend.height * scale * 0.99);
+  }
+  for (const [name, layout] of [
+    ["the dagre layout", layoutFlow(sample)],
+    ["the layer view the room draws", layoutLayers(sample)],
+    ["the layer view over the live backlog", layoutLayers(live)],
+  ] as const) {
+    it(`maps the WHOLE legend on screen, not a sliver — ${name}`, () => {
+      const fit = flowFitBounds(layout);
+      const legend = layout.chrome.legend;
+      // the fit input really includes the legend…
+      expect(legend.y + legend.height).toBeLessThanOrEqual(fit.y + fit.height);
+      // …so all of it is visible
+      expect(visibleFraction(fit, legend)).toBeCloseTo(1, 6);
+    });
+  }
+  it('the measure catches the regression: a node-box fit leaves the legend off screen', () => {
+    // the negative control, on the tall layout where the sliver happened: the very fit
+    // that produced it scores < 1. (The wide layer view has vertical slack, so a node-box
+    // fit happens to show its legend — there it is the positive check above that guards.)
+    const layout = layoutFlow(sample);
+    expect(visibleFraction(nodeBox(layout), layout.chrome.legend)).toBeLessThan(0.5);
   });
 });

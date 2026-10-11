@@ -45,11 +45,16 @@ export function FlowInspector({
   onClose,
   onSend,
   readOnly,
+  harnesses = [],
+  onAsk,
 }: {
   node: FlowNode;
   onClose: () => void;
   onSend: (text: string, intent: MessageIntent) => Promise<SendOutcome>;
   readOnly: boolean;
+  /** P4b: harness CLIs on this machine; a question can be answered by one of them. */
+  harnesses?: { id: string; label: string }[];
+  onAsk?: (text: string, harness: string, onText: (chunk: string) => void) => Promise<SendOutcome>;
 }) {
   const state = faceState(node);
   const live = isLive(node);
@@ -63,9 +68,12 @@ export function FlowInspector({
   const [text, setText] = useState("");
   const [pending, setPending] = useState(false);
   const [outcome, setOutcome] = useState<SendOutcome | null>(null);
+  // P4b: which harness answers a question ("" = record it, dispatch nothing), and its answer
+  const [harness, setHarness] = useState("");
+  const [answer, setAnswer] = useState("");
   // A1: opening a card moves focus into it; the title is the landing point
   const titleRef = useRef<HTMLHeadingElement>(null);
-  useEffect(() => { setOutcome(null); setText(""); setIntent("comment"); titleRef.current?.focus(); }, [node.id]);
+  useEffect(() => { setOutcome(null); setText(""); setIntent("comment"); setAnswer(""); titleRef.current?.focus(); }, [node.id]);
 
   // one send at a time, even for two clicks in the same tick (state alone lags a tick)
   const sending = useRef(false);
@@ -74,7 +82,10 @@ export function FlowInspector({
     sending.current = true;
     setPending(true);
     try {
-      const r = await onSend(text.trim(), intent);
+      // a question with a harness chosen: recorded first, then answered as a stream
+      const r = intent === "question" && harness && onAsk
+        ? (setAnswer(""), await onAsk(text.trim(), harness, chunk => setAnswer(a => a + chunk)))
+        : await onSend(text.trim(), intent);
       setOutcome(r);
       if (r.ok) setText("");
     } finally {
@@ -211,6 +222,17 @@ export function FlowInspector({
           ))}
         </div>
         <label className="flow-oc__muted" htmlFor="flow-oc-text">{INTENTS.find(i => i.id === intent)?.hint}</label>
+        {intent === "question" && onAsk && (
+          <label className="flow-oc__muted flow-oc__harness">
+            Answer with{" "}
+            <select value={harness} onChange={e => setHarness(e.target.value)} disabled={readOnly}>
+              <option value="">nobody yet — record the question only</option>
+              {harnesses.map(h => <option key={h.id} value={h.id}>{h.label}</option>)}
+            </select>
+            {harnesses.length === 0 && " (no harness CLI found on this machine)"}
+          </label>
+        )}
+        {answer && <pre className="flow-oc__answer" aria-live="polite">{answer}</pre>}
         <textarea id="flow-oc-text" rows={3} value={text} onChange={e => setText(e.target.value)} placeholder={intent === "question" ? "What do you want to ask?" : "Write to the agent"} />
         <div className="flow-oc__row">
           <span className={`flow-oc__muted${outcome && !outcome.ok ? " is-refused" : ""}`} role="status">

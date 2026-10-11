@@ -99,6 +99,8 @@ export const FLOW_LEGEND_METRICS = {
   rowH: 16,
   rowGap: 3,
   groupGap: 18,
+  /** the legend box's border width (.flow-legend: 1px solid) */
+  border: 1,
   swatchW: 26,
   swatchGap: 6,
   /** Atkinson Hyperlegible Next at 12 px (v2 floor), measured conservatively. */
@@ -151,12 +153,15 @@ export function flowLegendContentSize(model: FlowLegendGroup[]): {
   height: number;
 } {
   const m = FLOW_LEGEND_METRICS;
-  let height = m.padY * 2;
-  let width = m.padX * 2;
+  // the box's 1px border is inside the size the layout hands out (box-sizing: border-box)
+  const frame = 2 * m.border;
+  let height = m.padY * 2 + frame;
+  let width = m.padX * 2 + frame;
   model.forEach((group, index) => {
-    const rowsH =
-      group.rows.length * m.rowH + Math.max(0, group.rows.length - 1) * m.rowGap;
-    height = Math.max(height, m.padY * 2 + m.headerH + rowsH);
+    // a group is a flex column with `gap: rowGap` between ALL its children — the header
+    // and the first row included (the old sum missed that gap and the border: 5px short)
+    const rowsH = group.rows.length * (m.rowH + m.rowGap);
+    height = Math.max(height, m.padY * 2 + frame + m.headerH + rowsH);
     if (index > 0) width += m.groupGap;
     const widest = group.rows.reduce((max, row) => {
       const swatch = row.kind === "line" ? m.swatchW + m.swatchGap : 0;

@@ -78,12 +78,51 @@ try {
   const mounted = await room.navigate();
   console.log(`room: ${room.url} · ${mounted} node(s) mounted`);
 
+  // plan-20261010-006: right after load (the first fit, whatever zoom it lands on) the legend
+  // is on screen, readable and visible — not hidden by the overview tier, not off the viewport
+  {
+    await sleep(500);
+    const lv = await evaluate(`(() => {
+      const el = document.querySelector('.flow-legend');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      const row = el.querySelector('.flow-legend__row');
+      return {
+        tier: document.querySelector('.flow-room')?.dataset.tier,
+        visible: el.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+        inView: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && r.width > 0,
+        fontPx: row ? parseFloat(getComputedStyle(row).fontSize) * (row.getBoundingClientRect().height / (row.offsetHeight || 1)) : 0,
+      };
+    })()`);
+    console.log(`  legend after load: ${JSON.stringify(lv)}`);
+    if (!lv) problems.push('006: no legend drawn');
+    else if (!lv.visible || !lv.inView || lv.fontPx < MIN_PX) problems.push(`006: after load (tier ${lv.tier}) the legend is not readable on screen: ${JSON.stringify(lv)}`);
+  }
+
   // the gate must be looking at a backlog: a room with no task cards passes nothing vacuously
   await evaluate('window.__flowRoom.setViewport({ x: 20, y: 20, zoom: 1 })');
   await sleep(300);
   const taskCards = await evaluate("document.querySelectorAll('.flow-face[data-live]').length");
   console.log(`task cards: ${taskCards}`);
   if (taskCards < 5) problems.push(`only ${taskCards} task card(s) mounted — the room is not drawing a backlog (run in a playbook with tasks, or pass --root <playbook>)`);
+
+  // ── the legend's content fits the box the layout budgeted for it (plan-20261010-001) ──
+  // A unit test reads the CSS; this reads what the browser actually laid out, inherited
+  // values included (Tailwind's preflight line-height once made every row 2px too tall).
+  {
+    const lg = await evaluate(`(() => {
+      const el = document.querySelector('.flow-legend');
+      if (!el) return null;
+      const rows = [...el.querySelectorAll('.flow-legend__row, .flow-legend__h')].map((r) => r.getBoundingClientRect().height / (r.getBoundingClientRect().height ? (r.offsetHeight / r.getBoundingClientRect().height) : 1));
+      return { scrollH: el.scrollHeight, clientH: el.clientHeight, scrollW: el.scrollWidth, clientW: el.clientWidth, rowH: Math.max(...el.querySelectorAll('.flow-legend__row').length ? [...el.querySelectorAll('.flow-legend__row')].map((r) => r.offsetHeight) : [0]), lineHeight: getComputedStyle(el.querySelector('.flow-legend__row') ?? el).lineHeight, n: rows.length };
+    })()`);
+    console.log(`  legend: ${JSON.stringify(lg)}`);
+    if (!lg) problems.push('the legend was not drawn');
+    else {
+      if (lg.scrollH > lg.clientH + 1) problems.push(`the legend's content (${lg.scrollH}px) is taller than its box (${lg.clientH}px) — rows are clipped (row line-height ${lg.lineHeight})`);
+      if (lg.scrollW > lg.clientW + 1) problems.push(`the legend's content (${lg.scrollW}px) is wider than its box (${lg.clientW}px)`);
+    }
+  }
 
   // ── F1: nothing animates unless it is live or asking a person ──
   await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
@@ -273,9 +312,25 @@ try {
       await wait(400);
       const panel = document.querySelector('.flow-oc');
       const inPanel = !!panel && panel.contains(document.activeElement);
+      // Escape in a message box with text keeps the card AND the text; the next one closes
+      const ta = panel?.querySelector('textarea');
+      let keptDraft = false;
+      if (ta) {
+        const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        ta.focus(); set.call(ta, 'half a thought'); ta.dispatchEvent(new Event('input', { bubbles: true })); await wait(100);
+        ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await wait(300);
+        keptDraft = !!document.querySelector('.flow-oc') && document.querySelector('.flow-oc textarea')?.value === 'half a thought';
+      }
       document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       await wait(400);
-      return { focused, opened: !!panel, inPanel, closed: !document.querySelector('.flow-oc'), back: document.activeElement === card || document.activeElement?.dataset?.id === card.dataset.id };
+      const closed = !document.querySelector('.flow-oc');
+      const back = document.activeElement === card || document.activeElement?.dataset?.id === card.dataset.id;
+      // Escape closes an open + menu
+      const plus = card.querySelector('.flow-plus');
+      plus?.click(); await wait(250);
+      const menuOpen = !!document.querySelector('.flow-pop');
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); await wait(250);
+      return { focused, opened: !!panel, inPanel, keptDraft, closed, back, menuOpen, menuClosed: !document.querySelector('.flow-pop') };
     })()`);
     console.log(`  A1 keyboard: ${JSON.stringify(kb)}`);
     if (kb.error) problems.push(`A1: ${kb.error}`);
@@ -285,6 +340,8 @@ try {
       if (!kb.inPanel) problems.push('A1: opening a card does not move focus into it');
       if (!kb.closed) problems.push('A1: Escape does not close the open card');
       if (!kb.back) problems.push('A1: closing the card does not return focus to it');
+      if (!kb.keptDraft) problems.push('A1: Escape in a message box with text closed the card or lost the text');
+      if (!kb.menuOpen || !kb.menuClosed) problems.push(`A1: Escape does not close an open + menu (open ${kb.menuOpen}, closed after Escape ${kb.menuClosed})`);
     }
   }
   // H1-H4: the inbox is keyboard reachable; no write until an explicit answer.

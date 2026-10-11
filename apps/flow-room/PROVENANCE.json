@@ -125,9 +125,9 @@
   },
   "local_edits": {
     "lib/flow-adapter.ts": {
-      "sha256": "989312a4b5c96db39f0a87184403eba812d69d902c2660ac900c90e3f7304a32",
-      "reason": "plan-20261010-035 decision write seam merged with plan-20261010-022 live-source labeling and 021 attach/steering behavior",
-      "recorded": "2026-10-11T16:33:31.002Z",
+      "sha256": "da3c32106e3749d2fa852956643676a0c563ff920d65e9aa0bc444fffed5eeec",
+      "reason": "plan-20261010-035 decision write seam + 022 live-source labeling + 021 attach/steering, merged with agent/v2-room: createTask / forkTask / sendMessage / listHarnesses / ask (031, 034, 015)",
+      "recorded": "2026-10-11T17:28:43.594Z",
       "superseded": [
         {
           "sha256": "0828537b950b2c3b4e60aea5d655f8ddc6ab5dc142979d1661efd1630c573c77",
@@ -152,13 +152,17 @@
         {
           "sha256": "c45bb92b0693a8277f6a89f020d8d04a8492bd709ac1768cef4d91d1b0ab8478",
           "reason": "plan-20261010-022: the source label is derived from the adapter (sourceChipText) instead of hardcoded, so the live projection is no longer labelled a snapshot."
+        },
+        {
+          "sha256": "989312a4b5c96db39f0a87184403eba812d69d902c2660ac900c90e3f7304a32",
+          "reason": "plan-20261010-035 decision write seam merged with plan-20261010-022 live-source labeling and 021 attach/steering behavior"
         }
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "28b22157b14699d2a30d672914a4dc797bbbaacc4e605bd8a64c817b58d6406c",
-      "reason": "plan-20261010-035 decision inbox and receipts merged with plan-20261010-022 live-source label and 021 truthful steering feedback",
-      "recorded": "2026-10-11T16:33:31.064Z",
+      "sha256": "b1673d015927bcf61c0056cb185b27ec172efba4a56476429fea78161dd3c38d",
+      "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask for the open card (034, 015); the legend is a screen overlay, readable after load at every zoom (006)",
+      "recorded": "2026-10-11T17:43:02.327Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -203,6 +207,14 @@
         {
           "sha256": "dd4ec2b4764b19964b8a0cc8496dc1d54c4f1d9feaa651437cd32db459bcf718",
           "reason": "plan-20261010-022: the source label is derived from the adapter (sourceChipText) instead of hardcoded, so the live projection is no longer labelled a snapshot."
+        },
+        {
+          "sha256": "28b22157b14699d2a30d672914a4dc797bbbaacc4e605bd8a64c817b58d6406c",
+          "reason": "plan-20261010-035 decision inbox and receipts merged with plan-20261010-022 live-source label and 021 truthful steering feedback"
+        },
+        {
+          "sha256": "2944633e526e98c9ce2222c16ca0ffde061874ace2662843675e335f7da31d3a",
+          "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering feedback, merged with agent/v2-room: Escape order (text box, + menu, inbox, open card), harness list and ask for the open card (034, 015)"
         }
       ]
     },
@@ -279,9 +291,9 @@
       ]
     },
     "components/stage/FlowInspector.tsx": {
-      "sha256": "766dba173e347f110548c0e8060fdc8f758289c1dffd936413d7c86e8c01154a",
-      "reason": "plan-20261010-034 (v2 open card, D15/D16; M2, M3): approved order; focus lands on the title; intent chips are toggle buttons (aria-pressed); one send at a time",
-      "recorded": "2026-10-11T08:00:56.380Z",
+      "sha256": "63178b14f0a23986f400c1304cb082194d87dafaa00a43d22a059c84918e34be",
+      "reason": "plan-20261010-034 open card in the approved order + 015: a question can be answered by a harness CLI chosen in the composer, streamed under it",
+      "recorded": "2026-10-11T17:28:43.745Z",
       "superseded": [
         {
           "sha256": "c8d736e211db101abc94be970815a63c74799b7707512a31c84bd483da78e153",
@@ -294,29 +306,49 @@
         {
           "sha256": "295ca3a1d29ecede50c0c93543687d574075adeaabbcfe803661f24ba005643d",
           "reason": "plan-20261010-034 (v2 open card, D15/D16; M2, M3): rewritten as the open card in the approved order — title first, what this is, where it stands in plain step names + next line, proof by name, conversation with summaries/intents/folding, engine details folded, composer with intent chips writing one pb comment --intent row"
+        },
+        {
+          "sha256": "766dba173e347f110548c0e8060fdc8f758289c1dffd936413d7c86e8c01154a",
+          "reason": "plan-20261010-034 (v2 open card, D15/D16; M2, M3): approved order; focus lands on the title; intent chips are toggle buttons (aria-pressed); one send at a time"
         }
       ]
     },
     "lib/flow-derive.ts": {
-      "sha256": "e5dcbe65a09293596a11b4bbdf3cb22b61c979190bb2c588e7b9e8bf291c5966",
-      "reason": "plan-20261010-028 (v2 contract) + checker seq 151 fixes: railAttrs(node) is the one place a rail is marked done (only when all six steps are filled); blocked is --tone-risk and the HIL edge --you (C3); legend metrics re-budgeted for 12px Atkinson; hollow glyph uses a measured tone (C1)",
-      "recorded": "2026-10-11T03:06:43.284Z",
+      "sha256": "8cc6487bc62577b66227798a2cc8c2e9389450127086d271840226b4216cae15",
+      "reason": "plan-20261010-028 + 001: railAttrs; v2 tones; legend metrics for 12px Atkinson, and the legend size counts the box border and the header's flex gap",
+      "recorded": "2026-10-11T17:28:43.819Z",
       "superseded": [
         {
           "sha256": "c0406a1195e5c85b0d62d5f308fa81a2d92ff687f1d10a1848ed84a6e4e0742d",
           "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): blocked is amber --tone-risk and the HIL edge is --you (C3); legend metrics re-budgeted for 12px Atkinson (headerH/rowH 16, charW 6.8); hollow-gate glyph uses a measured tone (C1)"
+        },
+        {
+          "sha256": "e5dcbe65a09293596a11b4bbdf3cb22b61c979190bb2c588e7b9e8bf291c5966",
+          "reason": "plan-20261010-028 (v2 contract) + checker seq 151 fixes: railAttrs(node) is the one place a rail is marked done (only when all six steps are filled); blocked is --tone-risk and the HIL edge --you (C3); legend metrics re-budgeted for 12px Atkinson; hollow glyph uses a measured tone (C1)"
         }
       ]
     },
     "lib/flow-geometry.test.ts": {
-      "sha256": "57c183b1aabd3961d22b3f8cfc82dd847dbe5dd6798af6061a26d7e1ba4b733d",
-      "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the minimap's blocked tone is pinned to --tone-risk (was rose)",
-      "recorded": "2026-10-10T18:51:09.133Z"
+      "sha256": "d07aa89ab93edd40a9eabebdba97a72ab8fbe235cd7b86ee57f5188b0c827a94",
+      "reason": "plan-20261010-028 + 006: blocked tone pinned to --tone-risk; the 'not a sliver' identity replaced by the visible fraction of the legend under the fit (+ node-box negative control)",
+      "recorded": "2026-10-11T17:28:43.895Z",
+      "superseded": [
+        {
+          "sha256": "57c183b1aabd3961d22b3f8cfc82dd847dbe5dd6798af6061a26d7e1ba4b733d",
+          "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the minimap's blocked tone is pinned to --tone-risk (was rose)"
+        }
+      ]
     },
     "lib/flow-legend-css.test.ts": {
-      "sha256": "0672bb9e5fa4b29ce61e6c57139ebbfdf3e2b08b24f5c9676e2666bccbfbd798",
-      "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): T5 removed the legend header's 0.1em tracking, so the ancestor-chain test now expects no letter-spacing anywhere",
-      "recorded": "2026-10-10T18:51:09.211Z"
+      "sha256": "0fd3cfe473f42dd881f8e89af2ba8546f3e32c44bff7052f37d7baf0bc3749f4",
+      "reason": "plan-20261010-028 + 001: real ancestors in the inheritance chain, anchored selector lookup, Tailwind preflight modelled, legend line-height must equal the budget",
+      "recorded": "2026-10-11T17:28:43.972Z",
+      "superseded": [
+        {
+          "sha256": "0672bb9e5fa4b29ce61e6c57139ebbfdf3e2b08b24f5c9676e2666bccbfbd798",
+          "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): T5 removed the legend header's 0.1em tracking, so the ancestor-chain test now expects no letter-spacing anywhere"
+        }
+      ]
     },
     "lib/stage-tokens.ts": {
       "sha256": "793acbe09161286025fb30dc4543fb407c274a3b4ab245185406f0b93c93587e",
@@ -329,9 +361,9 @@
       "recorded": "2026-10-11T03:20:37.780Z"
     },
     "lib/flow-types.ts": {
-      "sha256": "b8e0d8481ab4c6cd6400fd006157f14b838fb1ac46ccedfafb0988ac4c976064",
-      "reason": "plan-20261010-030/031/034 (v2): headline, now, live, human (+ decided, sources), check_names, journal summary/intent; layers[]; node kinds stack and draft",
-      "recorded": "2026-10-11T03:55:27.929Z",
+      "sha256": "319c3349efa9c95037f07d2b59bf0e6d655b923cceeef7fed31b161ed164e3d8",
+      "reason": "plan-20261010-030/031/034/008 (v2) merged with main: headline, now, live, human, check_names, journal summary/intent; layers[] gate_result incl. timeout/output-limit; node kinds stack and draft",
+      "recorded": "2026-10-11T17:28:44.048Z",
       "superseded": [
         {
           "sha256": "012a4f1a3ba99b14bb1028155fc845e2353114c4e69dc7b7bb70e7d1c21dc00e",
@@ -340,6 +372,10 @@
         {
           "sha256": "b7506a09e3467fce635d669ba354719d43878297d3327fde10d9557c0cf1d182",
           "reason": "plan-20261010-030/031 (v2): headline, now, live, human, journal summary/intent; layers[] (FlowLayerInfo); node kinds stack and draft"
+        },
+        {
+          "sha256": "b8e0d8481ab4c6cd6400fd006157f14b838fb1ac46ccedfafb0988ac4c976064",
+          "reason": "plan-20261010-030/031/034 (v2): headline, now, live, human (+ decided, sources), check_names, journal summary/intent; layers[]; node kinds stack and draft"
         }
       ]
     },

@@ -25,7 +25,6 @@ import {
   ReactFlow,
   ReactFlowProvider,
   SelectionMode,
-  ViewportPortal,
   useNodesState,
   useReactFlow,
   useStore,
@@ -313,6 +312,18 @@ function FlowCanvas({
 
   // Escape unwinds one level, the nearest first: the open card, then the selection.
   useStageEscape(useCallback(() => {
+    // a message or a draft being written is not thrown away by Escape: the first Escape
+    // only leaves the text box; the next one closes
+    const typing = document.activeElement as HTMLTextAreaElement | HTMLInputElement | null;
+    if (typing && (typing.tagName === "TEXTAREA" || typing.tagName === "INPUT") && typing.value.trim()) {
+      typing.blur();
+      return true;
+    }
+    // the nearest open thing first: a + menu, then the open card, then the selection
+    if (openPlus) {
+      setOpenPlus(null);
+      return true;
+    }
     if (showDecisions) { setShowDecisions(false); return true; }
     if (openNode) {
       closeCard();
@@ -324,7 +335,7 @@ function FlowCanvas({
       return true;
     }
     return false;
-  }, [showDecisions, selectedIds.length, openNode, setNodes, closeCard]));
+  }, [showDecisions, selectedIds.length, openNode, setNodes, closeCard, openPlus]));
 
   const runSteering = useCallback(
     async (mode: FlowSteeringMode) => {
@@ -370,6 +381,13 @@ function FlowCanvas({
   const tier = zoomTier(zoom);
 
   const present = useMemo(() => presence(graph), [graph]);
+  // P4b: the harness CLIs the room's server can see (none for a snapshot)
+  const [harnessList, setHarnessList] = useState<{ id: string; label: string }[]>([]);
+  useEffect(() => {
+    let alive = true;
+    if (active.listHarnesses) void active.listHarnesses().then(list => { if (alive) setHarnessList(list); }).catch(() => undefined);
+    return () => { alive = false; };
+  }, [active]);
 
   const counts = {
     hil: inbox.length,
@@ -427,9 +445,6 @@ function FlowCanvas({
         <FlowEdgeMarkers />
         {/* The legend is canvas-space, drawn at the rect the layout reserved for
             it — so it can never sit on top of a card (frame 1's floating panel). */}
-        <ViewportPortal>
-          <FlowLegend graph={graph} rect={layout.chrome.legend} />
-        </ViewportPortal>
         <Controls position="bottom-left" showInteractive={false} />
         <MiniMap
           position="bottom-right"
@@ -452,6 +467,11 @@ function FlowCanvas({
         </ReactFlow>
       </FlowViewContext.Provider>
       </FlowJumpContext.Provider>
+
+      {/* the legend is a SCREEN overlay (plan-20261010-006): drawn on the canvas it sat in a
+          reserve that the first fit put at 17–33% zoom, where the overview hides all text —
+          nobody saw it until they zoomed past 75%. On screen it is readable at every zoom. */}
+      <FlowLegend graph={graph} rect={layout.chrome.legend} />
 
       {/* M1: who is in the room — each active agent, what it is on, when it last spoke */}
       <div className="flow-presence" role="group" aria-label="Who is working">
@@ -533,6 +553,18 @@ function FlowCanvas({
           node={openNode}
           onClose={closeCard}
           readOnly={!active.sendMessage}
+          harnesses={harnessList}
+          onAsk={active.ask ? async (text, harness, onText) => {
+            try {
+              const r = await active.ask!(openNode.id, text, harness, ev => {
+                if (ev.type === "text" && ev.text) onText(ev.text);
+                if (ev.type === "error" && ev.message) onText(`\n[${ev.message}]`);
+              });
+              return { ok: r.recorded, note: r.dispatched ? "Question saved to the journal; the answer is above." : r.note };
+            } catch (err) {
+              return { ok: false, note: err instanceof Error ? err.message : String(err) };
+            }
+          } : undefined}
           onSend={async (text, intent) => {
             if (!active.sendMessage) return { ok: false, note: "This view is a snapshot — nothing was written." };
             const r = await active.sendMessage(openNode.id, text, intent === "steer" || intent === "question" ? intent : "comment");
@@ -555,9 +587,8 @@ function FlowLegend({ graph, rect }: { graph: FlowGraph; rect: FlowRect }) {
   return (
     <div
       className="flow-legend"
+      aria-label="Legend"
       style={{
-        left: rect.x,
-        top: rect.y,
         width: rect.width,
         height: rect.height,
         boxSizing: "border-box",

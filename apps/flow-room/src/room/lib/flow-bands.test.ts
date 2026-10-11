@@ -132,6 +132,11 @@ describe("G4 — a gate post says the last real result, or not run", () => {
     expect(gatePostText(band("node g", { state: "pass", at: "2026-10-11T10:00:00Z" })).text).toBe("L0 gate: pass");
     expect(gatePostText(band("node g", { state: "fail", at: "2026-10-11T10:00:00Z", output: "x" }))).toMatchObject({ text: "L0 gate: fail", state: "fail" });
   });
+  it("a gate past its limit says timed out — never pass, never fail", () => {
+    const g = gatePostText(band("node g", { state: "timeout", at: "2026-10-11T10:00:00Z", limit_ms: 800 }));
+    expect([g.text, g.state]).toEqual(["L0 gate: timed out", "timeout"]);
+    expect(g.title).toMatch(/800ms/);
+  });
   it("no recorded run is 'not run' — never a guess", () => {
     expect(gatePostText(band("node g", { state: "not-run" })).text).toBe("L0 gate: not run");
     // an older engine sends no gate_result at all: still not run, not pass

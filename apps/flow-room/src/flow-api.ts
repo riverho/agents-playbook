@@ -71,6 +71,8 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
   const base = createPbGraphAdapter(() => graph);
   return {
     ...base,
+    listHarnesses: () => listHarnesses(apiBase),
+    ask: (task, text, harness, onEvent) => askHarness(task, text, harness, onEvent, apiBase),
     decide: async (task, option, reason) => {
       try {
         const r = await decide(task, option, reason, apiBase);
@@ -227,6 +229,64 @@ export const fork = (goal: string, from?: string, check?: string, apiBase = "", 
 export const workerCreate = (task: string, apiBase = "") =>
   post<{ ok: boolean; task: string; output: string }>("/api/worker", { task }, apiBase);
 
+// ── P4b: a question for a harness CLI (plan-20261010-015) ─────────────────────
+export interface HarnessInfo {
+  id: string;
+  label: string;
+}
+export type HarnessEvent =
+  | { type: "recorded"; seq: number | null; harness: string }
+  | { type: "text"; text: string }
+  | { type: "done"; code: number }
+  | { type: "error"; message: string };
+
+/** The harness CLIs on this machine (never runs them). */
+export async function listHarnesses(apiBase = ""): Promise<HarnessInfo[]> {
+  const res = await fetch(`${apiBase}/api/harness`, { headers: { accept: "application/json" } });
+  if (!res.ok) return [];
+  const body = (await res.json().catch(() => null)) as { available?: HarnessInfo[] } | null;
+  return body?.available ?? [];
+}
+
+/**
+ * Ask: the question is ALWAYS recorded as a journal row first; with a harness it is then
+ * dispatched and the answer streams back event by event. Returns the server's note when
+ * nothing was dispatched.
+ */
+export async function askHarness(
+  task: string,
+  text: string,
+  harness: string | null,
+  onEvent: (ev: HarnessEvent) => void,
+  apiBase = ""
+): Promise<{ recorded: boolean; dispatched: boolean; note: string }> {
+  const res = await fetch(`${apiBase}/api/ask`, {
+    method: "POST",
+    headers: CSRF_HEADER,
+    body: JSON.stringify({ task, text, harness: harness ?? undefined }),
+  });
+  const type = res.headers.get("content-type") ?? "";
+  if (!type.includes("text/event-stream")) {
+    const body = (await res.json().catch(() => null)) as { recorded?: boolean; dispatched?: boolean; note?: string; detail?: string; error?: string } | null;
+    if (!res.ok) throw new Error(body?.detail ?? body?.error ?? `/api/ask failed (${res.status})`);
+    return { recorded: !!body?.recorded, dispatched: false, note: body?.note ?? "question recorded" };
+  }
+  const reader = res.body?.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const chunk = reader ? await reader.read() : { done: true, value: undefined };
+    if (chunk.value) buffer += decoder.decode(chunk.value, { stream: true });
+    let cut;
+    while ((cut = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, cut).replace(/^data: /, "").trim();
+      buffer = buffer.slice(cut + 2);
+      if (block) onEvent(JSON.parse(block) as HarnessEvent);
+    }
+    if (chunk.done) break;
+  }
+  return { recorded: true, dispatched: true, note: "answered" };
+}
 /**
  * Attach a document to one card: `pb attach --task <id> --path <root-relative file>`.
  * The path must be playbook-root-relative and must exist — the engine refuses otherwise, and the

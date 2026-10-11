@@ -75,7 +75,7 @@ export interface FlowLayerInfo {
   gate: string | null;
   human?: boolean;
   /** The gate's LAST REAL result, or `not-run` — never a guess (G4). */
-  gate_result: { state: "pass" | "fail" | "not-run" | "no-gate"; at?: string; output?: string; reason?: string };
+  gate_result: { state: "pass" | "fail" | "timeout" | "output-limit" | "not-run" | "no-gate"; at?: string; output?: string; reason?: string; limit_ms?: number };
   counts?: Partial<Record<FlowStatus, number>>;
   total?: number;
   tasks: string[];

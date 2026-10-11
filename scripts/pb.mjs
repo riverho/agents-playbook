@@ -6498,7 +6498,7 @@ function cmdScaffold(args) {
     const appSrc = typeof args['with-ui'] === 'string' && args['with-ui'] !== true
       ? resolve(args['with-ui'])
       : join(ROOT, 'apps', 'flow-room');
-    const missing = ['server.mjs', join('dist', 'index.html')].filter((f) => !existsSync(join(appSrc, f)));
+    const missing = ['server.mjs', 'harness.mjs', join('dist', 'index.html')].filter((f) => !existsSync(join(appSrc, f)));
     if (missing.length) {
       console.error(`--with-ui: the app at ${appSrc} is not built (missing ${missing.join(', ')}).`);
       console.error('  build it first: node scripts/build-app.mjs');
@@ -6506,6 +6506,8 @@ function cmdScaffold(args) {
     }
     ensureT('apps/flow-room/dist');
     copyFileSync(join(appSrc, 'server.mjs'), tp('apps/flow-room/server.mjs'));
+    // the server imports harness.mjs (plan-20261010-015): ship it or the server cannot start
+    copyFileSync(join(appSrc, 'harness.mjs'), tp('apps/flow-room/harness.mjs'));
     copyFileSync(join(appSrc, 'package.json'), tp('apps/flow-room/package.json'));
     cpSync(join(appSrc, 'dist'), tp('apps/flow-room/dist'), { recursive: true });
     created.push('apps/flow-room/ (prebuilt app + zero-dep server — `npm run ui`)');

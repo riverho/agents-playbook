@@ -100,6 +100,9 @@ export interface FlowAdapter {
   forkTask?(task: string): Promise<{ ok: boolean; note: string }>;
   /** v2 (M3): one message on one card, with its intent — `pb comment --intent`. */
   sendMessage?(task: string, text: string, intent: "comment" | "steer" | "question"): Promise<{ ok: boolean; note: string }>;
+  /** v2 P4b: the harness CLIs on this machine, and a question streamed to one of them. */
+  listHarnesses?(): Promise<{ id: string; label: string }[]>;
+  ask?(task: string, text: string, harness: string | null, onEvent: (ev: { type: string; text?: string; message?: string; seq?: number | null }) => void): Promise<{ recorded: boolean; dispatched: boolean; note: string }>;
   decide?(task: string, option: string, reason: string): Promise<{ ok: boolean; note: string; row?: DecisionRow }>;
 }
 
