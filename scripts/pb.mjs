@@ -2199,7 +2199,7 @@ function graphStepIds() {
 // nothing. An action the table does not know is work that happened — `act`.
 const GRAPH_STEP_ACTION = {
   claim: 'select', release: 'select',
-  verify: 'verify', checker: 'verify', decide: 'select',
+  verify: 'verify', checker: 'verify',
   record: 'record', comment: 'record', correct: 'record', provider_rate_limit: 'record',
   reflect: 'report', report: 'report',
 };
@@ -2209,9 +2209,12 @@ function graphStepForAction(action) {
 // The card's cycle rail: which loop steps this task's journal rows show it passed
 // through, and the step of its most recent row. A step, never a percentage — the
 // engine has no completion fraction and must not grow one (rule 25).
-function cycleForJournal(journal) {
+function cycleForJournal(allRows) {
   const steps = graphStepIds();
   const filled = [];
+  // a person's decision is an answer to the agent, not a step of the agent's loop: it
+  // neither fills a segment nor moves the card back to the start of the rail
+  const journal = allRows.filter((row) => row.action !== 'decide');
   for (const row of journal) {
     const step = graphStepForAction(row.action);
     if (!filled.includes(step)) filled.push(step);
@@ -2248,8 +2251,11 @@ function liveForCard(card, now = Date.now()) {
 const HEADLINE_MAX = 72;
 // "DEMONSTRATED, not just described" → "Demonstrated, not just described": shouting is
 // how a note marks emphasis in a terminal; a one-line lead should read as a sentence.
+// ...but an acronym is not shouting: words of four letters or fewer (YAML, JSON, CSRF,
+// WCAG) and a few longer ones keep their capitals.
+const KEEP_CAPS = new Set(['POSIX', 'ASCII', 'HTTPS', 'JSONL', 'NDJSON', 'OAUTH', 'WSL2']);
 function deShout(text) {
-  const out = String(text).replace(/\b([A-Z][A-Z'-]{3,})\b/g, (w) => w.toLowerCase());
+  const out = String(text).replace(/\b([A-Z][A-Z'-]{4,})\b/g, (w) => (KEEP_CAPS.has(w) ? w : w.toLowerCase()));
   return out.charAt(0).toUpperCase() + out.slice(1);
 }
 function firstSentence(text) {
@@ -2356,7 +2362,8 @@ function graphHuman(task, headline, journal, dependents) {
   if (!declared && !task.manual) return null;
   const question = declared && typeof declared.question === 'string' && declared.question.trim()
     ? { question: declared.question.trim(), question_source: 'task' }
-    : { question: `Approve: ${headline}?`, question_source: 'fallback' };
+    // a title that opens with a shouted label ("HUMAN APPROVAL: accept ...") drops the label
+    : { question: `Approve: ${headline.replace(/^[A-Z][A-Z0-9 -]{2,}:\s*/, '').replace(/[.…]+$/, '')}?`, question_source: 'fallback' };
   const waiting = declared && Array.isArray(declared.waiting_on) ? declared.waiting_on.map(String) : dependents;
   return {
     ...question,
@@ -4203,6 +4210,19 @@ function cmdDecide(args) {
   }
   const agent = resolveAgentId(args);
   const claim = readBacklogState()[taskId] || {};
+  // H3: a human gate is answered by a person, never by the agent doing the work. The engine
+  // cannot see a person, but it can refuse the two writers that are certainly not one:
+  // the agent that holds this task, and any writer carrying a claim token (an agent
+  // mid-task — a token is minted by `pb next --claim`, and people do not hold one).
+  if (claim.status === 'in_progress' && claim.claimed_by && claim.claimed_by === agent) {
+    console.error(`[${taskId}] is held by "${agent}", the writer of this decision. An agent cannot answer its own human gate. Nothing was written.`);
+    process.exit(1);
+  }
+  if (process.env.PB_CLAIM_TOKEN || args.token) {
+    console.error(`pb decide refuses a writer that holds a claim token: decisions come from a person, not from an agent mid-task. Nothing was written.`);
+    process.exit(1);
+  }
+  const prior = readJournal().filter((e) => !e.__malformed && e.task === taskId && e.action === 'decide').pop() || null;
   const entry = {
     ts: nowISO(),
     loop_id: activeLoop()?.id || 'legacy',
@@ -4212,6 +4232,8 @@ function cmdDecide(args) {
     claimed_by: claim.claimed_by || agent,
     mode: claim.mode || resolveModeId() || undefined,
     ownership: 'decision',
+    // a second decision does not erase the first; it says which one it replaces
+    replaces: prior && typeof prior.seq === 'number' ? prior.seq : undefined,
     agent_chain: resolveAgentChain(args),
     action: 'decide',
     intent: 'decision',
@@ -4226,6 +4248,7 @@ function cmdDecide(args) {
   const commit = commitIteration(taskId, entry, () => ({}), { agent });
   if (!commit) process.exit(1);
   console.log(`Decision on [${taskId}] recorded (seq ${commit.seq}): ${chosen.label}. Effect: ${chosen.effect || '(none stated)'} — status unchanged (${task.status}).`);
+  if (prior) console.log(`This REPLACES the decision at seq ${prior.seq} by ${prior.agent || 'unknown'} (${prior.option || '?'}). Both rows stay in the journal.`);
 }
 
 // M3: a person's message says WHY it was written. `steer` changes direction, `question`

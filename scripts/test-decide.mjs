@@ -93,4 +93,30 @@ bad(['human:', '      question: "Publish?"', '      options:', '        - { id: 
 bad(['human:', '      question: "Publish?"', '      options:', '        - { id: a, effect: "x" }', '        - { id: b, effect: "y" }', '      recommended: a'], 'a recommendation nobody signs', /needs recommended_by/);
 bad(['human:', '      question: "Publish?"', '      options:', '        - { id: a, effect: "x" }', '        - { id: b, effect: "y" }', '      recommended: c', '      recommended_by: lead'], 'a recommendation that is not an option', /"c" is not one of its options/);
 
+
+// ── 4. an agent cannot answer its own human gate (checker finding, seq 175) ────
+{
+  const r3 = t.track(makeFixture({
+    tasks: [{ id: 'gate', title: 'HUMAN APPROVAL: accept the painted design', manual: true }],
+    journal: [{ ts: new Date().toISOString(), loop_id: 'loop-fix-001', task: 'gate', agent: 'lead', action: 'claim', status: 'in_progress', checks: 'none', notes: 'claimed', seq: 1 }],
+    state: { gate: { status: 'in_progress', claimed_by: 'lead', agent_id: 'lead', seq: 1, loop_id: 'loop-fix-001' } },
+  }));
+  const rows3 = () => readJournal(r3).length;
+  let before = rows3();
+  let r = runPb(r3, ['decide', '--task', 'gate', '--option', 'approve', '--reason', 'I approve my own work'], { agent: 'lead' });
+  ok('the agent holding the task cannot decide its human gate', r.code !== 0 && /cannot answer its own human gate/.test(r.combined) && rows3() === before, r.combined);
+  before = rows3();
+  r = runPb(r3, ['decide', '--task', 'gate', '--option', 'approve', '--reason', 'x'], { agent: 'sub', env: { PB_CLAIM_TOKEN: 'tok-123' } });
+  ok('a writer holding a claim token is refused', r.code !== 0 && /holds a claim token/.test(r.combined) && rows3() === before, r.combined);
+  r = runPb(r3, ['decide', '--task', 'gate', '--option', 'approve', '--reason', 'looks right'], { agent: 'alice' });
+  ok('a person who does not hold the task can decide', r.code === 0, r.combined);
+  const first = readJournal(r3).pop();
+  r = runPb(r3, ['decide', '--task', 'gate', '--option', 'reject', '--reason', 'changed my mind'], { agent: 'bob' });
+  const second = readJournal(r3).pop();
+  ok('a second decision says which one it replaces', r.code === 0 && second.replaces === first.seq && r.out.includes(`REPLACES the decision at seq ${first.seq} by alice`), r.out + JSON.stringify(second));
+  const g = pbJson(r3, ['graph', '--json']).nodes.find((x) => x.id === 'gate');
+  ok('the fallback question drops a shouted label', g.human.question === 'Approve: accept the painted design?', g.human.question);
+  ok('a decision does not move the card along its rail (it stays on the claim\'s step)', g.cycle.step === 'select' && !g.cycle.filled.includes('orient'), JSON.stringify(g.cycle));
+}
+
 t.finish();
