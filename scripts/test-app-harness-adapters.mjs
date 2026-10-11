@@ -105,6 +105,9 @@ const ask = (s, body) => fetch(`${s.base}/api/ask`, { method: 'POST', headers: {
     const answer = events.filter((e) => e.type === 'text').map((e) => e.text).join('');
     ok('the stub got the question on stdin', answer.includes('stub heard: The person asks: what does the launcher cost?'), answer);
     ok('the question was recorded BEFORE dispatch, exactly once', readJournal(root).length === before + 1 && readJournal(root).pop().intent === 'question');
+    // at most two at once, even for simultaneous requests (the slot is reserved before any await)
+    const burst = await Promise.all(Array.from({ length: 5 }, (_, k) => ask(s, { task: 'asks', text: 'burst ' + k, harness: 'stub' }).then(async (r) => { await r.text(); return r.status; })));
+    ok('five simultaneous asks start at most two harness runs', burst.filter((c) => c === 200).length <= 2 && burst.filter((c) => c === 429).length >= 3, burst.join(','));
   } finally { s.child.kill(); }
 }
 

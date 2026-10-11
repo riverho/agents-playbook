@@ -392,6 +392,10 @@ async function serveApi(req, res, url) {
   if (path === '/api/ask' && req.method === 'POST') {
     // at most two harness runs at once: each is a model session, not a cheap request
     if (askSlots >= MAX_ASKS) return json(res, 429, { error: `already answering ${askSlots} question(s); try again when one finishes` });
+    // reserve the slot NOW, before any await (simultaneous asks once all slipped past the
+    // check), and give it back when this response closes — whichever way it ends
+    askSlots += 1;
+    res.on('close', () => { askSlots -= 1; });
     const body = await readBody(req);
     if (!body || typeof body.task !== 'string' || !/^[\w.-]+$/.test(body.task) || typeof body.text !== 'string' || !body.text.trim()) {
       return json(res, 400, { error: 'expected { task: task id, text: non-empty string, harness?: id }' });
@@ -416,14 +420,13 @@ async function serveApi(req, res, url) {
     res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
     const emit = (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
     emit({ type: 'recorded', seq: seq ? Number(seq[1]) : null, harness: harness.id });
-    askSlots += 1;
     const stop = sendToHarness(harness.id, buildPrompt({ task: body.task, title, text: body.text, root: ROOT }), {
       cwd: ROOT,
       onEvent: (ev) => { emit(ev); if (ev.type === 'done' || ev.type === 'error') res.end(); },
     });
     // the RESPONSE closing is the browser going away (the request body was read long ago,
     // so req's own close has already fired): stop the harness, don't let it run to its cap
-    res.on('close', () => { stop(); askSlots -= 1; });
+    res.on('close', () => stop());
     return undefined;
   }
 
