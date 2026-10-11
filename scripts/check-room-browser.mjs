@@ -324,6 +324,56 @@ try {
     if (still[k] !== 'none') problems.push(`F4: ${k} still animates (${still[k]}) under prefers-reduced-motion`);
   }
   if (still.outline === 'none') problems.push('F4: under reduced motion the needs-a-person label lost its solid outline');
+  // C1 in a real browser, in DARK. The token set is contrast-checked statically by
+  // check-room-contract.mjs, but a static check cannot see an inline style, a literal background or
+  // a stacked context — this asks the DOM what colour each visible text element actually ended up
+  // with and what surface is painted behind it, after the dark tokens have applied.
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+  await sleep(250);
+  const dark = await evaluate(`(() => {
+    const lum = (rgb) => {
+      const parts = (rgb || '').match(/[\\d.]+/g) || [];
+      const [r, g, b] = parts.slice(0, 3).map(Number).map((v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+    // A background can be TRANSLUCENT (--you-tint is a 10% wash). Reading rgba(180,22,127,0.1) as
+    // if it were opaque says fuchsia-on-fuchsia is 1:1, which is a measurement bug, not a defect:
+    // the layers are composited from the root down instead.
+    const layersOf = (el) => { const out = []; let n = el; while (n) { out.push(getComputedStyle(n).backgroundColor); n = n.parentElement; } return out.reverse(); };
+    const composite = (layers) => {
+      let acc = [255, 255, 255];
+      for (const c of layers) {
+        const m = (c || '').match(/[\\d.]+/g);
+        if (!m) continue;
+        const [r, g, b] = m.slice(0, 3).map(Number);
+        const a = m.length > 3 ? Number(m[3]) : 1;
+        if (a === 0) continue;
+        acc = [r * a + acc[0] * (1 - a), g * a + acc[1] * (1 - a), b * a + acc[2] * (1 - a)];
+      }
+      return 'rgb(' + acc.map((v) => Math.round(v)).join(', ') + ')';
+    };
+    const paintedBehind = (el) => composite(layersOf(el));
+    const sample = [...document.querySelectorAll('.flow-face, .flow-chip, .flow-dock, .flow-insp, .flow-band, .react-flow__node')]
+      .filter((el) => el.offsetParent !== null && (el.textContent || '').trim()).slice(0, 40);
+    const bad = [];
+    let checked = 0;
+    for (const el of sample) {
+      const fg = getComputedStyle(el).color;
+      const bg = paintedBehind(el);
+      checked += 1;
+      const r = ratio(fg, bg);
+      if (r < 4.5) bad.push({ cls: String(el.className).slice(0, 40), fg, bg, r: Number(r.toFixed(2)) });
+    }
+    const canvas = document.querySelector('.react-flow, .flow-room, main') || document.body;
+    const surface = composite(layersOf(canvas));
+    return { checked, bad: bad.slice(0, 4), surface, surfaceLum: Number(lum(surface).toFixed(4)) };
+  })()`);
+  console.log(`  dark    canvas ${dark.surface} (luminance ${dark.surfaceLum}) · ${dark.checked} text sample(s), ${dark.bad.length} under 4.5:1`);
+  if (!(dark.surfaceLum < 0.12)) problems.push(`C1 dark: the canvas is still light (${dark.surface}, luminance ${dark.surfaceLum}) — the dark tokens did not apply`);
+  if (dark.checked < 5) problems.push(`C1 dark: only ${dark.checked} text element(s) measured — too few to mean anything`);
+  for (const b of dark.bad) problems.push(`C1 dark: .${b.cls} is ${b.r}:1 (${b.fg} on ${b.bg})`);
+  await cdp.send('Emulation.setEmulatedMedia', { features: [] });
   for (const e of room.cdp.errors.slice(0, 5)) problems.push(`page error: ${String(e).split('\n')[0]}`);
 } catch (err) {
   problems.push(`browser harness failed: ${err.message}`);
