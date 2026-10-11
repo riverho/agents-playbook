@@ -17,6 +17,8 @@ export interface SteeringToast {
   readonly plan: SteeringPlan;
   readonly goalEdited: boolean;
   readonly persisted: boolean;
+  /** What actually ran: a comment (or steer) writes journal rows; attach writes a card's docs:. */
+  readonly verb?: "comment" | "attach";
   /** Why it did not persist, in the adapter's words (fixture, refusal, error). */
   readonly note?: string;
 }
@@ -121,8 +123,9 @@ export function FlowSteeringToast({ toast, onDismiss }: { toast: SteeringToast; 
         <li>
           <span>①</span>
           <span>
-            {done ? "orchestrator commented on" : "would comment on"} {toast.plan.cards} card
-            {toast.plan.cards === 1 ? "" : "s"} (1 journal row each)
+            {toast.verb === "attach"
+              ? `${done ? "orchestrator attached a document to" : "would attach a document to"} ${toast.plan.cards} card${toast.plan.cards === 1 ? "" : "s"} (docs: plus 1 journal row each)`
+              : `${done ? "orchestrator commented on" : "would comment on"} ${toast.plan.cards} card${toast.plan.cards === 1 ? "" : "s"} (1 journal row each)`}
           </span>
         </li>
         {toast.goalEdited && (

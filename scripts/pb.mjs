@@ -4307,6 +4307,80 @@ function cmdDecide(args) {
 // M3: a person's message says WHY it was written. `steer` changes direction, `question`
 // asks the agent something, `finding` reports something learned; a plain note is `comment`.
 const COMMENT_INTENTS = ['comment', 'steer', 'question', 'finding'];
+// `docs:` is a DEFINITION, not status, and `writeBacklog` deliberately does not rewrite the
+// backlog file (it writes status into the sidecar so hand-edited YAML formatting and comments
+// survive). So this is a targeted textual insertion into the task's own block: add the key if it
+// is absent, append to the list if it is present, and touch nothing else in the file.
+function backlogAttachDoc(taskId, rel) {
+  const text = readText(BACKLOG);
+  if (!text) return { ok: false, reason: `no ${BACKLOG}` };
+  const lines = text.split('\n');
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const openRe = new RegExp(`^(\\s*)-\\s*id:\\s*${escapeRe(taskId)}\\s*$`);
+  const idIdx = lines.findIndex((l) => openRe.test(l));
+  if (idIdx === -1) return { ok: false, reason: `task ${taskId} has no block in ${BACKLOG}` };
+  const dashIndent = (lines[idIdx].match(/^(\s*)-/) || ['', ''])[1];
+  let end = lines.length;
+  for (let i = idIdx + 1; i < lines.length; i += 1) {
+    const m = lines[i].match(/^(\s*)-\s/);
+    if (m && m[1].length <= dashIndent.length) { end = i; break; }
+  }
+  const docsIdx = lines.findIndex((l, i) => i > idIdx && i < end && /^\s*docs:\s*$/.test(l));
+  if (docsIdx !== -1) {
+    let last = docsIdx + 1;
+    const items = [];
+    while (last < end && /^\s*-\s/.test(lines[last])) { items.push(lines[last].trim().replace(/^-\s*/, '')); last += 1; }
+    if (items.includes(rel)) return { ok: true, already: true };
+    lines.splice(last, 0, `${dashIndent}    - ${rel}`);
+  } else {
+    lines.splice(end, 0, `${dashIndent}  docs:`, `${dashIndent}    - ${rel}`);
+  }
+  writeFileSync(p(BACKLOG), lines.join('\n'), 'utf8');
+  return { ok: true, already: false };
+}
+// `pb attach` — the WRITER for a card's `docs:` association (design D6). Both readers already
+// existed: `pb validate` insists every entry is a playbook-root-relative path that EXISTS, and
+// `pb graph` exposes `docs` per node so the room can render the list. Nothing could write one,
+// which is why the room's Attach button answered 501 — attaching a document had no primitive, so
+// it was refused rather than faked. This is that primitive: it refuses an absolute path and a path
+// that is not there, because `docs:` is checked, and a recorded path that does not exist would be
+// a claim rather than a document.
+function cmdAttach(args) {
+  const taskId = typeof args.task === 'string' ? args.task.trim() : '';
+  const given = typeof args.path === 'string' ? args.path.trim() : '';
+  if (!taskId || !given) {
+    console.error('Usage: pb attach --task <id> --path <playbook-root-relative file> [--label "..."]');
+    process.exit(2);
+  }
+  const task = backlogTasks().find((t) => t.id === taskId);
+  if (!task) { console.error(`Task not found in backlog: ${taskId}`); process.exit(1); }
+  if (/^([A-Za-z]:[\\/]|[\\/])/.test(given)) {
+    console.error(`Refusing: "${given}" is absolute. A docs: entry is relative to the playbook root, and pb validate enforces that.`);
+    process.exit(1);
+  }
+  const rel = given.replace(/\\/g, '/');
+  if (!existsSync(resolve(ROOT, rel))) {
+    console.error(`Refusing: ${rel} does not exist under the playbook root.`);
+    console.error('A recorded path that is not there is a claim, not a document — pb validate would fail on it.');
+    process.exit(1);
+  }
+  const written = backlogAttachDoc(taskId, rel);
+  if (!written.ok) { console.error(`Refusing: ${written.reason}`); process.exit(1); }
+  if (written.already) {
+    console.log(`[${taskId}] already lists ${rel}; nothing written.`);
+    return;
+  }
+  const label = typeof args.label === 'string' && args.label.trim() ? args.label.trim() : null;
+  const row = appendJournal({
+    action: 'attach',
+    status: 'in_progress',
+    task: taskId,
+    notes: `docs: + ${rel}${label ? ` (${label})` : ''}`,
+  });
+  const listed = backlogTasks().find((t) => t.id === taskId)?.docs ?? [];
+  console.log(`[${taskId}] documents (${listed.length}): ${listed.join(', ')}`);
+  console.log(`Journalled as seq ${row.seq}${label ? `, label "${label}"` : ''}. The room sees this through pb graph's per-node docs.`);
+}
 function cmdComment(args) {
   const taskId = typeof args.task === 'string' ? args.task.trim() : '';
   const text = typeof args.text === 'string' ? args.text : '';
@@ -5624,8 +5698,77 @@ ${conflicts || `(Your host memory is the PAST; this folder is the project's PRES
 the folder as truth — do not silently follow memory.)`}
 `;
 }
+// Rewrite the OPEN brief in the two places the same sentence lives: the YAML front matter
+// (`goal:`/`stop:`, which every command reads) and the numbered question it answers (`## 1.`
+// goal, `## 4.` stop, which the human reads). Editing one and not the other would leave the file
+// disagreeing with itself — and the front matter is the half that wins.
+function rewriteCycleBrief(text, wanted) {
+  const SECTION = { goal: /^##\s*1\./, stop: /^##\s*4\./ };
+  let out = text;
+  const fm = out.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fm) throw new Error('the cycle brief has no YAML front matter to edit');
+  let block = fm[1];
+  for (const [key, value] of Object.entries(wanted)) {
+    const line = `${key}: ${JSON.stringify(value)}`;
+    const re = new RegExp(`^${key}:.*$`, 'm');
+    block = re.test(block) ? block.replace(re, line) : `${block}\n${line}`;
+  }
+  out = `---\n${block}\n---${out.slice(fm[0].length)}`;
+  for (const [key, value] of Object.entries(wanted)) {
+    const lines = out.split('\n');
+    const start = lines.findIndex((l) => SECTION[key].test(l));
+    if (start === -1) continue;
+    let end = lines.length;
+    for (let i = start + 1; i < lines.length; i += 1) if (/^##\s/.test(lines[i])) { end = i; break; }
+    out = [...lines.slice(0, start + 1), value, '', ...lines.slice(end)].join('\n');
+  }
+  return out;
+}
 function cmdCycle(args) {
   const cur = readCycle();
+  // `pb cycle --edit --stop "..."` — the OPEN brief is editable state, not a fossil. The goal
+  // half of a steer is exactly this edit, and no command could make it until now, which is why
+  // the room reported it as "not applied" instead of pretending.
+  if (args.edit) {
+    const wanted = {};
+    if (typeof args.goal === 'string' && args.goal.trim()) wanted.goal = args.goal.trim();
+    if (typeof args.stop === 'string' && args.stop.trim()) wanted.stop = args.stop.trim();
+    if (!Object.keys(wanted).length) {
+      console.error('Nothing to change: pass --stop "<text>" and/or --goal "<text>".');
+      process.exit(2);
+    }
+    if (!cur.exists) {
+      console.error(`No cycle brief at ${CYCLE} — open the phase with \`pb cycle --new\` first.`);
+      process.exit(1);
+    }
+    const before = readText(CYCLE);
+    let after;
+    try { after = rewriteCycleBrief(before, wanted); } catch (err) {
+      console.error(`Refusing to edit: ${err.message}`);
+      process.exit(1);
+    }
+    if (after === before) {
+      console.log('No change — the brief already says that.');
+      return;
+    }
+    writeFileSync(p(CYCLE), after, 'utf8');
+    const loop = activeLoop();
+    const row = appendJournal({
+      action: 'cycle-edit',
+      status: 'in_progress',
+      task: null,
+      loop: loop?.id || null,
+      fields: Object.keys(wanted),
+      before: Object.fromEntries(Object.entries(wanted).map(([k]) => [k, String(cur[k] ?? '')])),
+      notes: Object.entries(wanted).map(([k, v]) => `${k} -> ${v}`).join(' | '),
+    });
+    for (const [key, value] of Object.entries(wanted)) {
+      console.log(`  ${key}: ${String(cur[key] || '(unset)').slice(0, 90)}`);
+      console.log(`  ${' '.repeat(key.length)}  -> ${value.slice(0, 90)}`);
+    }
+    console.log(`Edited the OPEN cycle brief (${CYCLE}) in both places — front matter and question — journalled as seq ${row.seq}.`);
+    return;
+  }
   if (args.new) {
     if (cur.exists && !args.force) {
       console.log(`A cycle brief already exists (phase ${cur.phase ?? '?'}, started ${String(cur.started).slice(0, 19)}).`);
@@ -6072,6 +6215,11 @@ function cmdHelp() {
                            Append-only and attributable; it cannot change task status.
                            --intent comment|steer|question|finding (default comment) is
                            stamped on the row, so a steer or a question is a distinct message.
+    attach --task <id> --path <root-relative file> [--label ".."]
+                           Add a DOCUMENT to a card (design D6). The path must be relative to the
+                           playbook root and must EXIST, because pb validate checks both and the
+                           room renders the list from pb graph per-node docs. Refuses rather than
+                           recording a path that is not there.
     decide --task <id> --option <id> --reason "..."
                            Answer a human-in-the-loop ask (manual: true or a human: block): ONE
                            journal row (action: decide) with the option and reason. Unknown
@@ -6105,6 +6253,11 @@ function cmdHelp() {
     ps [--loop <id>]      List tracked processes
     stop [--loop <id>]    Stop tracked processes for a loop
     cycle [--new [--force] --goal ".." --stop ".."]  Forward half of the phase loop: the cycle brief (4+1 Qs). No args prints it.
+    cycle --edit [--stop ".."] [--goal ".."]
+                           Edit the OPEN brief in both places it states the answer - the front
+                           matter and the numbered question - and journal the change. This is the
+                           primitive the room's steer-the-goal half needed; without it that half
+                           was reported as not applied.
     reflect [--notes ".."] Backward half: review done-since-last-reflect vs North Star; --notes records it
     validate               Structural guardrails (exit 1 on failure)
     validate --task <id>   Run that task's executable acceptance_checks (same bounded check
@@ -6295,6 +6448,7 @@ if (isMainModule) {
   }
   case 'anchor': cmdAnchor(args); break;
   case 'checkpoint': cmdCheckpoint(args); break;
+  case 'attach': cmdAttach(args); break;
   case 'cycle': cmdCycle(args); break;
   case 'reflect': cmdReflect(args); break;
   case 'list': cmdList(args); break;

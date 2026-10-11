@@ -333,6 +333,10 @@ function FlowCanvas({
         plan: result.wrote,
         goalEdited: mode === "steer" && !!result.goal_diff,
         persisted: result.persisted,
+        // The verb the toast reports must be the verb that ran: attach writes a card's docs:,
+        // it does not comment, and saying "commented on" for it would be the same lie the
+        // orchestrator used to tell about writing nothing.
+        verb: mode === "attach" ? "attach" : "comment",
         note: result.note,
       });
     },

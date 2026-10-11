@@ -42,8 +42,11 @@ export type FlowSteeringMode = "steer" | "comment" | "fork" | "attach";
 
 /** What a steering action wrote: journal rows, and at most one cycle-brief edit. */
 export interface FlowSteeringResult {
-  /** Append-only journal rows, one per selected card (`pb comment --task`). */
-  rows: { task: string; action: "comment"; text: string }[];
+  /**
+   * Append-only journal rows, one per selected card: `pb comment --task` for a comment or steer,
+   * `pb attach --task --path` (which also writes the card's `docs:`) for an attach.
+   */
+  rows: { task: string; action: "comment" | "attach"; text: string }[];
   /** The cycle-brief `stop` edit, as a diff for the end-goal card (frame 3). */
   goal_diff?: FlowGoalDiff;
   /** The dock's "steering will write" summary. */
