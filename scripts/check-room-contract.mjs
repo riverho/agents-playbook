@@ -117,9 +117,13 @@ function ruleT1({ rules, ts, html }) {
     p.push('no base rule (body / html / .flow-room) sets font-family: var(--f-ui)');
   }
   for (const f of ts) for (const m of f.text.matchAll(/fontFamily\s*:\s*(["'`])([^"'`]*)\1/g)) {
-    if (!/^var\(--f-(ui|code)\)$/.test(m[2])) p.push(`${f.rel}: inline fontFamily "${m[2]}"`);
+    if (!/^(var\(--f-(ui|code)\)|inherit)$/.test(m[2])) p.push(`${f.rel}: inline fontFamily "${m[2]}"`);
   }
   for (const f of ts) for (const m of f.text.matchAll(/\bfont-(sans|serif|mono)\b/g)) p.push(`${f.rel}: Tailwind ${m[0]} bypasses the tokens`);
+  for (const f of ts) for (const m of f.text.matchAll(/\bfont-\[[^\]]+\]/g)) p.push(`${f.rel}: Tailwind ${m[0]} bypasses the tokens`);
+  // the inline shorthand hides a family AND a size from every other check
+  for (const f of ts) for (const m of f.text.matchAll(/(?<![\w-])font\s*:\s*["'`]/g)) p.push(`${f.rel}: inline font shorthand — set fontFamily and fontSize separately`);
+  for (const m of html.matchAll(/fonts\.googleapis\.com\/(?!css2\?)[^"'\s>]*/g)) p.push(`index.html loads fonts outside the css2 API (${m[0]}) — its families are not checked`);
   const families = [...html.matchAll(/fonts\.googleapis\.com\/css2\?([^"']+)/g)].flatMap((m) => [...m[1].matchAll(/family=([^:&"']+)/g)].map((x) => decodeURIComponent(x[1].replace(/\+/g, ' '))));
   for (const fam of families) if (!/^Atkinson Hyperlegible (Next|Mono)$/.test(fam)) p.push(`index.html loads the font "${fam}"`);
   if (!families.includes('Atkinson Hyperlegible Next')) p.push('index.html does not load Atkinson Hyperlegible Next');
@@ -143,13 +147,21 @@ function ruleT2({ rules, ts }) {
   for (const n of SCALE) if (root[`--t-${n}`] !== `${n}px`) p.push(`--t-${n} must be ${n}px (is: ${root[`--t-${n}`] ?? 'undefined'})`);
   for (const r of rules) for (const d of r.decls) if (d.prop === 'font-size' && !sizeOk(d.value)) p.push(`${r.selector}: font-size ${d.value} is off the scale ${SCALE.join('/')}`);
   for (const f of ts) {
-    for (const m of f.text.matchAll(/fontSize\s*[:=]\s*\{?\s*(["'`]?)([\d.]+)(px|rem)?\1/g)) {
-      const n = m[3] === 'rem' ? Number(m[2]) * 16 : Number(m[2]);
-      if (!SCALE.includes(n)) p.push(`${f.rel}: fontSize ${m[2]}${m[3] ?? ''} is off the scale`);
+    // Every inline fontSize must be a LITERAL the gate can read: a number or "Npx" / "Nrem" on
+    // the scale, or "var(--t-N)". A variable, an em or a calc is a size nobody checked.
+    for (const m of f.text.matchAll(/fontSize\s*[:=]\s*\{?\s*([^,}\n]+)/g)) {
+      const v = m[1].trim().replace(/^["'`]|["'`]$/g, '');
+      if (v === 'inherit') continue;
+      let n = null;
+      let k = v.match(/^([\d.]+)(px)?$/); if (k) n = Number(k[1]);
+      k = v.match(/^([\d.]+)rem$/); if (k) n = Number(k[1]) * 16;
+      k = v.match(/^var\(--t-(\d+)\)$/); if (k) n = Number(k[1]);
+      if (n === null || !SCALE.includes(n)) p.push(`${f.rel}: fontSize ${v} is not a literal size on the scale`);
     }
-    for (const m of f.text.matchAll(/\btext-\[([\d.]+)(px|rem)\]/g)) {
-      const n = m[2] === 'rem' ? Number(m[1]) * 16 : Number(m[1]);
-      if (!SCALE.includes(n)) p.push(`${f.rel}: ${m[0]} is off the scale`);
+    for (const m of f.text.matchAll(/\btext-\[([\d.][^\]]*)\]/g)) {
+      const k = m[1].match(/^([\d.]+)(px|rem)$/);
+      const n = !k ? null : k[2] === 'rem' ? Number(k[1]) * 16 : Number(k[1]);
+      if (n === null || !SCALE.includes(n)) p.push(`${f.rel}: ${m[0]} is off the scale`);
     }
     for (const m of f.text.matchAll(/\btext-(xs|sm|base|lg|xl|[2-5]xl)\b/g)) {
       if (!SCALE.includes(TAILWIND_SIZES[m[1]])) p.push(`${f.rel}: ${m[0]} (${TAILWIND_SIZES[m[1]]}px) is off the scale`);
@@ -178,11 +190,16 @@ function ruleT5({ rules, ts }) {
   for (const f of ts) {
     for (const m of f.text.matchAll(/\b(uppercase|tracking-(wide|wider|widest))\b/g)) p.push(`${f.rel}: Tailwind ${m[0]}`);
     for (const m of f.text.matchAll(/textTransform\s*:\s*["'`](\w+)/g)) if (m[1] !== 'none') p.push(`${f.rel}: inline textTransform ${m[1]}`);
+    for (const m of f.text.matchAll(/letterSpacing\s*:\s*([^,}\n]+)/g)) {
+      const v = m[1].trim().replace(/^["'`]|["'`]$/g, '');
+      if (!/^(normal|0|0(\.0+)?(em|px)?|-[\d.]+(em|px)?)$/.test(v)) p.push(`${f.rel}: inline letterSpacing ${v}`);
+    }
+    for (const m of f.text.matchAll(/\btracking-\[(?!-)[^\]]+\]/g)) p.push(`${f.rel}: Tailwind ${m[0]}`);
   }
   return p;
 }
 
-const TEXT_TOKEN = /^--(text-|ink|tone-|on-|you$)/;
+const TEXT_TOKEN = /^--(text-|ink|tone-|on-|you$|accent(-[a-z]+)?$)/;
 const SURFACE_TOKEN = /^--(surface-[0-9]|surface|bg)$/;
 function ruleC1({ rules, ts }) {
   const p = [];
@@ -218,6 +235,26 @@ function ruleC1({ rules, ts }) {
   for (const r of rules) for (const d of r.decls) {
     if (d.prop === 'color' && !/^(var\(--[\w-]+\)|inherit|currentColor|transparent)$/i.test(d.value)) p.push(`${r.selector}: literal text colour ${d.value} — use a measured token`);
   }
+  // Inline text colours in components: a token, never a literal (and never a literal fallback,
+  // which is the colour a missing token silently falls back to).
+  for (const f of ts) {
+    for (const m of f.text.matchAll(/(?<![\w-])color\s*:\s*["'`]([^"'`]+)["'`]/g)) {
+      if (!/^(var\(--[\w-]+\)|inherit|currentColor|transparent)$/i.test(m[1])) p.push(`${f.rel}: literal text colour ${m[1]} — use a measured token`);
+    }
+  }
+  // A rule that paints its own background under a text token is measured on THAT background.
+  const lightTok = themes[0][1];
+  const solid = (v) => { const m = /^var\((--[\w-]+)\)$/.exec(v || ''); return hexToRgb(m ? (lightTok[m[1]] || '') : (v || '')); };
+  for (const r of rules) {
+    if (r.selector === ':root' || r.media) continue;
+    const col = r.decls.filter((d) => d.prop === 'color').pop();
+    const bg = r.decls.filter((d) => /^background(-color)?$/.test(d.prop)).pop();
+    if (!col || !bg) continue;
+    const a = solid(col.value), b = solid(bg.value);
+    if (!a || !b) continue;
+    const c = contrast(a, b);
+    if (c < 4.5) p.push(`${r.selector}: text ${col.value} on its own background ${bg.value} is ${c.toFixed(2)}:1 (needs 4.5)`);
+  }
   for (const f of ts.filter((x) => /stage-tokens\.ts$/.test(x.rel))) {
     const block = (f.text.match(/TONE_COLOR[^=]*=\s*\{([\s\S]*?)\}/) || [])[1] ?? '';
     for (const m of block.matchAll(/(\w+)\s*:\s*["'`]([^"'`]+)["'`]/g)) {
@@ -227,18 +264,20 @@ function ruleC1({ rules, ts }) {
   return p;
 }
 
-const HIL = /hil|human|batch|decision|needs-?you|you\b/i;
+const HIL = /hil|human|batch|decision|needs-?you|asking/i;
+const withoutYouToken = (line) => line.replace(/--you[\w-]*/g, '');
 function ruleC3({ rules, ts }) {
   const p = [];
   const root = tokensFrom(rules, lightRoot);
   if (!hexToRgb(root['--you'] || '')) p.push('--you is not defined as a solid colour');
   for (const r of rules) {
     if (r.selector === ':root' || darkRoot(r)) continue;
-    if (r.decls.some((d) => /var\(--you[\w-]*\)/.test(d.value)) && !HIL.test(r.selector)) p.push(`${r.selector}: uses --you outside a human-in-the-loop part`);
+    if (!r.decls.some((d) => /var\(--you[\w-]*\)/.test(d.value))) continue;
+    for (const sel of r.selector.split(',')) if (!HIL.test(sel)) p.push(`${sel.trim()}: uses --you outside a human-in-the-loop part`);
   }
   for (const f of ts) {
     f.text.split('\n').forEach((line, i) => {
-      if (/--you\b|--you-/.test(line) && !HIL.test(line)) p.push(`${f.rel}:${i + 1}: uses --you outside a human-in-the-loop part`);
+      if (/--you\b|--you-/.test(line) && !HIL.test(withoutYouToken(line))) p.push(`${f.rel}:${i + 1}: uses --you outside a human-in-the-loop part`);
     });
   }
   const css = rules.flatMap((r) => r.decls.map((d) => `${d.prop}:${d.value}`)).join('\n');
@@ -256,12 +295,23 @@ function ruleC5({ rules, ts }) {
   if (!(hues[5] >= 90 && hues[5] <= 170)) p.push(`--s6 must be green (hue ${hues[5].toFixed(0)}°)`);
   for (let k = 1; k < 6; k += 1) if (hues[k] < hues[k - 1]) p.push(`the ramp turns back between --s${k} and --s${k + 1} (${hues[k - 1].toFixed(0)}° → ${hues[k].toFixed(0)}°)`);
   for (let n = 1; n <= 6; n += 1) {
-    const ok = rules.some((r) => r.selector.includes(`[data-step="${n}"]`) && r.decls.some((d) => d.value.includes(`var(--s${n})`)));
+    const stepRules = rules.filter((r) => r.selector.includes(`[data-step="${n}"]`));
+    const ok = stepRules.some((r) => r.decls.some((d) => d.value.includes(`var(--s${n})`)));
     if (!ok) p.push(`no rule paints step ${n} with var(--s${n}) (selector [data-step="${n}"])`);
+    for (const r of stepRules) for (const d of r.decls) for (const m of d.value.matchAll(/var\(--s(\d)\)/g)) {
+      if (Number(m[1]) !== n) p.push(`${r.selector}: step ${n} also paints var(--s${m[1]})`);
+    }
   }
-  if (!rules.some((r) => /\[data-done/.test(r.selector) && r.decls.some((d) => d.value.includes('var(--s6)')))) p.push('no rule paints a done rail all --s6 (selector [data-done])');
+  const doneRules = rules.filter((r) => /\[data-done/.test(r.selector) && r.decls.some((d) => d.value.includes('var(--s6)')));
+  if (!doneRules.length) p.push('no rule paints a done rail all --s6 (selector [data-done])');
+  // An unproven done card stops at verify: the done colour may reach FILLED segments only,
+  // or its empty segments paint green and "not run" looks like a pass (C4).
+  for (const r of doneRules) for (const sel of r.selector.split(',')) if (!/__on\b/.test(sel)) p.push(`${sel.trim()}: the done colour reaches unfilled segments — target the filled ones (…__on)`);
+  for (const f of ts.filter((x) => /(FlowCards|FlowInspector)\.tsx$/.test(x.rel))) {
+    if (/data-done=/.test(f.text)) p.push(`${f.rel}: sets data-done by hand — use railAttrs(node), which marks done only when all six steps are filled`);
+  }
   const cards = ts.find((f) => /FlowCards\.tsx$/.test(f.rel));
-  if (!cards || !/data-step=/.test(cards.text) || !/data-done=/.test(cards.text)) p.push('FlowCards.tsx does not set data-step / data-done on the rail');
+  if (!cards || !/railAttrs\(/.test(cards.text)) p.push('FlowCards.tsx does not set the rail attributes through railAttrs(node)');
   return p;
 }
 
@@ -305,12 +355,30 @@ const GOOD_ROOT = `:root { --f-ui: "Atkinson Hyperlegible Next", system-ui, sans
   body { font-family: var(--f-ui); background: var(--surface-0); }
   .flow-rail[data-step="1"] i { background: var(--s1); } .flow-rail[data-step="2"] i { background: var(--s2); } .flow-rail[data-step="3"] i { background: var(--s3); }
   .flow-rail[data-step="4"] i { background: var(--s4); } .flow-rail[data-step="5"] i { background: var(--s5); } .flow-rail[data-step="6"] i { background: var(--s6); }
-  .flow-rail[data-done] i { background: var(--s6); }`;
+  .flow-rail[data-done] i.flow-rail__on { background: var(--s6); }`;
 const GOOD = () => ({
   rules: parseCss(GOOD_ROOT),
-  ts: [{ rel: 'FlowCards.tsx', text: '<div data-step={s} data-done={d} />' }],
+  ts: [{ rel: 'FlowCards.tsx', text: '<div {...railAttrs(node)} />' }],
   html: '<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400&family=Atkinson+Hyperlegible+Mono&display=swap">',
 });
+// more than one known-bad sample per rule: each closes a blind spot an independent checker found
+const BAD_EXTRA = {
+  T1: [(s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ font: "9px Arial" }}' }] }),
+       (s) => ({ ...s, html: s.html + '<link href="https://fonts.googleapis.com/css?family=Roboto">' }),
+       (s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'className="font-[Arial]"' }] })],
+  T2: [(s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ fontSize: "0.7em" }}' }] }),
+       (s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ fontSize: sz }}' }] })],
+  T5: [(s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ letterSpacing: "0.2em" }}' }] }),
+       (s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'className="tracking-[0.2em]"' }] })],
+  C1: [(s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ color: "#bbbbbb" }}' }] }),
+       (s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: 'style={{ color: "var(--text-tertiary, #9a9590)" }}' }] }),
+       (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} :root { --accent-teal: #43b3a0; }`) })],
+  C3: [(s) => ({ ...s, ts: [...s.ts, { rel: 'X.tsx', text: '<span style={{ color: "var(--you)" }}/>' }] }),
+       (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} .flow-card__title, .flow-hil { color: var(--you); }`) })],
+  C5: [(s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} .flow-rail[data-done] i { background: var(--s6); }`) }),
+       (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} .flow-rail[data-step="3"] i { background: var(--s3); background: var(--s5); }`) }),
+       (s) => ({ ...s, ts: [{ rel: 'FlowCards.tsx', text: '<div {...railAttrs(node)} data-done={node.status === "done" ? "" : undefined} />' }] })],
+};
 const BAD = {
   T1: (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} .x { font-family: "Geist Mono", monospace; }`) }),
   T2: (s) => ({ ...s, rules: parseCss(`${GOOD_ROOT} .x { font-size: 9px; }`) }),
@@ -327,6 +395,7 @@ function selfTest() {
     const clean = fn(GOOD());
     if (clean.length) failures.push(`${id} flags the clean sample: ${clean[0]}`);
     if (!fn(BAD[id](GOOD())).length) failures.push(`${id} does not catch its known-bad sample — the rule has no teeth`);
+    (BAD_EXTRA[id] || []).forEach((bad, k) => { if (!fn(bad(GOOD())).length) failures.push(`${id} does not catch known-bad sample #${k + 2} — a blind spot is back`); });
   }
   return failures;
 }

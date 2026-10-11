@@ -35,15 +35,15 @@ const PANEL: CSSProperties = {
   gap: "0.75rem",
   padding: "2rem",
   fontFamily: "var(--f-ui)",
-  color: "var(--text-primary, #111)",
-  background: "var(--surface-0, #f6f4f2)",
+  color: "var(--text-primary)",
+  background: "var(--surface-0)",
   textAlign: "center",
 };
 
 const CODE: CSSProperties = {
   fontSize: "13px",
-  background: "var(--surface-2, #eae7e3)",
-  border: "1px solid var(--surface-3, #d9d5cf)",
+  background: "var(--surface-2)",
+  border: "1px solid var(--surface-3)",
   borderRadius: "6px",
   padding: "0.5rem 0.75rem",
 };
@@ -90,14 +90,17 @@ export default function FlowPanel({ apiBase = "", showFooter = true }: FlowPanel
             padding: "0.4rem 0.75rem",
             background: "#f59e0b22",
             borderBottom: "1px solid #f59e0b66",
-            font: "500 12px/1.4 Inter, system-ui, sans-serif",
-            color: "var(--text-primary, #111)",
+            fontFamily: "var(--f-ui)",
+            fontSize: "12px",
+            fontWeight: 500,
+            lineHeight: 1.4,
+            color: "var(--text-primary)",
           }}
         >
           Captured snapshot of the Agents-Playbook repository at extraction time —{" "}
           <strong>not your backlog</strong>. Shown because you asked for it.{" "}
           <button
-            style={{ font: "inherit", textDecoration: "underline", background: "none", border: 0, cursor: "pointer" }}
+            style={{ fontFamily: "inherit", fontSize: "inherit", textDecoration: "underline", background: "none", border: 0, cursor: "pointer" }}
             onClick={() => setSnapshot(false)}
           >
             back
@@ -118,16 +121,16 @@ export default function FlowPanel({ apiBase = "", showFooter = true }: FlowPanel
     return (
       <div style={PANEL}>
         <h1 style={{ fontFamily: "var(--f-ui)", fontSize: "20px", fontWeight: 600, lineHeight: 1.2, margin: 0 }}>No local engine</h1>
-        <p style={{ margin: 0, maxWidth: "46ch", color: "var(--text-secondary, #5c5c5c)" }}>
+        <p style={{ margin: 0, maxWidth: "46ch", color: "var(--text-secondary)" }}>
           The room reads a playbook through its own server. Nothing answered at{" "}
           <code>{apiBase}/api/health</code>, so there is no graph to draw.
         </p>
         <p className="flow-panel__cmd" style={{ ...CODE, margin: 0 }}>cd apps/flow-room &amp;&amp; node server.mjs</p>
-        <p style={{ margin: 0, maxWidth: "52ch", fontSize: "12px", color: "var(--text-tertiary, #6b6660)" }}>
+        <p style={{ margin: 0, maxWidth: "52ch", fontSize: "12px", color: "var(--text-tertiary)" }}>
           {state.detail}
         </p>
         <button
-          style={{ font: "500 13px/1 Inter, system-ui, sans-serif", padding: "0.5rem 0.9rem", cursor: "pointer" }}
+          style={{ fontFamily: "var(--f-ui)", fontSize: "13px", fontWeight: 500, lineHeight: 1, padding: "0.5rem 0.9rem", cursor: "pointer" }}
           onClick={() => setSnapshot(true)}
         >
           view the captured snapshot instead
@@ -143,10 +146,12 @@ export default function FlowPanel({ apiBase = "", showFooter = true }: FlowPanel
         <div
           style={{
             padding: "0.25rem 0.75rem",
-            borderTop: "1px solid var(--surface-3, #d9d5cf)",
-            font: "400 11px/1.5 'JetBrains Mono', ui-monospace, monospace",
-            color: "var(--text-tertiary, #9a9590)",
-            background: "var(--surface-1, #fff)",
+            borderTop: "1px solid var(--surface-3)",
+            fontFamily: "var(--f-ui)",
+            fontSize: "12px",
+            lineHeight: 1.5,
+            color: "var(--text-tertiary)",
+            background: "var(--surface-1)",
           }}
         >
           live · {state.root}

@@ -389,6 +389,19 @@ export function flowRail(node: FlowNode): RailState {
   return { filled: 0, current: 0, step: null, pulsing: false, derived };
 }
 
+/**
+ * The rail's data attributes, in ONE place for the card and the inspector. `data-done`
+ * marks a rail that is all green, which is only true when all six steps are filled: a
+ * done card whose checks never ran stops at verify, and must not look finished (C4).
+ */
+export function railAttrs(node: FlowNode): { "data-step"?: number; "data-done"?: "" } {
+  const rail = flowRail(node);
+  return {
+    "data-step": rail.filled || undefined,
+    "data-done": node.status === "done" && rail.filled === 6 ? "" : undefined,
+  };
+}
+
 /** "verify · step 4/6" — the rail's caption, only where a step is current. */
 export function flowStepLabel(node: FlowNode): string | null {
   const rail = flowRail(node);

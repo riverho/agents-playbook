@@ -162,24 +162,48 @@
       ]
     },
     "components/stage/FlowCards.tsx": {
-      "sha256": "b7ffdddba6b596037b4c5935e69279476bf6eb88ccedfc0e38ea0713de04f315",
-      "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the cycle rail carries data-step/data-done so CSS paints it red to green (C5); inline sizes on the 12px floor (T2); the batch bar is the human colour --you (C3)",
-      "recorded": "2026-10-10T18:51:08.578Z"
+      "sha256": "ccad48b2f2d44e3be3d050ee00d26a45390ff407d1f30fc82c83e6528e38eb75",
+      "reason": "plan-20261010-028 (v2 contract) + checker seq 151 fixes: the cycle rail takes railAttrs(node), so data-done marks only a fully filled rail (C4/C5); inline sizes on the 12px floor (T2); the HIL batch bar is --you (C3); prose kickers use the UI face, IDs and branches the code face (T4)",
+      "recorded": "2026-10-11T03:06:43.000Z",
+      "superseded": [
+        {
+          "sha256": "b7ffdddba6b596037b4c5935e69279476bf6eb88ccedfc0e38ea0713de04f315",
+          "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the cycle rail carries data-step/data-done so CSS paints it red to green (C5); inline sizes on the 12px floor (T2); the batch bar is the human colour --you (C3)"
+        }
+      ]
     },
     "components/stage/FlowEdges.tsx": {
-      "sha256": "688a7d9ba321df58e47a79ba98caa98c6b58e5dda53f4c9bb9d00b581673d1cc",
-      "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the human-gate arrow and pill are --you, renamed rose to you/hil (C3)",
-      "recorded": "2026-10-10T18:51:08.655Z"
+      "sha256": "e8dfbf203e4d85143f6457d2b8ec7e931fc97157e8a53a9bfbab64a0efe2361f",
+      "reason": "plan-20261010-028 (v2 contract) + checker seq 151 fixes: the human-gate arrow and pill are --you, rose renamed to you/hil (C3)",
+      "recorded": "2026-10-11T03:06:43.083Z",
+      "superseded": [
+        {
+          "sha256": "688a7d9ba321df58e47a79ba98caa98c6b58e5dda53f4c9bb9d00b581673d1cc",
+          "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the human-gate arrow and pill are --you, renamed rose to you/hil (C3)"
+        }
+      ]
     },
     "components/stage/FlowInspector.tsx": {
-      "sha256": "c8d736e211db101abc94be970815a63c74799b7707512a31c84bd483da78e153",
-      "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the big rail carries data-step/data-done (C5); inline sizes 9/9.5/10px moved to 12px (T2)",
-      "recorded": "2026-10-10T18:51:08.748Z"
+      "sha256": "878bbb2b0a0983a0a5b5753def0e08a0d965c06c8d872d6ea2d76e030bca62ce",
+      "reason": "plan-20261010-028 (v2 contract) + checker seq 151 fixes: the big rail takes railAttrs(node) (C4/C5); sizes 9/9.5/10px moved to 12px (T2); the needs-a-human badge is --you, not failure red (C3); IDs and branches in the code face (T4)",
+      "recorded": "2026-10-11T03:06:43.164Z",
+      "superseded": [
+        {
+          "sha256": "c8d736e211db101abc94be970815a63c74799b7707512a31c84bd483da78e153",
+          "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the big rail carries data-step/data-done (C5); inline sizes 9/9.5/10px moved to 12px (T2)"
+        }
+      ]
     },
     "lib/flow-derive.ts": {
-      "sha256": "c0406a1195e5c85b0d62d5f308fa81a2d92ff687f1d10a1848ed84a6e4e0742d",
-      "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): blocked is amber --tone-risk and the HIL edge is --you (C3); legend metrics re-budgeted for 12px Atkinson (headerH/rowH 16, charW 6.8); hollow-gate glyph uses a measured tone (C1)",
-      "recorded": "2026-10-10T18:51:09.054Z"
+      "sha256": "e5dcbe65a09293596a11b4bbdf3cb22b61c979190bb2c588e7b9e8bf291c5966",
+      "reason": "plan-20261010-028 (v2 contract) + checker seq 151 fixes: railAttrs(node) is the one place a rail is marked done (only when all six steps are filled); blocked is --tone-risk and the HIL edge --you (C3); legend metrics re-budgeted for 12px Atkinson; hollow glyph uses a measured tone (C1)",
+      "recorded": "2026-10-11T03:06:43.284Z",
+      "superseded": [
+        {
+          "sha256": "c0406a1195e5c85b0d62d5f308fa81a2d92ff687f1d10a1848ed84a6e4e0742d",
+          "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): blocked is amber --tone-risk and the HIL edge is --you (C3); legend metrics re-budgeted for 12px Atkinson (headerH/rowH 16, charW 6.8); hollow-gate glyph uses a measured tone (C1)"
+        }
+      ]
     },
     "lib/flow-geometry.test.ts": {
       "sha256": "57c183b1aabd3961d22b3f8cfc82dd847dbe5dd6798af6061a26d7e1ba4b733d",

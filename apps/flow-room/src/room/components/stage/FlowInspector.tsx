@@ -25,6 +25,7 @@ import {
   isHollow,
   journalTime,
   needsHuman,
+  railAttrs,
 } from "@/lib/flow-derive";
 import { FLOW_CYCLE_STEPS, type FlowNode } from "@/lib/flow-types";
 
@@ -89,15 +90,16 @@ export function FlowInspector({
       {/* ① the card, opened */}
       <div className="flow-insp__head">
         <div className="flow-row">
-          <span className="flow-mono" style={{ fontSize: 12 }}>
+          <span className="flow-mono flow-code" style={{ fontSize: 12 }}>
             {node.id}
           </span>
           <span className="flex-1" />
           <span
             className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium"
             style={{
-              background: TONE_WASH[human ? "block" : node.status === "done" ? "muted" : "ok"],
-              color: TONE_COLOR[human ? "block" : node.status === "done" ? "muted" : "ok"],
+              // a human is needed: the HIL colour, never the failure red (C3)
+              background: human ? "var(--you-tint)" : TONE_WASH[node.status === "done" ? "muted" : "ok"],
+              color: human ? "var(--you)" : TONE_COLOR[node.status === "done" ? "muted" : "ok"],
             }}
           >
             {node.status === "in_progress" && (
@@ -144,8 +146,7 @@ export function FlowInspector({
         <Section title="① CYCLE · PB LOOP STEPS">
           <div
             className="flow-cycle flow-cycle--big"
-            data-step={rail.filled || undefined}
-            data-done={node.status === "done" ? "" : undefined}
+            {...railAttrs(node)}
           >
             {[0, 1, 2, 3, 4, 5].map(segment => {
               const filled = segment < rail.filled;
@@ -280,7 +281,7 @@ export function FlowInspector({
 
         <Section title="④ WORKTREE · CHECKER GATE">
           <Kv label="branch">
-            <span className="flow-mono" style={{ fontSize: 12 }}>
+            <span className="flow-mono flow-code" style={{ fontSize: 12 }}>
               {node.worker?.branch ?? "no worktree"}
               {node.worker?.status ? ` · ${node.worker.status}` : ""}
               {node.worker?.ahead !== undefined ? ` · ahead ${node.worker.ahead}` : ""}

@@ -44,7 +44,7 @@ export const FLOW_MARKERS = [
   { id: "flow-arrow-dep", stroke: "#c9c3bb" },
   { id: "flow-arrow-ink", stroke: "rgba(17, 17, 17, 0.35)" },
   { id: "flow-arrow-teal", stroke: "var(--accent-teal)" },
-  { id: "flow-arrow-you", stroke: "var(--you)" },
+  { id: "flow-arrow-you", stroke: "var(--you)" }, // the hil edge's arrowhead
 ] as const;
 
 const MARKER_URL: Record<string, string> = {

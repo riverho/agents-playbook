@@ -23,7 +23,7 @@
 
 :root {
   --surface-0: #f6f4f2;
-  --accent-teal: #008673;
+  --accent-teal: #00735f; /* was #008673 (3.66:1 on surface-2); 4.71:1 on surface-2 — contract C1 */
   --surface-3: #d9d5cf;
   --surface-1: #ffffff;
   --text-secondary: #5c5c5c;
@@ -271,6 +271,13 @@
   font-weight: 500;
   color: var(--text-secondary);
 }
+.flow-code {
+  font-family: var(--f-code);
+}
+.flow-kicker {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
 .flow-mono {
   font-family: var(--f-ui);
   font-size: 12px;
@@ -321,7 +328,9 @@
 .flow-cycle[data-step="4"] i.flow-cycle__on { background: var(--s4); }
 .flow-cycle[data-step="5"] i.flow-cycle__on { background: var(--s5); }
 .flow-cycle[data-step="6"] i.flow-cycle__on { background: var(--s6); }
-.flow-cycle[data-done] i { background: var(--s6); }
+/* a done rail is all --s6 only when every step is filled: an unproven done card stops at
+   verify, and its empty segments must stay empty (C4, C5) */
+.flow-cycle[data-done] i.flow-cycle__on { background: var(--s6); }
 .flow-cycle i.flow-cycle__act {
   animation: flow-pulse 1.4s ease-in-out infinite;
 }
@@ -340,7 +349,7 @@
   font-size: 12px;
 }
 
-/* human-in-the-loop: rose pill + breathing halo (2.2 s, opacity .55 → 0) */
+/* human-in-the-loop: fuchsia (--you) pill + breathing halo (2.2 s, opacity .55 → 0) */
 .flow-hil {
   position: relative;
   display: inline-flex;
@@ -529,7 +538,7 @@
 .flow-edgepill--hil {
   border-color: var(--you);
   color: var(--you);
-  background: #fdf5f5;
+  background: var(--surface-1);
 }
 
 /* ── buttons / chips ── */
