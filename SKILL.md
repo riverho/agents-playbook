@@ -105,9 +105,11 @@ could land after the engine had declared no verdict. `scripts/test-timeout-kills
 pins it; the POSIX branch is written but unverified on the Windows machine that built it.
 The output bound counts stdout and stderr **together**, as it always did. What the kill cannot
 reach: a process the check deliberately detaches (`start /b`, a daemon) after its parent has
-exited is outside any tree `taskkill /T` can walk. A kill that fails is written to the check's
-stderr, but the TIMEOUT / OUTPUT-LIMIT report does not show it yet (filed as a follow-up). Each
-check costs one extra Node process (about 0.1 s).
+exited is outside any tree `taskkill /T` can walk. A kill that fails is reported next to the
+verdict — `WARNING: the check's process tree could NOT be killed (…)` under TIMEOUT or
+OUTPUT-LIMIT — because the check may still be running; stop its processes before trusting the
+next run (`scripts/test-kill-failure-reported.mjs`). `PB_TASKKILL` points at `taskkill.exe` when
+it is not under `%SystemRoot%\System32`. Each check costs one extra Node process (about 0.1 s).
 
 **The same contract covers mode checks, which are a different list with their own budget.**
 `pb mode check` and `validate --mode` run a mode's `kind:check` principles — usually the whole

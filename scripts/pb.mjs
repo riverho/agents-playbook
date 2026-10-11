@@ -1522,8 +1522,8 @@ const CHECK_LAUNCHER_SRC = [
   "const child = win ? spawn('cmd.exe', ['/d', '/c', file, ...argv], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })",
   "  : spawn(file, argv, { stdio: 'inherit', detached: true });",
   'let done = false;',
-  "const taskkill = require('path').join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');",
-  "const killTree = () => { try { if (win) execFileSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); else process.kill(-child.pid, 'SIGKILL'); } catch (e) { process.stderr.write('pb: could not kill the check process tree (pid ' + child.pid + '): ' + String((e && e.message) || e).split(String.fromCharCode(10))[0] + String.fromCharCode(10)); } };",
+  "const taskkill = process.env.PB_TASKKILL || require('path').join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');",
+  "const killTree = () => { try { if (win) execFileSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); else process.kill(-child.pid, 'SIGKILL'); } catch (e) { const why = String((e && e.message) || e).split(String.fromCharCode(10))[0]; process.stderr.write('pb: could not kill the check process tree (pid ' + child.pid + '): ' + why + String.fromCharCode(10)); try { fs.appendFileSync(statusFile, String.fromCharCode(10) + 'kill-failed: pid ' + child.pid + ': ' + why); } catch (e2) {} } };",
   'const stop = (why, code) => { if (done) return; done = true; try { fs.writeFileSync(statusFile, why); } catch (e) {} killTree(); process.exit(code); };',
   "child.on('error', (e) => { process.stderr.write(String((e && e.message) || e) + String.fromCharCode(10)); process.exit(127); });",
   "const timer = setTimeout(() => stop('timeout', 124), limit);",
@@ -1555,12 +1555,19 @@ function runOneCheck(cmd, cwd, limit) {
     return { cmd, ok: true, elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput };
   } catch (e) {
     let status = '';
-    try { status = readFileSync(statusFile, 'utf8').trim(); } catch { /* no status: a plain exit */ }
+    let killFailed = null;
+    try {
+      // line 1 is the outcome; a later 'kill-failed:' line means the tree may still be running
+      const lines = readFileSync(statusFile, 'utf8').split(/\r?\n/);
+      status = (lines[0] || '').trim();
+      killFailed = (lines.find((l) => l.startsWith('kill-failed:')) || '').replace(/^kill-failed:\s*/, '') || null;
+    } catch { /* no status: a plain exit */ }
     const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
     return {
       cmd, ok: false,
       timedOut: status === 'timeout' || isCheckTimeout(e),
       overflow: status === 'output-limit' || isOutputOverflow(e),
+      kill_failed: killFailed,
       elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput,
       output: out ? out.split(/\r?\n/).slice(-8).join('\n') : '',
     };
@@ -1590,16 +1597,25 @@ function overflowDetail(results, kind = 'check') {
 function warnCheckLimit(limit) {
   for (const w of limit.warnings || []) console.error(`  ⚠ ${w} — using ${limit.ms}ms from ${limit.source}.`);
 }
+// A kill that FAILED is not a detail: the engine has stopped waiting, but the check's
+// processes may still be running and writing. Say so next to the verdict, never only in
+// the check's own stderr (checker note on plan-20261010-026, seq 147).
+function printKillFailure(r) {
+  if (!r.kill_failed) return;
+  console.log(`        WARNING: the check's process tree could NOT be killed (${r.kill_failed}) — some of its processes may still be running. Find and stop them before trusting the next run.`);
+}
 function printResultOutcome(r, { okLabel, noun }) {
   if (r.ok) { console.log(`  ${okLabel}  ${r.cmd}`); return; }
   if (r.timedOut) {
     console.log(`  TIMEOUT  ${r.cmd}`);
     console.log(`        timed out after ${r.elapsed_ms}ms (limit ${r.limit_ms}ms from ${r.limit_source}, override with check_timeout_ms on the task or PB_CHECK_TIMEOUT_MS) — this is NOT a failing ${noun}.`);
+    printKillFailure(r);
     return;
   }
   if (r.overflow) {
     console.log(`  OUTPUT-LIMIT  ${r.cmd}`);
     console.log(`        the ${noun} produced more output than the runner accepts (limit ${r.max_output_bytes} bytes, override with PB_CHECK_MAX_OUTPUT_BYTES) — the exit code was never read, so this is NOT a failing ${noun}.`);
+    printKillFailure(r);
     return;
   }
   console.log(`  FAIL  ${r.cmd}`);
