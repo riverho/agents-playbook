@@ -503,6 +503,13 @@ comments and reflections, with other writes refused. Closing executes every stop
 refuses unfinished cards without explicit carry/drop, and refuses live tracked processes.
 The close snapshot retains carried-out cards so the historical version does not lose them.
 
+Versioned worker Git/state operations serialize with lifecycle changes. Long worker exec and
+verification operations use tracked process leases instead of holding the state lock: other
+agents can still record, while close/carry/drop wait for the operation to finish. If a worker
+process crashes before releasing its lease, inspect and stop its process tree, then use
+`pb version release-operation --pid <pid> --reason "<confirmed cleanup>"` from a human CLI.
+The engine never silently discards an unfinished operation based on a liveness probe.
+
 When versions are in use, use `pb version close` instead of `pb loop close`; the latter
 cannot bypass the version checks. New/open seeds the normal cycle brief: answer its memory
 conflict question before planning or claiming. The host still owns scheduling and human

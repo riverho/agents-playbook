@@ -848,8 +848,9 @@ class VersionRefused extends Error {}
 let versionInTxn = false;
 let versionCycleTxn = null;
 let versionWorkerTxn = null;
+let versionWorkerOperation = null;
 class WorkerExit extends Error { constructor(code) { super('worker exit'); this.code = code; } }
-function workerExit(code) { if (versionWorkerTxn) throw new WorkerExit(code); process.exit(code); }
+function workerExit(code) { if (versionWorkerTxn || versionWorkerOperation) throw new WorkerExit(code); process.exit(code); }
 function versionRefusal(rule, message) {
   console.error(`${rule}: ${message}. Nothing was written.`);
   if (versionInTxn) throw new VersionRefused(message);
@@ -2999,9 +3000,37 @@ function workerRemovePayload(taskId, agent, worker, { execute, force, deleteBran
 function cmdWorker(args) {
   const sub = args._[0];
   const writes = ['exec', 'verify', 'checker', 'provider-rate-limit'].includes(sub) || (args.execute && ['create', 'remove', 'merge'].includes(sub));
-  if (writes && versionMode() && !versionWorkerTxn) {
+  if (writes && versionMode() && !versionWorkerTxn && !versionWorkerOperation) {
     const task = backlogTasks().find(t => t.id === args._[1]);
     if (task && !task.version) versionRefusal('V2', 'Migrate the card into a version before operating its worker');
+    // exec may run for hours; verify may use a raised check budget. Track an operation
+    // lease instead of holding an age-breakable state lock for the whole command.
+    if (['exec', 'verify'].includes(sub)) {
+      let operation, output, failure;
+      let exitCode = null;
+      try {
+        withStateTxn(() => {
+          const fresh = backlogTasks().find(t => t.id === args._[1]);
+          if (!fresh) throw new VersionRefused('Unknown worker task');
+          const prior = versionInTxn; versionInTxn = true;
+          try { versionWriteGuard(fresh, `worker ${sub}`, args); } finally { versionInTxn = prior; }
+          operation = { ts: nowISO(), loop_id: fresh?.loop_id, pid: process.pid, task: fresh?.id, status: 'running', lifecycle_lease: true, command: `worker ${sub}` };
+          appendNdjson(PROCESSES, operation);
+        }, { agent: resolveAgentId(args) });
+        versionWorkerOperation = operation;
+        output = cmdWorker(args);
+      } catch (err) {
+        if (err instanceof WorkerExit) exitCode = err.code;
+        else if (err instanceof VersionRefused) exitCode = 1;
+        else failure = err;
+      } finally {
+        versionWorkerOperation = null;
+        if (operation) withStateTxn(() => appendNdjson(PROCESSES, { ...operation, ts: nowISO(), status: 'stopped', stopped_at: nowISO() }), { agent: resolveAgentId(args) });
+      }
+      if (failure) throw failure;
+      if (exitCode !== null) workerExit(exitCode);
+      return output;
+    }
     try {
       return withStateTxn((draft, ctx) => {
         ctx.draft = draft;
@@ -3522,6 +3551,7 @@ function cmdNext(args) {
     // deadlocked: the inner acquisition burned its whole timeout, the outer write
     // happened anyway, and the command stalled ~30s while reporting success.
     let claimed = false;
+    let versionChanged = false;
     const claimToken = newClaimToken();
     const claimRow = {
       ts: nowISO(),
@@ -3542,6 +3572,7 @@ function cmdNext(args) {
       withStateTxn((draft, ctx) => {
         ctx.draft = draft;
         const fresh = backlogTasks().find((t) => t.id === candidate.id);
+        if (fresh?.version && (fresh.version !== candidate.version || fresh.loop_id !== loop.id)) { versionChanged = true; return; }
         if (!fresh || fresh.status !== 'todo' || !taskInOpenVersion(fresh)) return;
         applyTaskMutation(candidate.id, () => ({
           status: 'in_progress',
@@ -3562,6 +3593,7 @@ function cmdNext(args) {
       process.exit(1);
     }
     if (!claimed) {
+      if (versionChanged) { console.error('V4: the card changed versions while the claim waited. Nothing was claimed; re-run pb next --claim.'); process.exit(1); }
       console.error(`\n  [${candidate.id}] was claimed by another agent while you were selecting. Re-run \`pb next --claim\` for the next task.`);
       process.exit(1);
     }
@@ -5065,8 +5097,8 @@ function cmdVersion(args) {
     for (const v of versions) console.log(`${v.version} · ${v.title || v.goal} · ${v.state} · ${v.id}`);
     return;
   }
-  if (!['new', 'open', 'freeze', 'close', 'carry', 'drop'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|list');
-  if (['freeze', 'close', 'carry', 'drop'].includes(sub)) {
+  if (!['new', 'open', 'freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|list|release-operation');
+  if (['freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) {
     const context = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID', 'PB_CLAIM_TOKEN'].filter(k => process.env[k]);
     if (context.length || args.token) versionRefusal('V6', `Lifecycle decisions require a person at the local CLI; agent context detected (${context.join(', ') || 'claim token'})`);
   }
@@ -5077,6 +5109,16 @@ function cmdVersion(args) {
     result = withStateTxn((draft, ctx) => {
       const state = readLoops();
       let v = openVersion(state);
+      if (sub === 'release-operation') {
+        const pid = Number(args.pid);
+        const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+        const op = latestProcessRecords().find(rec => rec.lifecycle_lease && rec.status !== 'stopped' && rec.pid === pid);
+        if (!op || !reason) versionRefusal('V6', 'Name an unfinished operation with --pid and explain your confirmed cleanup with --reason');
+        if (pidAlive(pid)) versionRefusal('V6', 'The operation is still running; stop its process tree first');
+        appendNdjson(PROCESSES, { ...op, ts: nowISO(), status: 'stopped', stopped_at: nowISO(), released_by: agent, reason });
+        appendJournal({ seq: ctx.seq, ts: nowISO(), loop_id: op.loop_id, task: op.task, agent, action: 'operation-release', status: 'event', checks: 'none', notes: reason });
+        return findVersion(op.loop_id, state);
+      }
       const event = (version, active) => {
         appendJournal({ seq: ctx.seq, ts: nowISO(), task: `version:${version.id}`, loop_id: version.id,
           agent, action: 'version', status: 'event', checks: 'none', version: version.version,
@@ -5114,6 +5156,7 @@ function cmdVersion(args) {
         const source = findVersion(task.version, state);
         if (!source || source.state === 'closed') versionRefusal('V7', 'The source version is closed');
         if (task.status === 'done' || task.disposition === 'dropped') versionRefusal('V6', 'Only unfinished, undisposed cards may be carried or dropped');
+        if (latestProcessRecords(source.id).some(rec => rec.lifecycle_lease && rec.status !== 'stopped' && rec.task === task.id)) versionRefusal('V6', 'Stop the worker operation before carrying or dropping its card');
         if (draft[task.id]?.claim_token || task.status === 'in_progress') versionRefusal('V6', 'Release the active claim before carrying or dropping its card');
         const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
         if (sub === 'drop' && !reason) versionRefusal('V6', 'Dropping a task requires --reason');
@@ -5142,7 +5185,7 @@ function cmdVersion(args) {
       }
       const pending = backlogTasks().filter(t => t.version === v.version && t.status !== 'done' && t.disposition !== 'dropped');
       if (pending.length) versionRefusal('V6', `Carry or drop every unfinished task before closing: ${pending.map(t => t.id).join(', ')}`);
-      const live = latestProcessRecords(v.id).filter(rec => rec.status !== 'stopped' && pidAlive(rec.pid));
+      const live = latestProcessRecords(v.id).filter(rec => rec.status !== 'stopped' && (rec.lifecycle_lease || pidAlive(rec.pid)));
       if (live.length) versionRefusal('V6', `Stop tracked processes before closing: ${live.map(rec => rec.pid).join(', ')}`);
       const checks = runChecks({ id: v.id, acceptance_checks: v.stop_checks });
       if (!checks.length || checks.some(c => !c.ok)) {
@@ -6551,6 +6594,8 @@ function cmdHelp() {
     version carry <task> --to next|<draft> | drop <task> --reason ".."
                           Carry preserves the card ID and records both source and destination.
     version list [--json]  Version history (loops with a name, state, and stop checks).
+    version release-operation --pid <pid> --reason "..."
+                          Human recovery after confirming a crashed worker's process tree is gone.
     loop new [--goal ".."] [--stop ".."] [--from-lessons] [--fresh]  Open a durable loop epoch.
                           Default continues from the existing backlog. --fresh archives the
                           current backlog (nothing lost) and resets it to empty for a ground-up
