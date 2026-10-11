@@ -26,6 +26,7 @@
 //  Usage: node scripts/check-wenmei-retired.mjs [--json]
 // ============================================================================
 
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +42,7 @@ const PIN_RE = /^[0-9a-f]{40}$/;
 const problems = [];
 const notes = [];
 const check = (ok, message) => { if (!ok) problems.push(message); };
+const runGit = (args) => execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
 // ── 1. no reach-back ───────────────────────────────────────────────────────
 //  RESOLUTION, not vocabulary. Three kinds of "wenmei" string exist in this tree and only one
@@ -164,6 +166,16 @@ if (!existsSync(RECORD)) {
   check(/Wenmei/i.test(rec), 'the retirement record does not name Wenmei');
   check(/one[- ]way|does not (?:read|depend)|no (?:reach|dependence)/i.test(rec),
     'the retirement record does not state the one-way rule');
+  // A record that exists only on this disk is not a record. `docs/*` is gitignored by default
+  // in this repo with published contracts whitelisted, so "the file is there" passed while the
+  // file was untracked — the gate would have been green here and unfalsifiable on a clone.
+  const tracked = (() => {
+    try {
+      runGit(['ls-files', '--error-unmatch', 'docs/flow-room-retirement.md']);
+      return true;
+    } catch { return false; }
+  })();
+  check(tracked, 'docs/flow-room-retirement.md exists but is NOT tracked by git (docs/* needs whitelisting) — the record would not survive a clone');
 }
 
 // ── report ─────────────────────────────────────────────────────────────────
