@@ -272,9 +272,15 @@
       ]
     },
     "lib/flow-geometry.test.ts": {
-      "sha256": "57c183b1aabd3961d22b3f8cfc82dd847dbe5dd6798af6061a26d7e1ba4b733d",
-      "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the minimap's blocked tone is pinned to --tone-risk (was rose)",
-      "recorded": "2026-10-10T18:51:09.133Z"
+      "sha256": "d07aa89ab93edd40a9eabebdba97a72ab8fbe235cd7b86ee57f5188b0c827a94",
+      "reason": "plan-20261010-028 + plan-20261010-006: the minimap's blocked tone is --tone-risk; the 'not a sliver' assertion was an identity — replaced by the visible fraction of the legend under the fit transform (must be 1.0, for the dagre layout and the layer view) plus a node-box negative control; mutation-tested",
+      "recorded": "2026-10-11T08:17:57.153Z",
+      "superseded": [
+        {
+          "sha256": "57c183b1aabd3961d22b3f8cfc82dd847dbe5dd6798af6061a26d7e1ba4b733d",
+          "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the minimap's blocked tone is pinned to --tone-risk (was rose)"
+        }
+      ]
     },
     "lib/flow-legend-css.test.ts": {
       "sha256": "7b7016280814392153b73637cd1a97ebdde10dc78f9349332fb87e4cf2ff0ce5",
