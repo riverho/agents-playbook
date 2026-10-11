@@ -6,7 +6,7 @@
 
 import { useState } from "react";
 import { Handle, Position, useStore, type NodeProps } from "@xyflow/react";
-import { Check, GitFork, MessageSquare, Plus, CornerDownRight } from "lucide-react";
+import { Check, Circle, GitFork, MessageSquare, Plus, CornerDownRight } from "lucide-react";
 import { draftCommand } from "@/lib/flow-bands";
 import type { FlowBandNode, FlowDraftNode, FlowLayerGateNode, FlowStackNode } from "@/lib/flow-projection";
 import { useFlowJump, type CreateOutcome } from "@/lib/flow-jump";
@@ -78,12 +78,14 @@ export function FlowStackCard({ data }: NodeProps<FlowStackNode>) {
   const jump = useFlowJump();
   const n = node.stack.ids.length;
   const unproven = n - node.stack.proven;
+  const proven = n > 0 && unproven === 0;
+  const state = proven ? "done" : "closed";
   return (
-    <div className="flow-face flow-face--stack" style={{ width: data.width, height: data.height }} data-beacon="done">
+    <div className="flow-face flow-face--stack" style={{ width: data.width, height: data.height }} data-beacon={state}>
       <Handle type="target" position={Position.Left} className="flow-handle" />
-      <span className="flow-beacon flow-beacon--done" aria-hidden />
+      <span className={`flow-beacon flow-beacon--${state}`} aria-hidden />
       <div className="flow-face__top" data-slot="state">
-        <span className="flow-st flow-st--done"><Check size={14} aria-hidden /><span className="flow-st__lg">Done</span><span className="flow-st__sh">Done</span></span>
+        <span className={`flow-st flow-st--${state}`}>{proven ? <Check size={14} aria-hidden /> : <Circle size={14} aria-hidden />}<span className="flow-st__lg">{proven ? "Done" : "Closed, proof incomplete"}</span><span className="flow-st__sh">{proven ? "Done" : "Closed"}</span></span>
         <span className="flex-1" />
         <span className="flow-face__age">{n} card{n === 1 ? "" : "s"}</span>
       </div>
