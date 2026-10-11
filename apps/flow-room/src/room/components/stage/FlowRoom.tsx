@@ -25,7 +25,6 @@ import {
   ReactFlow,
   ReactFlowProvider,
   SelectionMode,
-  ViewportPortal,
   useNodesState,
   useReactFlow,
   useStore,
@@ -446,9 +445,6 @@ function FlowCanvas({
         <FlowEdgeMarkers />
         {/* The legend is canvas-space, drawn at the rect the layout reserved for
             it — so it can never sit on top of a card (frame 1's floating panel). */}
-        <ViewportPortal>
-          <FlowLegend graph={graph} rect={layout.chrome.legend} />
-        </ViewportPortal>
         <Controls position="bottom-left" showInteractive={false} />
         <MiniMap
           position="bottom-right"
@@ -471,6 +467,11 @@ function FlowCanvas({
         </ReactFlow>
       </FlowViewContext.Provider>
       </FlowJumpContext.Provider>
+
+      {/* the legend is a SCREEN overlay (plan-20261010-006): drawn on the canvas it sat in a
+          reserve that the first fit put at 17–33% zoom, where the overview hides all text —
+          nobody saw it until they zoomed past 75%. On screen it is readable at every zoom. */}
+      <FlowLegend graph={graph} rect={layout.chrome.legend} />
 
       {/* M1: who is in the room — each active agent, what it is on, when it last spoke */}
       <div className="flow-presence" role="group" aria-label="Who is working">
@@ -586,9 +587,8 @@ function FlowLegend({ graph, rect }: { graph: FlowGraph; rect: FlowRect }) {
   return (
     <div
       className="flow-legend"
+      aria-label="Legend"
       style={{
-        left: rect.x,
-        top: rect.y,
         width: rect.width,
         height: rect.height,
         boxSizing: "border-box",

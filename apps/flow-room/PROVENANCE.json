@@ -160,9 +160,9 @@
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "2944633e526e98c9ce2222c16ca0ffde061874ace2662843675e335f7da31d3a",
-      "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering feedback, merged with agent/v2-room: Escape order (text box, + menu, inbox, open card), harness list and ask for the open card (034, 015)",
-      "recorded": "2026-10-11T17:28:43.671Z",
+      "sha256": "b1673d015927bcf61c0056cb185b27ec172efba4a56476429fea78161dd3c38d",
+      "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask for the open card (034, 015); the legend is a screen overlay, readable after load at every zoom (006)",
+      "recorded": "2026-10-11T17:43:02.327Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -211,6 +211,10 @@
         {
           "sha256": "28b22157b14699d2a30d672914a4dc797bbbaacc4e605bd8a64c817b58d6406c",
           "reason": "plan-20261010-035 decision inbox and receipts merged with plan-20261010-022 live-source label and 021 truthful steering feedback"
+        },
+        {
+          "sha256": "2944633e526e98c9ce2222c16ca0ffde061874ace2662843675e335f7da31d3a",
+          "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering feedback, merged with agent/v2-room: Escape order (text box, + menu, inbox, open card), harness list and ask for the open card (034, 015)"
         }
       ]
     },

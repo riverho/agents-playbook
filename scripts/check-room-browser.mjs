@@ -78,6 +78,27 @@ try {
   const mounted = await room.navigate();
   console.log(`room: ${room.url} · ${mounted} node(s) mounted`);
 
+  // plan-20261010-006: right after load (the first fit, whatever zoom it lands on) the legend
+  // is on screen, readable and visible — not hidden by the overview tier, not off the viewport
+  {
+    await sleep(500);
+    const lv = await evaluate(`(() => {
+      const el = document.querySelector('.flow-legend');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      const row = el.querySelector('.flow-legend__row');
+      return {
+        tier: document.querySelector('.flow-room')?.dataset.tier,
+        visible: el.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+        inView: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight && r.width > 0,
+        fontPx: row ? parseFloat(getComputedStyle(row).fontSize) * (row.getBoundingClientRect().height / (row.offsetHeight || 1)) : 0,
+      };
+    })()`);
+    console.log(`  legend after load: ${JSON.stringify(lv)}`);
+    if (!lv) problems.push('006: no legend drawn');
+    else if (!lv.visible || !lv.inView || lv.fontPx < MIN_PX) problems.push(`006: after load (tier ${lv.tier}) the legend is not readable on screen: ${JSON.stringify(lv)}`);
+  }
+
   // the gate must be looking at a backlog: a room with no task cards passes nothing vacuously
   await evaluate('window.__flowRoom.setViewport({ x: 20, y: 20, zoom: 1 })');
   await sleep(300);

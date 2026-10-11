@@ -86,8 +86,11 @@ export function sendToHarness(id, prompt, { cwd, env = process.env, onEvent, tim
     const path = a ? whichOnPath(a.bin, env) : null;
     if (!a || !path) { onEvent({ type: 'error', message: `no ${id} harness on this machine` }); return () => {}; }
     // a .cmd/.bat shim must go through cmd.exe; its arguments are fixed strings, never user text
+    // a .cmd/.bat shim runs through cmd.exe; its arguments are fixed strings, never user
+    // text. The path is quoted (an install under "Program Files" has a space), and with /s
+    // cmd strips exactly the outer pair: cmd /d /s /c ""C:\a b\claude.cmd" -p"
     child = /\.(cmd|bat)$/i.test(path)
-      ? spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', path, ...a.argv], { cwd, env, windowsHide: true })
+      ? spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `""${path}" ${a.argv.join(' ')}"`], { cwd, env, windowsHide: true, windowsVerbatimArguments: true })
       : spawn(path, a.argv, { cwd, env, windowsHide: true });
   }
   let done = false;

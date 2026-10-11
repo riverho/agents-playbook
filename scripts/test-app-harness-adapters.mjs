@@ -23,7 +23,7 @@ import { makeFixture, makeSuite, readJournal } from './test-fixture-playbook.mjs
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER = join(ROOT, 'apps', 'flow-room', 'server.mjs');
-const { ADAPTERS, detectHarnesses } = await import(new URL('../apps/flow-room/harness.mjs', import.meta.url));
+const { ADAPTERS, detectHarnesses, sendToHarness } = await import(new URL('../apps/flow-room/harness.mjs', import.meta.url));
 const CSRF = { 'x-pb-ui': '1', 'content-type': 'application/json' };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const t = makeSuite('test-app-harness-adapters');
@@ -41,6 +41,21 @@ const empty = mkdtempSync(join(tmpdir(), 'pb-harness-empty-'));
   ok('detect() reports none on an empty PATH', detectHarnesses({ PATH: empty, PATHEXT: '.CMD' }).length === 0);
   ok('the stub is offered only when asked for', detectHarnesses({ PATH: empty, PB_UI_HARNESS_STUB: '1' }).map((h) => h.id).join() === 'stub');
   ok('no adapter passes user text as an argument (prompt goes on stdin)', ADAPTERS.every((a) => a.argv.every((x) => /^[-\w]+$/.test(x))), JSON.stringify(ADAPTERS));
+}
+
+// ── 1b. a .cmd shim under a path WITH A SPACE runs (checker note: 'Program' is not recognized) ──
+if (process.platform === 'win32') {
+  const spaced = mkdtempSync(join(tmpdir(), 'pb harness spaced '));
+  writeFileSync(join(spaced, 'claude.cmd'), ['@echo off', 'more', ''].join(String.fromCharCode(13, 10)));
+  const got = await new Promise((resolveRun) => {
+    let out = '';
+    sendToHarness('claude', 'the question travels on stdin', {
+      cwd: spaced, env: { ...process.env, PATH: [spaced, join(process.env.SystemRoot || 'C:/Windows', 'System32')].join(';'), Path: [spaced, join(process.env.SystemRoot || 'C:/Windows', 'System32')].join(';'), PATHEXT: '.COM;.EXE;.CMD' },
+      onEvent: (ev) => { if (ev.type === 'text') out += ev.text; if (ev.type === 'done' || ev.type === 'error') resolveRun({ out, ev }); },
+    });
+  });
+  ok('a .cmd harness in a folder with a space runs and gets the prompt on stdin', got.ev.type === 'done' && got.out.includes('the question travels on stdin'), JSON.stringify(got));
+  try { rmSync(spaced, { recursive: true, force: true }); } catch { /* temp */ }
 }
 
 // ── a server over a fixture playbook ───────────────────────────────────────

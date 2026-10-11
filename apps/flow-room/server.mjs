@@ -99,12 +99,22 @@ function findPlaybookRoot(start) {
 }
 
 /** Run a pb command IN the playbook root. Resolves with the exit code; never throws. */
-function runPb(root, args, { timeoutMs = 60000 } = {}) {
+// The identity a harness stamps on an AGENT shell. A person's decision made through the
+// room must not inherit it: a server started from an agent's terminal would otherwise have
+// every `pb decide` refused as an agent shell (checker note on plan-20261010-015).
+const AGENT_SHELL_VARS = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID', 'PB_CLAIM_TOKEN', 'PB_AGENT_ID'];
+function personEnv() {
+  const env = { ...process.env };
+  for (const k of AGENT_SHELL_VARS) delete env[k];
+  return env;
+}
+
+function runPb(root, args, { timeoutMs = 60000, env } = {}) {
   return new Promise((res) => {
     execFile(
       process.execPath,
       [join(root, 'scripts', 'pb.mjs'), ...args],
-      { cwd: root, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
+      { cwd: root, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024, ...(env ? { env } : {}) },
       (err, stdout, stderr) => {
         res({
           code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
@@ -115,6 +125,9 @@ function runPb(root, args, { timeoutMs = 60000 } = {}) {
     );
   });
 }
+
+let askSlots = 0;
+const MAX_ASKS = 2;
 
 const args = parseArgs(process.argv.slice(2));
 const ROOT = args.root ? findPlaybookRoot(args.root) : findPlaybookRoot(process.cwd());
@@ -241,7 +254,7 @@ async function serveApi(req, res, url) {
         typeof body.reason !== 'string' || !body.reason.trim() || body.reason.trim().startsWith('-')) {
       return json(res, 400, { error: 'expected { task: id, option: id, reason: non-empty text not starting with "-" }' });
     }
-    const r = await runPb(ROOT, ['decide', '--task', body.task, '--option', body.option, '--reason', body.reason.trim(), '--agent', 'human']);
+    const r = await runPb(ROOT, ['decide', '--task', body.task, '--option', body.option, '--reason', body.reason.trim(), '--agent', 'human'], { env: personEnv() });
     if (r.code !== 0) return json(res, 422, { error: 'pb decide refused', detail: r.stderr.trim() || r.stdout.trim() });
     const seq = /\(seq (\d+)/.exec(r.stdout)?.[1];
     const shown = await runPb(ROOT, ['runcard', 'show', body.task, '--json']);
@@ -377,6 +390,8 @@ async function serveApi(req, res, url) {
     });
   }
   if (path === '/api/ask' && req.method === 'POST') {
+    // at most two harness runs at once: each is a model session, not a cheap request
+    if (askSlots >= MAX_ASKS) return json(res, 429, { error: `already answering ${askSlots} question(s); try again when one finishes` });
     const body = await readBody(req);
     if (!body || typeof body.task !== 'string' || !/^[\w.-]+$/.test(body.task) || typeof body.text !== 'string' || !body.text.trim()) {
       return json(res, 400, { error: 'expected { task: task id, text: non-empty string, harness?: id }' });
@@ -401,11 +416,14 @@ async function serveApi(req, res, url) {
     res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache', connection: 'keep-alive' });
     const emit = (ev) => res.write(`data: ${JSON.stringify(ev)}\n\n`);
     emit({ type: 'recorded', seq: seq ? Number(seq[1]) : null, harness: harness.id });
+    askSlots += 1;
     const stop = sendToHarness(harness.id, buildPrompt({ task: body.task, title, text: body.text, root: ROOT }), {
       cwd: ROOT,
       onEvent: (ev) => { emit(ev); if (ev.type === 'done' || ev.type === 'error') res.end(); },
     });
-    req.on('close', () => stop());
+    // the RESPONSE closing is the browser going away (the request body was read long ago,
+    // so req's own close has already fired): stop the harness, don't let it run to its cap
+    res.on('close', () => { stop(); askSlots -= 1; });
     return undefined;
   }
 

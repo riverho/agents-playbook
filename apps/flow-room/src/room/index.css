@@ -1361,7 +1361,6 @@ code,
   border-color: var(--you);
 }
 /* below full size the old canvas labels would render under 9px: hide them (T3) */
-.flow-room:not([data-tier="full"]) .flow-legend,
 .flow-room:not([data-tier="full"]) .flow-gatepill,
 .flow-room:not([data-tier="full"]) .flow-edgepill,
 .flow-room:not([data-tier="full"]) .flow-card > *,
