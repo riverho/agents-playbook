@@ -12,6 +12,7 @@
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { Ban, Check, Circle, Hand, MessageSquare, Minus } from "lucide-react";
+import { FlowPlus } from "./FlowLayerView";
 import {
   ageLabel,
   beaconFor,
@@ -285,6 +286,7 @@ export function FlowTaskCard({ data, selected }: NodeProps<FlowTaskNode>) {
           {messages}
         </span>
       </div>
+      <FlowPlus node={node} />
       <Handle type="source" position={Position.Right} className="flow-handle" />
     </div>
   );

@@ -124,14 +124,20 @@
   },
   "local_edits": {
     "lib/flow-adapter.ts": {
-      "sha256": "0828537b950b2c3b4e60aea5d655f8ddc6ab5dc142979d1661efd1630c573c77",
-      "reason": "plan-20261010-023: applySteering may return a promise (a live write is async) and FlowSteeringResult gained an optional note so a refusal explains itself",
-      "recorded": "2026-10-10T07:36:14.141Z"
+      "sha256": "8f1194331be16381e5f785dfa9b0f2a8a3549b07ae7f42f86e93088e96386a78",
+      "reason": "plan-20261010-031 (v2 layer view + jump-in, D21/D22; G1-G5, J1-J3): optional createTask / forkTask on the adapter interface: a snapshot or sample has none, so the room says it cannot write",
+      "recorded": "2026-10-11T03:39:09.707Z",
+      "superseded": [
+        {
+          "sha256": "0828537b950b2c3b4e60aea5d655f8ddc6ab5dc142979d1661efd1630c573c77",
+          "reason": "plan-20261010-023: applySteering may return a promise (a live write is async) and FlowSteeringResult gained an optional note so a refusal explains itself"
+        }
+      ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "3dd4dd2846b08dddfced32f49695a1d842be03c65217af7c8febdc2a6ca046ec",
-      "reason": "plan-20261010-030 (v2 card face) + checker seq 158 fixes: zoom tier and --inv on the room, minZoom 5%, reduced motion read once, window.__flowRoom seam installed only with ?gate",
-      "recorded": "2026-10-11T03:30:27.707Z",
+      "sha256": "c8d1ec476efa8578a624c4b48da4db26055a5a71e6e58fe4887693eec85d701a",
+      "reason": "plan-20261010-030/031 (v2): zoom tiers, minZoom 5%, reduced motion read once, ?gate seam; the canvas is the layer view (bands, gate posts, stacks, drafts) with the jump-in context; a new draft is brought into view",
+      "recorded": "2026-10-11T03:39:09.631Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -144,6 +150,10 @@
         {
           "sha256": "ee07a0e945baeb15595a71f3630893ba005b3fb8037e38c3700e8e19c9dcffe4",
           "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): zoom tier (full/glance/overview) and --inv on the room, minZoom 5%, reduced motion read once, window.__flowRoom seam for the browser gate"
+        },
+        {
+          "sha256": "3dd4dd2846b08dddfced32f49695a1d842be03c65217af7c8febdc2a6ca046ec",
+          "reason": "plan-20261010-030 (v2 card face) + checker seq 158 fixes: zoom tier and --inv on the room, minZoom 5%, reduced motion read once, window.__flowRoom seam installed only with ?gate"
         }
       ]
     },
@@ -170,9 +180,9 @@
       ]
     },
     "components/stage/FlowCards.tsx": {
-      "sha256": "fe45cc0ab730f6a4560289897a0b68c47c2dbe9fec57d9f3b64be2baa542687e",
-      "reason": "plan-20261010-030 (v2 card face) + checker seq 158 fixes: the five-slot face from lib/flow-face.ts; no ID/skill/mode/layer on the face; data-live on the card; the bar sweeps and the beacon pulses only when LIVE (F1); unproven done is a neutral beacon (C4)",
-      "recorded": "2026-10-11T03:30:27.631Z",
+      "sha256": "64b8077cffb2aded91d8f1aca9b7186e3cf699266fb88daddedcac66656666f2",
+      "reason": "plan-20261010-030/031 (v2): the five-slot face from lib/flow-face.ts, data-live, sweep/beacon only when live (F1), unproven done neutral (C4); every task card carries the + (J1)",
+      "recorded": "2026-10-11T03:39:09.558Z",
       "superseded": [
         {
           "sha256": "b7ffdddba6b596037b4c5935e69279476bf6eb88ccedfc0e38ea0713de04f315",
@@ -185,6 +195,10 @@
         {
           "sha256": "4ae97c7764febb1900215b7e8b231028272029bd434c42b7db40b82316d5b12b",
           "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): the task card is the five-slot face (state + owner, title, bar, now, proof + messages) from lib/flow-face.ts; no ID/skill/mode/layer on the face; flashing light, needs-you label and overview beacons"
+        },
+        {
+          "sha256": "fe45cc0ab730f6a4560289897a0b68c47c2dbe9fec57d9f3b64be2baa542687e",
+          "reason": "plan-20261010-030 (v2 card face) + checker seq 158 fixes: the five-slot face from lib/flow-face.ts; no ID/skill/mode/layer on the face; data-live on the card; the bar sweeps and the beacon pulses only when LIVE (F1); unproven done is a neutral beacon (C4)"
         }
       ]
     },
@@ -246,14 +260,25 @@
       "recorded": "2026-10-11T03:20:37.780Z"
     },
     "lib/flow-types.ts": {
-      "sha256": "012a4f1a3ba99b14bb1028155fc845e2353114c4e69dc7b7bb70e7d1c21dc00e",
-      "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): v2 engine fields: headline, now, live, live_detail, human, journal summary and intent",
-      "recorded": "2026-10-11T03:20:37.855Z"
+      "sha256": "b7506a09e3467fce635d669ba354719d43878297d3327fde10d9557c0cf1d182",
+      "reason": "plan-20261010-030/031 (v2): headline, now, live, human, journal summary/intent; layers[] (FlowLayerInfo); node kinds stack and draft",
+      "recorded": "2026-10-11T03:39:09.855Z",
+      "superseded": [
+        {
+          "sha256": "012a4f1a3ba99b14bb1028155fc845e2353114c4e69dc7b7bb70e7d1c21dc00e",
+          "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): v2 engine fields: headline, now, live, live_detail, human, journal summary and intent"
+        }
+      ]
     },
     "lib/flow-view.ts": {
       "sha256": "091076140de023f5064a8c6f85864e40ae0d9dc5216c7506b6cbb2a18eb1c763",
       "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): the view context carries reducedMotion, read once by the room",
       "recorded": "2026-10-11T03:20:37.927Z"
+    },
+    "lib/flow-projection.ts": {
+      "sha256": "911d0eac60a481b9316687a04fe7bd4687f49054b44fa6ec47cf914e20922f9a",
+      "reason": "plan-20261010-031 (v2 layer view + jump-in, D21/D22; G1-G5, J1-J3): node types for bands, layer gates, stacks and drafts; buildLayerNodes / buildLayerEdges (edges re-pointed to stacks, bookend fan-out dropped)",
+      "recorded": "2026-10-11T03:39:09.782Z"
     }
   }
 }

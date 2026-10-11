@@ -200,7 +200,8 @@ function ruleT5({ rules, ts }) {
 }
 
 const TEXT_TOKEN = /^--(text-|ink|tone-|on-|you$|accent(-(?!tint|wash)[a-z]+)?$)/;
-const SURFACE_TOKEN = /^--(surface-[0-9]|surface|bg)$/;
+// bands (v2 layer view) are surfaces too: band headers sit on them
+const SURFACE_TOKEN = /^--(surface-[0-9]|surface|bg|band-[0-9x])$/;
 function ruleC1({ rules, ts }) {
   const p = [];
   const themes = [['light', tokensFrom(rules, lightRoot)]];

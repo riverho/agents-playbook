@@ -59,7 +59,27 @@ export type FlowNodeKind =
   | "orchestrator"
   | "fork"
   | "batch"
-  | "gatepost";
+  | "gatepost"
+  /** v2 layer view (D21): the stack of a band's finished cards — view-made, never a task. */
+  | "stack"
+  /** v2 jump-in (D22, J3): a card being written; nothing exists until Create. */
+  | "draft";
+
+/** v2 (D21): one layer as `pb graph --json` sends it (layers[]). */
+export interface FlowLayerInfo {
+  id: string;
+  name: string | null;
+  about: string | null;
+  position: number;
+  source: "declared" | "derived";
+  gate: string | null;
+  human?: boolean;
+  /** The gate's LAST REAL result, or `not-run` — never a guess (G4). */
+  gate_result: { state: "pass" | "fail" | "not-run" | "no-gate"; at?: string; output?: string; reason?: string };
+  counts?: Partial<Record<FlowStatus, number>>;
+  total?: number;
+  tasks: string[];
+}
 
 /** One journal row, as projected. The rail and the steering thread read these. */
 export interface FlowJournalRow {
@@ -378,6 +398,8 @@ export interface FlowGraph {
     note?: string;
   };
   goal_diff?: FlowGoalDiff;
+  /** v2 (D21): the plan's layers, declared or derived. Absent from older engines. */
+  layers?: FlowLayerInfo[];
   /**
    * True for a hand-built SAMPLE (the painted frame's layered playbook). The room
    * labels it as such: only the live snapshot or `pb graph --json` is this repo.

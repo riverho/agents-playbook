@@ -204,7 +204,7 @@ async function serveApi(req, res, url) {
       ok: true,
       root: ROOT,
       engine: v ? v[1] : null,
-      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/fork'],
+      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/fork', '/api/worker'],
     });
   }
 
@@ -279,12 +279,27 @@ async function serveApi(req, res, url) {
     const argv = ['plan', '--goal', body.goal];
     if (body.from) argv.push('--dep', String(body.from));
     if (body.check) argv.push('--check', String(body.check));
+    if (body.layer) argv.push('--layer', String(body.layer));
     const r = await runPb(ROOT, argv);
     if (r.code !== 0) {
       return json(res, 422, { error: 'pb plan refused', detail: r.stderr.trim() || r.stdout.trim() });
     }
     const id = /Planned \[([^\]]+)\]/.exec(r.stdout);
     return json(res, 200, { ok: true, task: id ? id[1] : null, output: r.stdout.trim() });
+  }
+
+  // v2 fork (D22): a worker slot for a card, through the engine's own command. The room
+  // never creates a worktree itself; pb worker create is atomic and refuses a taken slot.
+  if (path === '/api/worker' && req.method === 'POST') {
+    const body = await readBody(req);
+    if (typeof body?.task !== 'string' || !/^[\w.-]+$/.test(body.task)) {
+      return json(res, 400, { error: 'expected { task: task id }' });
+    }
+    const r = await runPb(ROOT, ['worker', 'create', body.task, '--agent', 'room', '--execute']);
+    if (r.code !== 0) {
+      return json(res, 422, { error: 'pb worker create refused', detail: r.stderr.trim() || r.stdout.trim() });
+    }
+    return json(res, 200, { ok: true, task: body.task, output: r.stdout.trim() });
   }
 
   if (path === '/api/attach' && req.method === 'POST') {

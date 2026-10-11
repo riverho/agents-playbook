@@ -53,7 +53,6 @@ import {
   FLOW_FIT_PADDING,
   FLOW_MARGIN,
   flowFitBounds,
-  layoutFlow,
   layoutNodeById,
   type FlowRect,
 } from "@/lib/flow-layout";
@@ -72,8 +71,8 @@ import { zoomTier } from "@/lib/flow-face";
 import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion";
 import {
   STEERING_NODE_ID,
-  buildEdges,
-  buildNodes,
+  buildLayerEdges,
+  buildLayerNodes,
   spawnTargets,
   type FlowAnyNode,
   type FlowCardData,
@@ -84,6 +83,9 @@ import {
   FlowEdge as FlowEdgeComponent,
 } from "./FlowEdges";
 import { FlowInspector } from "./FlowInspector";
+import { FlowBandCard, FlowDraftCard, FlowLayerGateCard, FlowStackCard } from "./FlowLayerView";
+import { layoutLayers, nextBandId, type BandDraft } from "@/lib/flow-bands";
+import { FlowJumpContext, type FlowJump } from "@/lib/flow-jump";
 import { FlowSteeringDock, FlowSteeringToast, type SteeringToast } from "./FlowSteeringDock";
 
 /** Node/edge component registries — module scope, so React Flow never re-creates them. */
@@ -95,6 +97,10 @@ const NODE_TYPES = {
   flowBatch: FlowBatchCard,
   flowGatepost: FlowGatepostCard,
   flowSteering: FlowSteeringCard,
+  flowBand: FlowBandCard,
+  flowLayerGate: FlowLayerGateCard,
+  flowStack: FlowStackCard,
+  flowDraft: FlowDraftCard,
 } as unknown as NodeTypes;
 
 const EDGE_TYPES = { flow: FlowEdgeComponent } as unknown as EdgeTypes;
@@ -164,7 +170,13 @@ function FlowCanvas({
   const active = adapter ?? (showSample ? SAMPLE_LAYERED_ADAPTER : DEFAULT_FLOW_ADAPTER);
   const graph = useMemo(() => active.load(), [active]);
   const filtered = useMemo(() => filterGraph(graph, view, query), [graph, view, query]);
-  const layout = useMemo(() => layoutFlow(filtered), [filtered]);
+  // v2 layer view (D21): bands from the plan's layers; done stacked unless expanded;
+  // drafts are view state until Create (J3).
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const [drafts, setDrafts] = useState<BandDraft[]>([]);
+  const [openPlus, setOpenPlus] = useState<string | null>(null);
+  const layout = useMemo(() => layoutLayers(filtered, { expanded, drafts }), [filtered, expanded, drafts]);
+  // Refit only when the GRAPH changes — never while a person types into a draft.
   const layoutKey = `${view}|${query}|${filtered.nodes.length}|${filtered.edges.length}`;
   const spawned = useMemo(() => spawnTargets(graph), [graph]);
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowAnyNode>([]);
@@ -179,7 +191,10 @@ function FlowCanvas({
   // Seed positions whenever the filter (and therefore the layering) changes,
   // then fit the viewport once the new nodes have been committed.
   useEffect(() => {
-    setNodes(buildNodes(filtered, layout, spawned));
+    setNodes(buildLayerNodes(filtered, layout, spawned) as FlowAnyNode[]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout]);
+  useEffect(() => {
     setSelectedIds([]);
     setOpenId(null);
     const timer = window.setTimeout(() => {
@@ -236,7 +251,46 @@ function FlowCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [multi, plan, steeredIds, layoutKey]);
 
-  const edges = useMemo(() => buildEdges(filtered, layout), [filtered, layout]);
+  const edges = useMemo(() => buildLayerEdges(filtered, layout), [filtered, layout]);
+  // A new draft may land in a band that is off screen: bring it into view, at the current zoom.
+  const lastDraft = drafts[drafts.length - 1]?.id;
+  useEffect(() => {
+    if (!lastDraft) return;
+    const placed = layout.nodes.find(n => n.id === `draft:${lastDraft}`);
+    if (placed) void reactFlow.setCenter(placed.x + placed.width / 2, placed.y + placed.height / 2, { zoom: Math.max(reactFlow.getZoom(), 0.75), duration: 250 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastDraft]);
+  const bands = layout.bands.map(b => b.band);
+  const jump: FlowJump = useMemo(() => ({
+    openPlus,
+    setOpenPlus,
+    addDraft: (kind, band, from) => {
+      const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      setDrafts(list => [...list, { id, band, kind, from, title: "" }]);
+    },
+    updateDraft: (id, title) => setDrafts(list => list.map(d => (d.id === id ? { ...d, title } : d))),
+    discardDraft: id => setDrafts(list => list.filter(d => d.id !== id)),
+    createDraft: async draft => {
+      if (!active.createTask) return { ok: false, note: "this view is a snapshot — nothing was written. Open the room against a playbook to create tasks." };
+      const declared = bands.some(b => b.id === draft.band && b.source === "declared");
+      const r = await active.createTask({ goal: draft.title.trim(), from: draft.kind === "follow-up" ? draft.from : undefined, layer: declared ? draft.band : undefined });
+      return r;
+    },
+    forkCard: async id => {
+      if (!active.forkTask) return { ok: false, note: "this view is a snapshot — nothing was written." };
+      return active.forkTask(id);
+    },
+    toggleStack: band => setExpanded(list => (list.includes(band) ? list.filter(b => b !== band) : [...list, band])),
+    openCard: id => setOpenId(id),
+    followUpBand: taskId => {
+      const node = filtered.nodes.find(n => n.id === taskId);
+      const from = node ? bands.find(b => b.open.includes(node) || b.done.includes(node))?.id : undefined;
+      return from ? nextBandId(bands, from) : bands[bands.length - 1]?.id ?? "L1";
+    },
+    isDeclared: band => bands.some(b => b.id === band && b.source === "declared"),
+    readOnly: !active.createTask,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [openPlus, active, layout, filtered]);
   const openNode = openId ? filtered.nodes.find(node => node.id === openId) : undefined;
 
   // Escape unwinds exactly one level: selection → inspector → the stage.
@@ -318,6 +372,7 @@ function FlowCanvas({
       data-tier={tier}
       style={{ ["--inv" as string]: (1 / Math.max(zoom, 0.01)).toFixed(3) }}
     >
+      <FlowJumpContext.Provider value={jump}>
       <FlowViewContext.Provider value={viewState}>
         <ReactFlow
         nodes={nodes}
@@ -327,9 +382,11 @@ function FlowCanvas({
         onNodesChange={onNodesChange}
         onNodeClick={(_event, node) => {
           if (node.id === STEERING_NODE_ID) return;
+          // bands, gate posts, stacks and drafts are places and view state, not cards to open
+          if (node.type === "flowBand" || node.type === "flowLayerGate" || node.type === "flowStack" || node.type === "flowDraft") return;
           setOpenId(node.id);
         }}
-        onPaneClick={() => setOpenId(null)}
+        onPaneClick={() => { setOpenId(null); setOpenPlus(null); }}
         onSelectionChange={({ nodes: selected }) =>
           setSelectedIds(selected.map(node => node.id))
         }
@@ -383,6 +440,7 @@ function FlowCanvas({
         />
         </ReactFlow>
       </FlowViewContext.Provider>
+      </FlowJumpContext.Provider>
 
       {/* the room's own status chips — the shared top strip has no slot for them.
           They live in the chipbar rect the layout reserves. */}
