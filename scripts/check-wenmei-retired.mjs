@@ -41,8 +41,8 @@
 // ============================================================================
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const argv = process.argv.slice(2);
@@ -64,6 +64,7 @@ const PIN_RE = /^[0-9a-f]{40}$/;
 
 const problems = [];
 const notes = [];
+const linksOut = [];
 const check = (ok, message) => { if (!ok) problems.push(message); };
 const git = (repo, args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 const isTracked = (rel) => { try { git(ROOT, ['ls-files', '--error-unmatch', rel]); return true; } catch { return false; } };
@@ -74,7 +75,16 @@ const isTracked = (rel) => { try { git(ROOT, ['ls-files', '--error-unmatch', rel
 //  swallow the file, and a path split across `join("..","..","Wenmei")` is still visible as its
 //  own segments.
 const SCAN_EXT = /\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx|json|css|html|htm|yaml|yml|toml)$/;
-function scanText(text) {
+// `//` and `/* */` are comments in some languages and literal text in others. HTML has no `/*`,
+// so treating it as one let `/*` swallow an html attribute; JSON has neither, so a `//` inside a
+// string must stay visible (and `package-lock.json` carries paths).
+const COMMENT_LANGS = /\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx|css)$/;
+const scanCommentState = (name) => COMMENT_LANGS.test(name);
+// Files whose NAME is the extension: `.env`, `.npmrc`. The old predicate needed a known
+// extension and so never walked them.
+const isScannableName = (name) => SCAN_EXT.test(name) || (name.startsWith('.') && name.length > 1);
+
+function scanText(text, { comments = true } = {}) {
   let out = '';
   const strings = [];
   let i = 0;
@@ -84,8 +94,8 @@ function scanText(text) {
     const c = text[i];
     const next = text[i + 1];
     if (state === 'code') {
-      if (c === '/' && next === '/') { state = 'line'; out += '  '; i += 2; continue; }
-      if (c === '/' && next === '*') { state = 'block'; out += '  '; i += 2; continue; }
+      if (comments && c === '/' && next === '/') { state = 'line'; out += '  '; i += 2; continue; }
+      if (comments && c === '/' && next === '*') { state = 'block'; out += '  '; i += 2; continue; }
       if (c === "'" || c === '"' || c === '`') {
         const quote = c;
         let value = '';
@@ -127,15 +137,32 @@ const MENTIONS = /wenmei|app_design/i;
 const SEGMENT = /(?:^|[\\/])(?:wenmei|app_design)(?:[\\/]|$)/i;
 const SPECIFIER = /(?:from|require\(|import\()\s*["'`]([^"'`]*)["'`]/gi;
 
-function walk(dir, out = []) {
+function walk(dir, out = [], seen = new Set()) {
+  let realRoot;
+  try { realRoot = realpathSync(dir); } catch { return out; }
+  if (seen.has(realRoot)) return out; // a junction must not turn a walk into a loop
+  seen.add(realRoot);
   let entries;
   try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return out; }
   for (const entry of entries) {
     // Only these three are pruned. Dot-directories are NOT: `src/.reach/` was a proven escape.
     if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.git') continue;
     const full = join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, out);
-    else if (SCAN_EXT.test(entry.name)) out.push(full);
+    let isDir = entry.isDirectory();
+    let isFile = entry.isFile();
+    // A junction/symlink reports NEITHER through Dirent, so the old walk skipped it silently.
+    // Anything linked in from outside the app is a dependence by construction.
+    if (entry.isSymbolicLink()) {
+      let target = null;
+      try { target = realpathSync(full); } catch { continue; }
+      if (!(target === APP || target.startsWith(APP + sep))) {
+        linksOut.push(`${full.slice(APP.length + 1).replace(/\\/g, '/')} -> ${target}`);
+        continue;
+      }
+      try { const st = statSync(full); isDir = st.isDirectory(); isFile = st.isFile(); } catch { continue; }
+    }
+    if (isDir) walk(full, out, seen);
+    else if (isFile && isScannableName(entry.name)) out.push(full);
   }
   return out;
 }
@@ -145,36 +172,51 @@ const shipped = existsSync(APP) ? walk(APP).filter((f) => statSync(f).isFile()) 
 const reachBacks = [];
 const fixtureHits = new Set();
 for (const file of shipped) {
-  // These two are *about* the origin; recording it is their purpose.
-  if (file === PROVENANCE || /README\.md$/i.test(file)) continue;
   const rel = file.slice(APP.length + 1).replace(/\\/g, '/');
   const isFixture = /(^|\/)mocks\//.test(rel);
   const text = readFileSync(file, 'utf8');
   const fatal = (about) => { if (isFixture) fixtureHits.add(rel); else reachBacks.push(`${rel} — ${about}`); };
 
+  // Dependency NAMES and VALUES, in every dependency-bearing field — and in ANY `.json`, because a
+  // `dependencies` block hidden in PROVENANCE.json is the same dependence as one in package.json.
   if (/\.json$/i.test(file)) {
-    // Dependency NAMES and VALUES, in every dependency-bearing field — not two of four.
-    let pkg;
-    try { pkg = JSON.parse(text); } catch { continue; }
-    for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies', 'overrides', 'resolutions']) {
-      const block = pkg[field];
-      if (!block || typeof block !== 'object') continue;
-      for (const [name, val] of Object.entries(block)) {
-        if (MENTIONS.test(name)) fatal(`${field}["${name}"] names the Wenmei tree`);
-        const asText = typeof val === 'string' ? val : JSON.stringify(val ?? '');
-        if (SEGMENT.test(asText)) fatal(`${field}["${name}"] = ${asText.slice(0, 60)} resolves into the Wenmei tree`);
+    let doc = null;
+    try { doc = JSON.parse(text); } catch { doc = null; }
+    if (doc && typeof doc === 'object') {
+      for (const field of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies', 'overrides', 'resolutions']) {
+        const block = doc[field];
+        if (!block || typeof block !== 'object') continue;
+        for (const [name, val] of Object.entries(block)) {
+          if (MENTIONS.test(name)) fatal(`${field}["${name}"] names the Wenmei tree`);
+          const asText = typeof val === 'string' ? val : JSON.stringify(val ?? '');
+          if (SEGMENT.test(asText)) fatal(`${field}["${name}"] = ${asText.slice(0, 60)} resolves into the Wenmei tree`);
+        }
       }
     }
-    continue;
   }
 
-  const { code, strings } = scanText(text);
+  // EVERY file is also read as TEXT. This is the fix for the class the dependency-field check
+  // cannot see: `tsconfig.json`'s `paths`, `resolve.alias` in a config, a lockfile's `resolved`,
+  // `.env`. The old code sent every `.json` down the dependency path and `continue`d, so the app's
+  // own tsconfig could have been repointed at the other tree without a word.
+  // PROVENANCE.json is the one file whose PURPOSE is to name the origin, so the text rules skip it
+  // (its dependency-shaped content is still caught above).
+  if (file === PROVENANCE || /README\.md$/i.test(file)) continue;
+  const { code, strings } = scanText(text, { comments: scanCommentState(file) });
   // An import specifier is resolution whatever it looks like.
   for (const m of code.matchAll(SPECIFIER)) {
     if (MENTIONS.test(m[1])) fatal(`an import/require names the Wenmei tree: "${m[1].slice(0, 48)}"`);
   }
   // A path-SHAPED literal is resolution: `…/wenmei/…`, `..\Wenmei\`, a bare "Wenmei" segment.
   for (const s of strings) if (SEGMENT.test(s)) fatal(`a path-shaped literal reaches into Wenmei: "${s.slice(0, 48)}"`);
+  // …and so is the same shape OUTSIDE a literal: `.env` values, css `url(...)`, a yaml scalar.
+  // (Comments are already blanked, so prose cannot trip this; markdown is not scanned at all.)
+  if (SEGMENT.test(code)) fatal('a path-shaped reference appears outside any string literal (config, env or markup)');
+}
+if (linksOut.length) {
+  problems.push(
+    `the app links outside itself (${linksOut.length}) — a junction is a dependence by construction:\n      ${linksOut.join('\n      ')}`
+  );
 }
 if (fixtureHits.size) {
   notes.push(
@@ -190,7 +232,14 @@ let pin = null;
 if (!existsSync(PROVENANCE)) {
   problems.push('apps/flow-room/PROVENANCE.json is missing — the copy has no recorded origin');
 } else {
-  pin = JSON.parse(readFileSync(PROVENANCE, 'utf8'));
+  // A malformed manifest must fail like everything else here, not throw a stack trace.
+  try {
+    pin = JSON.parse(readFileSync(PROVENANCE, 'utf8'));
+  } catch (err) {
+    problems.push(`apps/flow-room/PROVENANCE.json is not valid JSON: ${String(err?.message ?? err).split('\n')[0]}`);
+  }
+}
+if (pin) {
   const commit = pin?.source?.commit;
   const repo = pin?.source?.repo;
   check(typeof commit === 'string' && PIN_RE.test(commit),
@@ -216,6 +265,17 @@ if (!existsSync(PROVENANCE)) {
         check(ancestor,
           `${commit.slice(0, 12)} is not an ancestor of ${repo}'s HEAD — the pinned revision is not part of the checkout it claims to come from`);
       }
+      // "Is not a worktree" has to be git's answer, not a directory-name guess: a linked worktree
+      // at ANY path has a git-dir that differs from its common dir. The `.worktrees` name check
+      // above is only an early signal for the path we happened to use.
+      let linkedWorktree = false;
+      try {
+        const gitDir = git(repo, ['rev-parse', '--git-dir']).trim();
+        const commonDir = git(repo, ['rev-parse', '--git-common-dir']).trim();
+        linkedWorktree = resolve(repo, gitDir) !== resolve(repo, commonDir);
+      } catch { linkedWorktree = false; }
+      check(!linkedWorktree,
+        `the pinned source (${repo}) IS a linked worktree — worktrees are de-registered when their branch merges, so the pin cannot be re-verified against it later`);
     }
   }
 }
@@ -268,7 +328,9 @@ const summary = {
   schema: 'agent-playbook.wenmei-retired.v1',
   root: ROOT,
   scanned_files: shipped.length,
+  scan_scope: 'every file under apps/flow-room except node_modules, dist and .git — including configs, html, .cjs/.mts, dot-config and dot-directories',
   reach_backs: [...new Set(reachBacks)],
+  links_out: linksOut,
   fixture_data_files: [...fixtureHits],
   pin: pin?.source?.commit ?? null,
   source_repo: SOURCE_REPO,
@@ -279,15 +341,22 @@ const summary = {
   notes,
 };
 if (flag('--json')) {
+  // Pure JSON when asked for JSON: the human sentence used to be appended after it, so
+  // `JSON.parse` threw on a flag documented as machine-readable.
   console.log(JSON.stringify(summary, null, 2));
-} else {
-  console.log('Flow room × Wenmei — dependence direction retired');
-  console.log(`  scanned for resolution : ${shipped.length} file(s) — the whole app tree (configs, html, .cjs/.mts, dot-dirs included)`);
-  console.log(`  pinned source          : ${summary.pin ? `${summary.pin.slice(0, 12)} (git-verified: real commit, ancestor of HEAD)` : '—'}`);
-  console.log(`  playground tombstone   : ${tombstoneState}`);
-  console.log(`  repo-side record       : ${existsSync(RECORD) ? (summary.record_tracked ? 'present and tracked' : 'present but UNTRACKED') : 'MISSING'}`);
-  for (const n of notes) console.log(`  note: ${n}`);
+  process.exit(problems.length ? 1 : 0);
 }
+console.log('Flow room × Wenmei — dependence direction retired');
+console.log(`  scanned for resolution : ${shipped.length} file(s) — every file under the app EXCEPT node_modules, dist and .git`);
+console.log(`                           (configs, html, .cjs/.mts, dot-config and dot-directories included)`);
+console.log(`  pinned source          : ${summary.pin ? `${summary.pin.slice(0, 12)} (git-verified: real commit, ancestor of HEAD, not a linked worktree)` : '—'}`);
+console.log(`  playground tombstone   : ${tombstoneState}`);
+console.log(`  repo-side record       : ${existsSync(RECORD) ? (summary.record_tracked ? 'present and tracked' : 'present but UNTRACKED') : 'MISSING'}`);
+console.log(`  links out of the app   : ${linksOut.length}`);
+console.log('  accepted false-positive: a bare "wenmei"/"app_design" string segment is treated as a path, because');
+console.log('                           split join("..","..","Wenmei") segments are otherwise invisible. Naming is');
+console.log('                           not resolving, so a local directory named wenmei would be a false red.');
+for (const n of notes) console.log(`  note: ${n}`);
 
 if (problems.length) {
   console.error(`\nWENMEI RETIREMENT FAILED (${problems.length} problem(s)):`);

@@ -15,7 +15,7 @@
 // ============================================================================
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -87,6 +87,10 @@ try {
     problems.push(`control is RED, so nothing below proves anything:\n      ${control.out.trim().split('\n').slice(-4).join('\n      ')}`);
   }
   if (!/scanned for resolution/.test(control.out)) problems.push('the gate did not report what it scanned');
+  // The scope claim must name what it EXCLUDES, or "the whole app tree" is a claim the walk does
+  // not make (node_modules and dist are pruned on purpose).
+  if (!/node_modules, dist and \.git/.test(control.out)) problems.push('the gate does not say which parts of the app it excludes, so "scanned" overstates the walk');
+  if (!/accepted false-positive/.test(control.out)) problems.push('the gate does not state the false-positive class its segment rule accepts');
   if (!/fixture file/.test(control.out)) problems.push('the gate did not report the fixture history it allows (report, do not hide)');
 
   // ── 1. the live defect: a scanner, not a regex ──────────────────────────
@@ -146,7 +150,64 @@ try {
   const strict = gate(['--require-source'], { PB_FLOW_SOURCE: join(work, 'definitely-not-here') });
   if (strict.code === 0) problems.push('--require-source with no checkout exited 0 — absence must be falsifiable');
 
-  // ── 12. the two doc errors stay fixed ───────────────────────────────────
+  // ── 12. the second checker's escapes (all GREEN before these fixes) ──────
+  // A non-package.json .json was skipped entirely: the app's own tsconfig could be repointed.
+  write('apps/flow-room/tsconfig.json', '{ "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["' + join(source, 'app_design/src') + '/*"] } } }\n');
+  expectRed('tsconfig.json paths (a .json that is not package.json)', 'path-shaped literal reaches into Wenmei');
+  rmSync(join(app, 'tsconfig.json'), { force: true });
+
+  write('apps/flow-room/package-lock.json', `{ "packages": { "node_modules/linky": { "resolved": "file:${join(source, 'app_design')}" } } }\n`);
+  expectRed('a lockfile resolved: value', 'path-shaped literal reaches into Wenmei');
+  rmSync(join(app, 'package-lock.json'), { force: true });
+
+  // Extensionless dot-config was never walked at all.
+  write('apps/flow-room/.env', `FLOW_SRC=${join(source, 'app_design/src')}\n`);
+  expectRed('.env (extensionless dot-config)', 'outside any string literal');
+  rmSync(join(app, '.env'), { force: true });
+
+  // A `dependencies` block hidden in PROVENANCE.json is the same dependence as one in package.json.
+  writeFileSync(provPath, JSON.stringify({ ...prov, dependencies: { linky: `file:${join(source, 'app_design')}` } }, null, 2) + '\n', 'utf8');
+  expectRed('a dependencies block inside PROVENANCE.json', 'resolves into the Wenmei tree');
+  writeFileSync(provPath, JSON.stringify(prov, null, 2) + '\n', 'utf8');
+
+  // A junction reports neither isDirectory() nor isFile() through Dirent, so the old walk skipped
+  // it in silence — and a link that leaves the app is a dependence by construction.
+  const outside = join(work, 'outside-app_design');
+  mkdirSync(outside, { recursive: true });
+  writeFileSync(join(outside, 'leak.ts'), `export const p = ${JSON.stringify(join(source, 'app_design/src/x'))};\n`, 'utf8');
+  let junctionMade = false;
+  try {
+    symlinkSync(outside, join(app, 'src', 'reflect'), 'junction');
+    junctionMade = true;
+  } catch { /* needs no admin on Windows, but do not fail the run if it is refused */ }
+  if (junctionMade) {
+    expectRed('a junction pointing out of the app tree', 'links outside itself');
+    rmSync(join(app, 'src', 'reflect'), { force: true });
+  } else {
+    problems.push('could not create a junction to test the link rule (env refused it) — that case is UNTESTED here');
+  }
+
+  // The record that is present but untracked: the escape class that actually landed twice in this
+  // repo's history, and the one the previous teeth test could not see because it git-adds the doc.
+  git(repo, ['rm', '--cached', '-q', 'docs/flow-room-retirement.md']);
+  {
+    const r = gate();
+    if (r.code === 0) problems.push('a record that exists but is NOT tracked did not redden the gate');
+    else if (!/NOT tracked by git/.test(r.out)) problems.push('the untracked-record case reddened for the wrong reason');
+  }
+  git(repo, ['add', 'docs/flow-room-retirement.md']);
+
+  // A MUST-STAY-GREEN case, which is what pins the path-SEGMENT rule: this repo legitimately
+  // carries the goal text, and a gate that fails on the word would force the provenance comments
+  // (and this) to be deleted.
+  write('apps/flow-room/src/room/goal-copy.ts', 'export const GOAL = "Paint the Wenmei backlog-graph (React Flow) design for human approval";\n');
+  {
+    const r = gate();
+    if (r.code !== 0) problems.push(`the legitimate goal text naming Wenmei reddened the gate — the rule is matching vocabulary, not resolution:\n      ${r.out.trim().split('\n').slice(-3).join('\n      ')}`);
+  }
+  rmSync(join(app, 'src', 'room', 'goal-copy.ts'), { force: true });
+
+  // ── 13. the two doc errors stay fixed ───────────────────────────────────
   const doc = readFileSync(join(ROOT, 'docs', 'flow-room-retirement.md'), 'utf8');
   if (/Unset .?PB_FLOW_SOURCE/i.test(doc)) problems.push('the doc still says "Unset PB_FLOW_SOURCE" — it is SET, not unset');
   if (/looked\s+\*?auditable\*?\s+while pointing at nothing/i.test(doc)) problems.push('the doc still claims the old pin was "pointing at nothing" — the directory existed, it had been de-registered');

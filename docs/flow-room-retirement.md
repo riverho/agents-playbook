@@ -50,24 +50,40 @@ repo's history:
 
 | # | Assertion |
 | --- | --- |
-| 1 | No file in the app **resolves** a Wenmei path: no import specifier, no path-shaped string, no dependency name or value in any dependency-bearing field. Comments and fixture data that *record* the origin are counted and reported, not ignored. The scanner is a character walk, not a regex, so a `/*` inside prose cannot swallow a file. |
-| 2 | `PROVENANCE.json` pins a full commit sha that **git agrees is a real commit** in a source repo that exists, is an ancestor of that repo's `HEAD`, is not a worktree, and carries file hashes. Shape alone is not truth — a forty-zero sha fails. |
+| 1 | No file in the app **resolves** a Wenmei path: an import specifier, a path-shaped literal, a path-shaped reference *outside* a literal (env, css `url()`, yaml), a link out of the tree, or a dependency name or value in any dependency-bearing field of any `.json` — not only `package.json`. Every file is read as text, so `tsconfig.json`'s `paths` and a lockfile's `resolved` are seen. Comments and fixture data that *record* the origin are counted and reported, not ignored. The scanner is a character walk, not a regex, so a `/*` inside prose cannot swallow a file; `//` and `/* */` are treated as comments only in the languages that have them, so HTML and JSON are not eaten. |
+| 2 | `PROVENANCE.json` pins a full commit sha that **git agrees is a real commit** in a source repo that exists, is an ancestor of that repo's `HEAD`, is **not a linked worktree by git's own answer** (`--git-dir` vs `--git-common-dir`), and carries file hashes. Shape alone is not truth — a forty-zero sha fails. |
 | 3 | The playground carries `app_design/TOMBSTONE.md` naming `apps/flow-room`, this repo, the pinned commit and the direction. |
 | 4 | This record exists **and is tracked by git**. |
 
 ## The honest limits
 
+- **The walk excludes `node_modules`, `dist` and `.git`.** The gate prints that scope; "every file
+  in the app" would otherwise overstate it. A reach-back planted inside `node_modules` is out of
+  scope by design.
+- **Markdown is not scanned.** `README.md` and other prose may name Wenmei freely — talking about
+  the origin is not resolving it. `PROVENANCE.json` is likewise exempt from the *text* rules
+  because naming the origin is its purpose, but its dependency-shaped content (a `dependencies`
+  block, for instance) **is** checked.
+- **The segment rule accepts a false-positive class.** A bare `"wenmei"` or `"app_design"` string
+  is treated as a path, because split `join("..","..","Wenmei")` segments are otherwise invisible.
+  Naming is not resolving, so a local directory genuinely called `wenmei` would produce a false
+  red. The gate prints this class rather than hiding it. Nothing in the tree trips it today.
 - **Assertion 3 is not evaluated when no Wenmei checkout is present.** The gate says so in its
   output (`NOT EVALUATED`) and still exits 0, because it is `&&`-chained into `npm test` and the
   suite must run on a machine that has no Wenmei checkout. Pass `--require-source` (or set
   `PB_FLOW_REQUIRE_SOURCE=1`) to make its absence **fatal** — on a machine that is supposed to
   have the checkout, that flag is the honest setting.
-- A path assembled at run time from parts that never appear as one segment in the source — a
-  string built by concatenation from single characters, for instance — is not statically
-  detectable by any rule of this shape. The gate catches whole paths, backslash and forward-slash
-  escapes, bare segments, and split `join(...)` segments; it does not claim to catch arithmetic.
+- **A path assembled from parts that never appear as one segment** — a string built from single
+  characters, or every segment including `app_design` split across separate joins — is not
+  statically detectable by a rule of this shape. The gate catches whole paths, backslash and
+  forward-slash escapes, bare segments and split `join(...)` segments that keep one recognisable
+  name; it does not claim to catch arithmetic. (The earlier note here understated this: the gate's
+  real reliance is on a Wenmei-shaped *name* appearing at all, not on assembly.)
+- **No test on a machine without `git` on `PATH`, without Windows path separators, or with a
+  case-insensitive filesystem.** The pin assertions shell out to `git`.
 - Set `PB_FLOW_SOURCE=<checkout>` to point assertion 3 at a different checkout (the default is
   `D:\HermesProjects\Wenmei\wenmei`).
-- Pass `--root <dir>` to run the whole gate against a copied tree; the regression test
-  `scripts/test-wenmei-retired-teeth.mjs` does exactly that, and every escape an independent
-  checker once used to walk through this gate is now a case in it.
+- Pass `--root <dir>` to run the whole gate against a copied tree, and `--json` for a
+  machine-readable summary. `scripts/test-wenmei-retired-teeth.mjs` uses `--root` to plant every
+  escape below in a scratch tree and requires the gate to redden — including a must-stay-green
+  case (the legitimate goal text) that pins the segment rule itself.
