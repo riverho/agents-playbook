@@ -28,7 +28,7 @@ import { execSync, execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join, isAbsolute, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import yaml from 'js-yaml';
 
 // --- root + base helpers ---------------------------------------------------
@@ -1993,8 +1993,12 @@ function runValidate() {
     ok(typeof v.version === 'string' && v.version.trim() && !versionNames.has(v.version), `V1: duplicate or invalid version name: ${v.version}`);
     versionNames.add(v.version);
     ok(VERSION_STATES.includes(v.state), `Version ${v.version} has invalid state: ${v.state}`);
-    ok(Array.isArray(v.stop_checks) && v.stop_checks.length > 0 && v.stop_checks.every(c => typeof c === 'string' && c.trim()), `V5: ${v.version} needs executable stop_checks`);
-    if (v.state === 'closed') ok(v.stop_result?.outcome === 'passed', `V6: closed version ${v.version} lacks passing stop checks`);
+    // D28: a loop from before versions, closed by `pb version migrate`, never had executable stop
+    // checks — it is recorded as migrated (never passed), and that is the only closed version
+    // allowed without them
+    const migrated = v.state === 'closed' && v.stop_result?.outcome === 'migrated' && !!v.migrated_at && (v.stop_checks || []).length === 0;
+    if (!migrated) ok(Array.isArray(v.stop_checks) && v.stop_checks.length > 0 && v.stop_checks.every(c => typeof c === 'string' && c.trim()), `V5: ${v.version} needs executable stop_checks`);
+    if (v.state === 'closed') ok(migrated || v.stop_result?.outcome === 'passed', `V6: closed version ${v.version} lacks passing stop checks`);
   }
   // 6. structural guardrails for the layer/dependency graph. `pb validate` is the
   // structural gate, so a cycle or a task declared in an earlier layer than its
@@ -2371,6 +2375,7 @@ function graphStepIds() {
 const GRAPH_STEP_ACTION = {
   claim: 'select', release: 'select',
   verify: 'verify', checker: 'verify', 'check-run': 'verify',
+  tick: 'report', defer: 'select', ask: 'select',
   record: 'record', comment: 'record', correct: 'record', provider_rate_limit: 'record',
   reflect: 'report', report: 'report',
 };
@@ -2589,6 +2594,10 @@ function graphNodeFor(task, planned, dependents = []) {
     cycle: cycleForJournal(card.journal),
     ...graphHeadline(task),
     ...graphNow(task, card.status, card.journal),
+    version: task.version || null,
+    task_kind: task.kind || null,
+    carried_from: task.carried_from || null,
+    disposition: task.disposition || null,
     human: graphHuman(task, graphHeadline(task).headline, card.journal, dependents),
     check_names: card.checks.map((c, i) => checkName(c.command, declaredNames[i])),
     live: live.live,
@@ -2758,8 +2767,45 @@ function graphLayers(plan, nodes) {
     };
   });
 }
-function graphPayload() {
-  const tasks = backlogTasks();
+// D23 / S6: one graph per version. In a playbook that uses versions the graph draws ONE
+// version — the one asked for, else the open one, else the newest — opening with its start
+// goal and ending with its end goal (its stop checks and their last real result). Tasks of
+// other versions are not drawn. A playbook without versions draws exactly what it always did.
+function selectGraphVersion(name) {
+  if (!versionMode()) {
+    if (name) { console.error('This playbook has no versions; drop --version.'); process.exit(1); }
+    return null;
+  }
+  const state = readLoops();
+  if (name) {
+    const v = findVersion(String(name), state);
+    if (!v) { console.error(`No version named ${name}. Versions: ${state.loops.filter((l) => l.version).map((l) => l.version).join(', ') || '(none)'}`); process.exit(1); }
+    return v;
+  }
+  const versions = state.loops.filter((l) => l.version);
+  return openVersion(state) || versions.find((v) => v.state === 'draft') || versions[versions.length - 1] || null;
+}
+function versionSummary(v) {
+  if (!v) return null;
+  return {
+    id: v.id, version: v.version, title: v.title || v.version, state: v.state, goal: v.goal || null,
+    stop_checks: Array.isArray(v.stop_checks) ? v.stop_checks : [],
+    stop_result: v.stop_result || null,
+    opened_at: v.started_at || null, closed_at: v.closed_at || null,
+    // V7 / S7: a closed version is history — comments and forks into the open version only
+    read_only: v.state === 'closed',
+  };
+}
+function graphPayload(opts = {}) {
+  const selected = selectGraphVersion(opts.version);
+  const allTasks = backlogTasks();
+  let tasks = allTasks;
+  if (selected) {
+    const own = allTasks.filter((t) => t.version === selected.version);
+    const snapshot = selected.state === 'closed' && Array.isArray(selected.task_snapshot) ? selected.task_snapshot : [];
+    const ids = new Set(own.map((t) => t.id));
+    tasks = [...own, ...snapshot.filter((t) => !ids.has(t.id)).map((t) => allTasks.find((x) => x.id === t.id) ? { ...allTasks.find((x) => x.id === t.id), ...t } : t)];
+  }
   const plan = computeLayerPlan({ checkGates: false, allTasks: tasks });
   const plannedById = new Map(plan.tasks.map((t) => [t.id, t]));
   // who waits on whom: the open tasks that depend on each task (human.waiting_on's fallback)
@@ -2771,11 +2817,21 @@ function graphPayload() {
   }
   const nodes = tasks.map((t) => graphNodeFor(t, plannedById.get(t.id), dependentsOf.get(t.id) || []));
   const human = graphHumanBatch(nodes, plan);
-  const start = graphStart(activeLoop());
+  const start = selected ? { ...graphStart(selected), loop: selected.id, version: selected.version, goal: selected.goal || null, stop: selected.stop || selected.goal || null } : graphStart(activeLoop());
+  const goal = graphGoal(start);
+  if (selected) {
+    // the version's end goal is executable (V5): its stop checks ARE the conditions, each with
+    // the last real result — passed at close, else not run (the graph never runs them)
+    const passed = selected.stop_result?.outcome === 'passed';
+    goal.conditions = (selected.stop_checks || []).map((cmd) => ({ text: cmd, command: cmd, met: passed ? true : null }));
+    goal.conditions_evaluated = passed;
+    goal.stop_checked_at = selected.stop_result?.at || null;
+  }
   return {
     schema: GRAPH_SCHEMA,
+    version: versionSummary(selected),
     start,
-    goal: graphGoal(start),
+    goal,
     layers: graphLayers(plan, nodes),
     nodes,
     edges: graphEdges(nodes, plan),
@@ -2788,8 +2844,296 @@ function graphPayload() {
     },
   };
 }
+// D25: the state bar's projection — small, read-only, and cheap. The journal's newest seq
+// is its change token: a room that already saw it has nothing new to fetch (S4).
+const STATE_SCHEMA = 'agent-playbook.state.v1';
+const STALE_CLAIM_MINUTES_DEFAULT = 30;
+function orchestratorConfig() {
+  const o = master?.orchestrator && typeof master.orchestrator === 'object' ? master.orchestrator : null;
+  if (!o) return null;
+  const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : d);
+  return {
+    every_minutes: num(o.every_minutes, 15),
+    // approval condition 3 (D27): spending is undecided, so the default only PROPOSES work
+    max_workers: num(o.max_workers, 0),
+    stale_claim_minutes: num(o.stale_claim_minutes, STALE_CLAIM_MINUTES_DEFAULT),
+    reprompt_minutes: Array.isArray(o.reprompt_minutes) && o.reprompt_minutes.length ? o.reprompt_minutes.map(Number).filter((n) => n > 0) : [60, 240, 1440],
+    paused: o.paused === true,
+  };
+}
+function latestJournalSeq(rows = readJournal()) {
+  return rows.reduce((m, r) => (typeof r.seq === 'number' && r.seq > m ? r.seq : m), 0);
+}
+function statePayload() {
+  const rows = readJournal().filter((r) => !r.__malformed);
+  const loops = readLoops();
+  const v = versionMode() ? (openVersion(loops) || null) : null;
+  const loop = activeLoop();
+  const cyc = readCycle();
+  const all = backlogTasks();
+  const tasks = v ? all.filter((t) => t.version === v.version) : all;
+  const cfg = orchestratorConfig();
+  const staleMin = cfg?.stale_claim_minutes ?? STALE_CLAIM_MINUTES_DEFAULT;
+  const now = Date.now();
+  const lastRowAt = (id) => {
+    const own = rows.filter((r) => r.task === id && r.ts);
+    return own.length ? Date.parse(own[own.length - 1].ts) : NaN;
+  };
+  const counts = { todo: 0, in_progress: 0, blocked: 0, done: 0, needs_you: 0, stale: 0 };
+  for (const t of tasks) {
+    if (t.disposition === 'dropped') continue;
+    if (counts[t.status] !== undefined) counts[t.status]++;
+    const decided = rows.some((r) => r.task === t.id && r.action === 'decide');
+    if (t.status !== 'done' && (t.manual || t.human) && !decided) counts.needs_you++;
+    if (t.status === 'in_progress') {
+      const at = lastRowAt(t.id);
+      if (!Number.isFinite(at) || now - at > staleMin * 60000) counts.stale++;
+    }
+  }
+  const ticks = rows.filter((r) => r.action === 'tick');
+  const last = ticks.length ? ticks[ticks.length - 1] : null;
+  let orchestrator;
+  if (!cfg) orchestrator = { configured: false, state: 'not-scheduled', note: 'No orchestrator scheduled (no orchestrator block in playbook.yaml)' };
+  else if (cfg.paused) orchestrator = { configured: true, state: 'paused', every_minutes: cfg.every_minutes };
+  else {
+    const waiting = last?.tick?.stop_reason === 'waiting-on-you';
+    orchestrator = {
+      configured: true, every_minutes: cfg.every_minutes, max_workers: cfg.max_workers,
+      state: !last ? 'idle' : waiting ? 'waiting-on-you' : (last.tick?.stop_reason ? 'stopped' : 'working'),
+      reason: last?.tick?.stop_reason || null,
+      // the host owns the schedule (D7): pb knows when the last tick ran, not when the next will
+      next_tick_due: last?.ts ? new Date(Date.parse(last.ts) + cfg.every_minutes * 60000).toISOString() : null,
+    };
+  }
+  return {
+    schema: STATE_SCHEMA,
+    journal_seq: latestJournalSeq(rows),
+    // the change token a room polls with: rows AND the highest seq, so an unnumbered row
+    // (written when the state lock was busy) still counts as a change
+    // the journal, plus the orchestrator block: pausing it in the master writes no row, and the
+    // bar must not keep saying "idle" behind a 304 (checker note, seq 288)
+    change_token: `${rows.length}:${latestJournalSeq(rows)}:${createHash('sha256').update(JSON.stringify(cfg ?? null)).digest('hex').slice(0, 8)}`,
+    version: v ? versionSummary(v) : (loop ? { id: loop.id, version: null, title: loop.goal || loop.id, state: 'open', goal: loop.goal || null, stop_checks: [], unnamed: true } : null),
+    phase: cyc.exists ? { phase: cyc.phase ?? null, goal: cyc.goal || null } : null,
+    orchestrator: { ...orchestrator, last_tick: last ? { seq: last.seq ?? null, ts: last.ts, summary: last.notes || '' } : null },
+    counts,
+    stale_after_minutes: staleMin,
+  };
+}
+function cmdState(args) {
+  const payload = statePayload();
+  if (args.json) return printJson(payload);
+  const v = payload.version;
+  console.log(`${v ? (v.version ? `${v.version} · ${v.title}` : `loop ${v.id} (unnamed version)`) : 'no open version'} · phase ${payload.phase?.phase ?? '—'} · journal seq ${payload.journal_seq}`);
+  console.log(`orchestrator: ${payload.orchestrator.state}${payload.orchestrator.last_tick ? ` · last tick ${payload.orchestrator.last_tick.ts}: ${payload.orchestrator.last_tick.summary}` : ''}`);
+  const c = payload.counts;
+  console.log(`tasks: ${c.todo} todo · ${c.in_progress} in progress (${c.stale} stale) · ${c.blocked} blocked · ${c.done} done · ${c.needs_you} need you`);
+}
+// ============================================================================
+//  tick — the cron orchestrator's ONE deterministic pass (D27; O1–O3, V8).
+// ----------------------------------------------------------------------------
+//  The host owns the schedule (D7); pb owns the pass. A tick, over the open version:
+//    1. stops (and records why) when there is no open version, it is closing or closed,
+//       the orchestrator is paused, or only blocked-by-gate work remains;
+//    2. RELEASES claims whose journal has been quiet past stale_claim_minutes;
+//    3. ASKS a person: a question nobody asked yet, re-asked at reprompt_minutes after the
+//       first ask (1 h, 4 h, 1 day by default) — it never answers one;
+//    4. CHOOSES the next claimable task by priority, ROUTING AROUND work that is blocked,
+//       waiting on a person, held by another claim or failed its checks twice — each one it
+//       passes gets a 'defer' row naming the task it chose instead;
+//    5. DISPATCHES by proposal only: whether a tick may start agents itself is undecided
+//       (D27 condition 3), so it names the task and the command, and starts nothing;
+//    6. CHECKS THE END GOAL when every task is done or dropped: runs the version's stop
+//       checks and, if they pass, PROPOSES closing — only a person closes (V6);
+//  then writes exactly ONE 'tick' row (O3). Everything it writes is in the orchestrator's
+//  own voice (agent 'orchestrator') with its reason (S8). Same journal, backlog and clock
+//  → same plan (O1): `--now` pins the clock, and --dry-run computes the plan and writes
+//  nothing. It never decides, opens or closes a version, merges, or plans a feature (O2).
+// ============================================================================
+const TICK_AGENT = 'orchestrator';
+function tickPlan({ now = Date.now(), runStopChecks = true } = {}) {
+  const cfg = orchestratorConfig() || { every_minutes: 15, max_workers: 0, stale_claim_minutes: STALE_CLAIM_MINUTES_DEFAULT, reprompt_minutes: [60, 240, 1440], paused: false };
+  const rows = readJournal().filter((r) => !r.__malformed);
+  const v = versionMode() ? openVersion() : null;
+  const loop = v || activeLoop();
+  const plan = {
+    schema: 'agent-playbook.tick.v1',
+    at: new Date(now).toISOString(),
+    version: v ? v.version : null,
+    loop_id: loop?.id || null,
+    config: { stale_claim_minutes: cfg.stale_claim_minutes, reprompt_minutes: cfg.reprompt_minutes, max_workers: cfg.max_workers },
+    stop_reason: null,
+    release: [], ask: [], defer: [], chosen: null, dispatch: null, goal_check: null,
+  };
+  if (!loop) { plan.stop_reason = 'no-open-version'; return plan; }
+  if (v && ['closing', 'closed', 'draft'].includes(v.state)) { plan.stop_reason = `version-${v.state}`; return plan; }
+  if (cfg.paused) { plan.stop_reason = 'paused'; return plan; }
+
+  const all = backlogTasks();
+  const scope = (v ? all.filter((t) => t.version === v.version) : all).filter((t) => t.disposition !== 'dropped');
+  const rowsOf = (id) => rows.filter((r) => r.task === id);
+  const lastAt = (id) => { const own = rowsOf(id).filter((r) => r.ts); return own.length ? Date.parse(own[own.length - 1].ts) : NaN; };
+  const decided = (id) => rowsOf(id).some((r) => r.action === 'decide');
+  const needsYou = (t) => t.status !== 'done' && (t.manual || t.human) && !decided(t.id);
+  const failedTwice = (id) => {
+    let n = 0;
+    for (const r of rowsOf(id)) { if (r.checks === 'passed') n = 0; else if (r.checks === 'failed' || r.checks === 'timed-out') n += 1; }
+    return n >= 2;
+  };
+
+  // 2. release quiet claims — never one a live worker still holds: a quiet journal is not a
+  // dead worker while its tracked process (a lifecycle lease, or a pid that is alive) runs.
+  // version carry/drop/close refuse on the same evidence.
+  const working = new Set(latestProcessRecords().filter((rec) => rec.task && rec.status !== 'stopped' && (rec.lifecycle_lease || pidAlive(rec.pid))).map((rec) => rec.task));
+  for (const t of scope.filter((x) => x.status === 'in_progress')) {
+    if (working.has(t.id)) continue;
+    const at = lastAt(t.id);
+    const quietMin = Number.isFinite(at) ? Math.floor((now - at) / 60000) : null;
+    if (quietMin === null || quietMin >= cfg.stale_claim_minutes) {
+      plan.release.push({ task: t.id, holder: taskHolder(t), quiet_minutes: quietMin, reason: `no journal row for ${quietMin === null ? 'ever' : `${quietMin} min`} (limit ${cfg.stale_claim_minutes})` });
+    }
+  }
+  const released = new Set(plan.release.map((x) => x.task));
+
+  // 3. ask a person — never answer
+  for (const t of scope.filter(needsYou)) {
+    const asks = rowsOf(t.id).filter((r) => r.action === 'ask' && r.agent === TICK_AGENT);
+    const first = asks.length ? Date.parse(asks[0].ts) : null;
+    const due = !asks.length || (asks.length <= cfg.reprompt_minutes.length && now - first >= cfg.reprompt_minutes[asks.length - 1] * 60000);
+    if (!due) continue;
+    const headline = graphHeadline(t).headline;
+    const human = graphHuman(t, headline, rowsOf(t.id), all.filter((x) => (x.dependencies || []).includes(t.id) && x.status !== 'done').map((x) => x.id));
+    plan.ask.push({
+      task: t.id, attempt: asks.length + 1, question: human.question, question_source: human.question_source,
+      options: human.options.map((o) => o.id), recommended: human.recommended, recommended_by: human.recommended_by,
+      waiting_on: human.waiting_on,
+    });
+  }
+
+  // 4. choose, and route around
+  const gatePlan = computeLayerPlan({ checkGates: false, allTasks: all });
+  const plannedById = new Map(gatePlan.tasks.map((p) => [p.id, p]));
+  const open = scope.filter((t) => t.status !== 'done').sort((a, b) => prio(a) - prio(b) || a.id.localeCompare(b.id));
+  const skipped = [];
+  for (const t of open) {
+    const why = t.status === 'blocked' ? 'blocked'
+      : needsYou(t) ? 'waiting on your decision'
+      : (t.status === 'in_progress' && !released.has(t.id)) ? `held by ${taskHolder(t)}`
+      : failedTwice(t.id) ? 'failed its checks twice'
+      : unmetDeps(t, all).length ? `waiting on ${unmetDeps(t, all).join(', ')}`
+      : (plannedById.get(t.id)?.group_blocked_by?.length) ? `a lower layer is open (${plannedById.get(t.id).group_blocked_by.slice(0, 3).join(', ')})`
+      : null;
+    if (why) { skipped.push({ task: t.id, why }); continue; }
+    plan.chosen = { task: t.id, priority: prio(t), title: graphHeadline(t).headline };
+    break;
+  }
+  // A defer row is ROUTING AROUND: only for work the chosen task jumps ahead of (same or
+  // higher priority) that is stuck — blocked, waiting on a person, or failing. A claim another
+  // agent holds, or a dependency not yet done, is ordinary order, not a reroute. And the same
+  // defer (same task, same reason, same choice) is not written again on every tick.
+  const ROUTED = new Set(['blocked', 'waiting on your decision', 'failed its checks twice']);
+  if (plan.chosen) {
+    for (const sk of skipped) {
+      const t = open.find((x) => x.id === sk.task);
+      if (prio(t) > plan.chosen.priority || !ROUTED.has(sk.why)) continue;
+      const lastDefer = rowsOf(sk.task).filter((r) => r.action === 'defer').pop();
+      if (lastDefer && lastDefer.reason === sk.why && lastDefer.chose === plan.chosen.task) continue;
+      plan.defer.push({ task: sk.task, chose: plan.chosen.task, reason: sk.why });
+    }
+    // 5. dispatch: propose only (D27 condition 3)
+    plan.dispatch = {
+      mode: 'propose',
+      task: plan.chosen.task,
+      command: `pb next --claim  (or: pb worker create ${plan.chosen.task} --agent <agent> --execute)`,
+      note: cfg.max_workers > 0
+        ? `max_workers is ${cfg.max_workers}, but starting agents from a tick is not enabled: spending is undecided (D27 condition 3)`
+        : 'the orchestrator proposes; a person or a harness starts the work',
+    };
+  }
+
+  // 6. the end goal
+  const unfinished = scope.filter((t) => t.status !== 'done');
+  if (!unfinished.length && v) {
+    const commands = Array.isArray(v.stop_checks) ? v.stop_checks : [];
+    if (runStopChecks && commands.length) {
+      const results = runChecks({ id: v.id, acceptance_checks: commands });
+      const passed = results.length > 0 && results.every((x) => x.ok);
+      plan.goal_check = { ran: true, passed, failing: results.filter((x) => !x.ok).map((x) => x.cmd) };
+      plan.stop_reason = passed ? 'goal-met-propose-close' : 'goal-not-met';
+    } else {
+      // a dry run does not run the stop checks (they can build, write, take minutes): it says
+      // that they WOULD run
+      plan.goal_check = { ran: false, passed: null, failing: [], ...(commands.length ? { would_run: commands } : {}) };
+      plan.stop_reason = 'all-tasks-done';
+    }
+  } else if (!plan.chosen) {
+    plan.stop_reason = scope.some(needsYou) ? 'waiting-on-you' : (unfinished.length ? 'nothing-claimable' : 'no-tasks');
+  }
+  return plan;
+}
+function tickSummary(plan) {
+  const parts = [];
+  if (plan.stop_reason && !plan.chosen) parts.push({
+    'no-open-version': 'no open version — nothing to do (V8)',
+    'version-closing': 'the version is closing — nothing to do', 'version-closed': 'the version is closed — nothing to do',
+    'version-draft': 'the version is a draft — nothing to do', paused: 'paused in playbook.yaml — nothing done',
+    'waiting-on-you': 'waiting on you', 'nothing-claimable': 'nothing claimable', 'no-tasks': 'no tasks in this version',
+    'goal-met-propose-close': 'every task is done and the stop checks pass — proposing to close (a person closes)',
+    'goal-not-met': 'every task is done but a stop check fails', 'all-tasks-done': 'every task is done',
+  }[plan.stop_reason] || plan.stop_reason);
+  if (plan.release.length) parts.push(`released ${plan.release.map((x) => x.task).join(', ')}`);
+  if (plan.ask.length) parts.push(`asked about ${plan.ask.map((x) => x.task).join(', ')}`);
+  if (plan.defer.length) parts.push(`deferred ${plan.defer.map((x) => x.task).join(', ')}`);
+  if (plan.chosen) parts.push(`proposes ${plan.chosen.task}`);
+  return parts.join('; ') || 'nothing to do';
+}
+function cmdTick(args) {
+  const now = args.now ? Date.parse(String(args.now)) : Date.now();
+  if (!Number.isFinite(now)) { console.error('--now must be an ISO time'); process.exit(1); }
+  const dry = !!args['dry-run'];
+  const plan = tickPlan({ now, runStopChecks: !dry });
+  plan.summary = tickSummary(plan);
+  if (dry) {
+    if (args.json) return printJson({ ...plan, dry_run: true });
+    console.log(`[dry-run] tick ${plan.version || plan.loop_id || '(no version)'}: ${plan.summary}`);
+    for (const x of plan.release) console.log(`  would release ${x.task} — ${x.reason}`);
+    for (const x of plan.ask) console.log(`  would ask about ${x.task} (attempt ${x.attempt}): ${x.question}`);
+    for (const x of plan.defer) console.log(`  would defer ${x.task} — ${x.reason}; chose ${x.chose}`);
+    if (plan.dispatch) console.log(`  proposes ${plan.dispatch.task}: ${plan.dispatch.command}`);
+    return;
+  }
+  const loopId = plan.loop_id || 'legacy';
+  const ts = new Date(now).toISOString();
+  const row = (task, action, notes, extra = {}) => ({
+    // a card's row carries the CARD's loop (the version guard refuses a row that names
+    // another one); the tick row itself carries the version's
+    ts, loop_id: (() => { const c = backlogTasks().find((t) => t.id === task); return c ? c.loop_id : loopId; })(), task, agent: TICK_AGENT, agent_id: TICK_AGENT, action, status: extra.status || (backlogTasks().find((t) => t.id === task)?.status ?? 'event'),
+    checks: 'none', result: null, files: [], notes, ...extra,
+  });
+  for (const x of plan.release) {
+    const entry = readBacklogState()[x.task] || {};
+    commitIteration(x.task, row(x.task, 'release', `The orchestrator released this claim: ${x.reason}.`, { status: 'todo', claimed_by: x.holder, released_token: entry.claim_token || undefined }),
+      () => ({ status: 'todo', __unset: ['claimed_by', 'agent_id', 'claim_token', 'claim_token_issued_at', 'claimed_at'], released_at: ts, released_by: TICK_AGENT }),
+      { agent: TICK_AGENT });
+  }
+  for (const x of plan.ask) {
+    commitIteration(x.task, row(x.task, 'ask', `${x.attempt > 1 ? `Asking again (${x.attempt}): ` : ''}${x.question}${x.recommended ? ` Recommended: ${x.recommended} (${x.recommended_by}).` : ''}`, { intent: 'question', attempt: x.attempt, options: x.options }), () => ({}), { agent: TICK_AGENT });
+  }
+  for (const x of plan.defer) {
+    commitIteration(x.task, row(x.task, 'defer', `Deferred: ${x.reason}. The orchestrator took ${x.chose} instead.`, { chose: x.chose, reason: x.reason }), () => ({}), { agent: TICK_AGENT });
+  }
+  // O3: exactly one tick row, whatever happened
+  const tickTask = plan.version ? `version:${plan.loop_id}` : 'orchestrator';
+  appendJournal({ ...row(tickTask, 'tick', `Tick: ${plan.summary}`, { status: 'event' }), tick: {
+    stop_reason: plan.stop_reason, released: plan.release.map((x) => x.task), asked: plan.ask.map((x) => x.task),
+    deferred: plan.defer.map((x) => x.task), chosen: plan.chosen?.task || null, dispatch: plan.dispatch, goal_check: plan.goal_check,
+  } });
+  if (args.json) return printJson(plan);
+  console.log(`tick ${plan.version || plan.loop_id || '(no version)'}: ${plan.summary}`);
+}
+
 function cmdGraph(args) {
-  const payload = graphPayload();
+  const payload = graphPayload({ version: typeof args.version === 'string' ? args.version : undefined });
   if (args.json) return printJson(payload);
   const byStatus = {};
   for (const n of payload.nodes) byStatus[n.status] = (byStatus[n.status] || 0) + 1;
@@ -5196,11 +5540,18 @@ function cmdVersion(args) {
     const versions = readLoops().loops.filter(l => l.version).map(l => ({
       ...l, task_counts: backlogTasks().filter(t => t.version === l.version).reduce((a, t) => { a[t.disposition === 'dropped' ? 'dropped' : t.status] = (a[t.disposition === 'dropped' ? 'dropped' : t.status] || 0) + 1; return a; }, {}),
     }));
-    if (args.json) return printJson({ schema: 'agent-playbook.versions.v1', versions });
+    // loops opened before versions existed are part of the record: History lists them as
+    // legacy rows (they become versions only through an explicit migration — D28)
+    const legacy = readLoops().loops.filter((l) => !l.version).map((l) => ({
+      id: l.id, version: null, title: l.goal || l.id, state: l.status === 'active' ? 'open' : (l.status === 'done' || l.status === 'closed' ? 'closed' : l.status || 'unknown'),
+      goal: l.goal || null, stop: l.stop || null, stop_checks: [], opened_at: l.started_at || null, closed_at: l.closed_at || l.ended_at || null, legacy: true,
+    }));
+    if (args.json) return printJson({ schema: 'agent-playbook.versions.v1', versions, legacy_loops: legacy });
     for (const v of versions) console.log(`${v.version} · ${v.title || v.goal} · ${v.state} · ${v.id}`);
     return;
   }
-  if (!['new', 'open', 'freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|list|release-operation');
+  if (sub === 'migrate') return cmdVersionMigrate(args);
+  if (!['new', 'open', 'freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|list|migrate|release-operation');
   if (['freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) {
     const context = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID', 'PB_CLAIM_TOKEN'].filter(k => process.env[k]);
     if (context.length || args.token) versionRefusal('V6', `Lifecycle decisions require a person at the local CLI; agent context detected (${context.join(', ') || 'claim token'})`);
@@ -5313,6 +5664,194 @@ function cmdVersion(args) {
   } finally { versionInTxn = false; }
   if (args.json) return printJson({ schema: 'agent-playbook.version.v1', version: result });
   console.log(`Version ${result.version}: ${result.state} (${result.id})`);
+}
+
+// ============================================================================
+//  version migrate (D28) — a loop from before versions becomes a CLOSED version after
+//  the fact, the next version opens, and every task without a version is placed:
+//  finished work stays in the old version as history; each open task is carried into
+//  the new version or parked in the old one. Two steps, because a person decides:
+//
+//    pb version migrate --loop <id> --name v0.7 --title "…" --next v0.8 --next-title "…"
+//        --next-goal "…" --stop-check "<cmd>" [--park <id>]… [--out <file>]
+//      PLAN. Writes ONE reviewable batch file (artifacts/versions/migration-<loop>.yaml)
+//      and nothing else. An agent may run it. Edit any task's decision: carry | park.
+//
+//    pb version migrate --apply <batch file>
+//      APPLY. A person only (V6). Refused when the backlog moved since the batch was
+//      written (its fingerprint), when a carried card is still claimed, or when a
+//      decision is not carry/park. One state transaction; journal rows: the old version
+//      closed, the new one opened, and one migrate row with every assignment.
+//
+//  The old version closes as `migrated`, not `passed`: it never had executable stop
+//  checks, and the record must not claim proof that never ran. Its stop text becomes
+//  its description (D28).
+// ============================================================================
+const MIGRATION_SCHEMA = 'agent-playbook.migration.v1';
+function migrationScope(loopId) {
+  const tasks = backlogTasks().filter((t) => !t.version);
+  return tasks.map((t) => ({
+    id: t.id, title: t.title, status: t.status, loop_id: t.loop_id || null,
+    claimed_by: t.status === 'in_progress' ? (t.claimed_by || t.agent_id || null) : null,
+    // finished work of THIS loop (or of no loop) is the old version's history; finished
+    // work of an even older loop stays where it is (History lists those loops as legacy)
+    placement: t.status === 'done' ? ((!t.loop_id || t.loop_id === loopId) ? 'history' : 'legacy') : 'open',
+  }));
+}
+function migrationFingerprint(loopId) {
+  const loops = readLoops();
+  const scope = migrationScope(loopId).map((t) => [t.id, t.status, t.loop_id, t.claimed_by]).sort((a, b) => a[0].localeCompare(b[0]));
+  return createHash('sha256').update(JSON.stringify({ loop: loopId, active: loops.active, versions: loops.loops.filter((l) => l.version).map((l) => [l.id, l.version, l.state]), scope })).digest('hex');
+}
+// A carried card that depends on a parked one waits on a card frozen in a closed version:
+// it could never be claimed, and nothing would report it (checker note, seq 291).
+function strandedCarries(decisions) {
+  const tasks = new Map(backlogTasks().map((t) => [t.id, t]));
+  const out = [];
+  for (const [id, d] of decisions) {
+    if (d !== 'carry') continue;
+    const parked = (tasks.get(id)?.dependencies || []).filter((dep) => decisions.get(dep) === 'park');
+    if (parked.length) out.push({ id, parked });
+  }
+  return out;
+}
+function cmdVersionMigrate(args) {
+  if (args.apply) return applyVersionMigration(args);
+  const loopId = typeof args.loop === 'string' ? args.loop.trim() : '';
+  const state = readLoops();
+  const loop = state.loops.find((l) => l.id === loopId);
+  if (!loop) versionRefusal('V1', `Name the legacy loop to migrate with --loop (loops: ${state.loops.filter((l) => !l.version).map((l) => l.id).join(', ') || 'none'})`);
+  if (loop.version) versionRefusal('V1', `${loopId} is already version ${loop.version}`);
+  const name = typeof args.name === 'string' ? args.name.trim() : '';
+  const next = typeof args.next === 'string' ? args.next.trim() : '';
+  const checks = (Array.isArray(args['stop-check']) ? args['stop-check'] : [args['stop-check']]).filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim());
+  if (!name || !next || typeof args['next-goal'] !== 'string' || !args['next-goal'].trim() || !checks.length) {
+    versionRefusal('V5', 'Provide --name (the old loop as a version), --next, --next-goal and at least one executable --stop-check for the next version');
+  }
+  if (name === next) versionRefusal('V1', 'The migrated version and the next one need different names');
+  for (const n of [name, next]) if (findVersion(n, state)) versionRefusal('V1', `Version ${n} already exists`);
+  if (openVersion(state)) versionRefusal('V1', `${openVersion(state).version} is open; a migration opens the next version itself`);
+  const parkRaw = args.park === undefined ? [] : (Array.isArray(args.park) ? args.park : [args.park]);
+  const park = new Set(parkRaw.map((x) => String(x).trim()).filter(Boolean));
+  const scope = migrationScope(loopId);
+  for (const id of park) if (!scope.some((t) => t.id === id && t.placement === 'open')) versionRefusal('V4', `--park ${id}: not an open task without a version`);
+  const batch = {
+    schema: MIGRATION_SCHEMA,
+    written_at: nowISO(),
+    fingerprint: migrationFingerprint(loopId),
+    review: 'Set each open task\'s decision to carry (into the next version) or park (stays in the closed one, forkable later). Then a person runs: pb version migrate --apply <this file>',
+    close: { loop: loop.id, version: name, title: args.title || name, goal: loop.goal || null, description: loop.stop || null, started_at: loop.started_at || null },
+    open: { version: next, title: args['next-title'] || next, goal: String(args['next-goal']).trim(), stop_checks: checks },
+    tasks: scope.map((t) => ({
+      id: t.id, title: t.title, status: t.status,
+      decision: t.placement === 'open' ? (park.has(t.id) ? 'park' : 'carry') : t.placement,
+      ...(t.claimed_by ? { note: `claimed by ${t.claimed_by} — release or finish it before applying` } : {}),
+    })),
+  };
+  for (const x of strandedCarries(new Map(batch.tasks.map((t) => [t.id, t.decision])))) {
+    const row = batch.tasks.find((t) => t.id === x.id);
+    row.note = [row.note, `depends on parked ${x.parked.join(', ')} — park it too, or carry ${x.parked.length === 1 ? 'that one' : 'those'}`].filter(Boolean).join('; ');
+  }
+  const out = typeof args.out === 'string' && args.out.trim() ? args.out.trim() : `artifacts/versions/migration-${loop.id}.yaml`;
+  const abs = isAbsolute(out) ? out : p(out);
+  ensureDir(dirname(abs));
+  writeFileSync(abs, yaml.dump(batch, { lineWidth: 110 }), 'utf8');
+  const count = (d) => batch.tasks.filter((t) => t.decision === d).length;
+  if (args.json) return printJson({ ...batch, file: out });
+  console.log(`Migration batch written: ${out}`);
+  console.log(`  ${loop.id} → ${name} · ${batch.close.title} (closed after the fact, as migrated)`);
+  console.log(`  opens ${next} · ${batch.open.title}: ${batch.open.goal}`);
+  console.log(`  carry ${count('carry')} · park ${count('park')} · history ${count('history')} · legacy ${count('legacy')}`);
+  const claimed = batch.tasks.filter((t) => t.note);
+  for (const t of claimed) console.log(`  ! ${t.id}: ${t.note}`);
+  console.log('Nothing else was written. Review the batch, then a person applies it: pb version migrate --apply ' + out);
+}
+function applyVersionMigration(args) {
+  const context = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID', 'PB_CLAIM_TOKEN'].filter((k) => process.env[k]);
+  if (context.length || args.token) versionRefusal('V6', `Applying a migration is a lifecycle decision for a person at the local CLI; agent context detected (${context.join(', ') || 'claim token'})`);
+  const file = String(args.apply);
+  const abs = isAbsolute(file) ? file : p(file);
+  let batch;
+  try { batch = yaml.load(readFileSync(abs, 'utf8')); } catch (e) { versionRefusal('V1', `Cannot read the batch ${file}: ${e.message}`); }
+  if (batch?.schema !== MIGRATION_SCHEMA || !batch.close?.loop || !batch.open?.version || !Array.isArray(batch.tasks)) versionRefusal('V1', `${file} is not a migration batch (${MIGRATION_SCHEMA})`);
+  const agent = resolveAgentId(args);
+  let result;
+  try {
+    versionInTxn = true;
+    result = withStateTxn((draft, ctx) => {
+      ctx.draft = draft;
+      const state = readLoops();
+      const loop = state.loops.find((l) => l.id === batch.close.loop);
+      if (!loop || loop.version) versionRefusal('V1', `${batch.close.loop} is gone or already a version`);
+      if (migrationFingerprint(loop.id) !== batch.fingerprint) versionRefusal('V6', 'The backlog or the versions changed since this batch was written; write a fresh batch and review it again');
+      for (const n of [batch.close.version, batch.open.version]) if (findVersion(n, state)) versionRefusal('V1', `Version ${n} already exists`);
+      const checks = (batch.open.stop_checks || []).filter((c) => typeof c === 'string' && c.trim());
+      if (!checks.length || !String(batch.open.goal || '').trim()) versionRefusal('V5', 'The next version needs a goal and at least one executable stop check');
+      const scope = new Map(migrationScope(loop.id).map((t) => [t.id, t]));
+      const decided = new Map(batch.tasks.map((t) => [t.id, t]));
+      for (const [id, t] of scope) {
+        const d = decided.get(id)?.decision;
+        if (t.placement === 'open' && !['carry', 'park'].includes(d)) versionRefusal('V4', `${id}: decision must be carry or park (got ${JSON.stringify(d ?? null)})`);
+        if (t.placement === 'open' && t.claimed_by) versionRefusal('V6', `${id} is claimed by ${t.claimed_by}; release or finish it before migrating (a parked card's holder could no longer record)`);
+      }
+      const stranded = strandedCarries(new Map([...scope.keys()].map((id) => [id, scope.get(id).placement === 'open' ? decided.get(id)?.decision : scope.get(id).placement])));
+      if (stranded.length) versionRefusal('V4', `A carried card would wait forever on a parked one: ${stranded.map((x) => `${x.id} → ${x.parked.join(', ')}`).join('; ')}. Park it too, or carry its dependency`);
+      const ts = nowISO();
+      const old = { ...loop, version: batch.close.version, title: batch.close.title || batch.close.version, state: 'closed', status: 'done',
+        description: loop.stop || null, stop_checks: [],
+        stop_result: { outcome: 'migrated', at: ts, note: 'Closed by migration (D28): a loop from before versions had no executable stop checks, so none ran.' },
+        closed_at: loop.closed_at || ts, migrated_at: ts,
+        journal: { ...(loop.journal || {}), last_line: journalLineCount() + 1 } };
+      const nu = { id: nextLoopId(state), version: batch.open.version, title: batch.open.title || batch.open.version, state: 'open', status: 'active',
+        goal: String(batch.open.goal).trim(), stop: String(batch.open.goal).trim(), stop_checks: checks,
+        created_at: ts, started_at: ts, closed_at: null, migrated_from: old.id,
+        journal: { first_line: journalLineCount() + 2, last_line: null }, artifacts: null };
+      nu.artifacts = loopArtifactsRel(nu.id);
+      const assignments = {};
+      const snapshot = [];
+      for (const [id, t] of scope) {
+        if (t.placement === 'legacy') continue;
+        const d = t.placement === 'history' ? 'history' : decided.get(id).decision;
+        const full = backlogTasks().find((x) => x.id === id);
+        if (d === 'carry') {
+          assignments[id] = { version: nu.version, loop_id: nu.id, carried_from: old.version };
+          snapshot.push({ ...full, version: old.version, disposition: 'carried', carried_to: nu.version });
+        } else {
+          assignments[id] = { version: old.version, loop_id: old.id, ...(d === 'park' ? { disposition: 'parked' } : {}) };
+          snapshot.push({ ...full, ...assignments[id] });
+        }
+      }
+      old.task_snapshot = snapshot;
+      old.phase_snapshot = readText(CYCLE);
+      state.loops[state.loops.findIndex((l) => l.id === old.id)] = old;
+      state.loops.push(nu);
+      state.active = nu.id;
+      let seq = ctx.seq;
+      const vrow = (v, active) => ({ seq: seq++, ts, task: `version:${v.id}`, loop_id: v.id, agent, action: 'version', status: 'event', checks: 'none',
+        version: v.version, version_record: v, active_loop: active, notes: `Version ${v.version}: ${v.state} (migration)` });
+      appendJournal(vrow(old, null));
+      appendJournal(vrow(nu, nu.id));
+      const counts = Object.values(assignments).reduce((a, x) => { const k = x.carried_from ? 'carried' : x.disposition || 'history'; a[k] = (a[k] || 0) + 1; return a; }, {});
+      const mseq = seq;
+      appendJournal({ seq: mseq, ts, task: `version:${nu.id}`, loop_id: nu.id, agent, action: 'migrate', status: 'event', checks: 'none',
+        from_loop: old.id, from_version: old.version, to_version: nu.version, assignments, batch: file,
+        notes: `Migrated ${old.id} to ${old.version} (closed) and opened ${nu.version}: ${counts.carried || 0} carried, ${counts.parked || 0} parked, ${counts.history || 0} kept as history.` });
+      const mctx = { ...ctx, seq: mseq };
+      for (const [id, a] of Object.entries(assignments)) applyTaskMutation(id, () => ({ ...a, updated_at: ts }), mctx, agent);
+      draft.__seq = mseq;
+      writeLoops(state);
+      seedCycleFromLoop(nu, { goal: nu.goal, stop: nu.stop });
+      return { old, nu, counts };
+    }, { agent });
+  } catch (err) {
+    if (err instanceof VersionRefused) process.exit(1);
+    if (!(err instanceof StateTxnBusy)) throw err;
+    console.error('Version state is busy; nothing was written. Retry after the current writer finishes.'); process.exit(1);
+  } finally { versionInTxn = false; }
+  if (args.json) return printJson({ schema: 'agent-playbook.version.v1', closed: result.old, opened: result.nu, counts: result.counts });
+  console.log(`Migrated: ${result.old.version} closed (${result.old.id}), ${result.nu.version} open (${result.nu.id}).`);
+  console.log(`  carried ${result.counts.carried || 0} · parked ${result.counts.parked || 0} · history ${result.counts.history || 0}`);
+  console.log('The cycle brief was reseeded for the new version: answer its questions before planning or claiming.');
 }
 
 function cmdLearn(args) {
@@ -6680,7 +7219,19 @@ function cmdHelp() {
     runcard list|show <id> [--json]
                            Portable RunCard projection for UI/runtime integrations, including
                            the task's ordered journal rows (its steering thread and history)
-    graph [--json]         Read-only projection for a graph UI (schema agent-playbook.graph.v1):
+    tick [--dry-run] [--json] [--now <iso>]
+                           ONE orchestrator pass over the open version: release quiet claims,
+                           ask open questions (re-asked on a schedule; never answered), choose
+                           the next task and route around blocked / waiting / failing work
+                           (a defer row each), PROPOSE dispatch, check the end goal and propose
+                           closing; exactly one tick row. Limits: orchestrator: in playbook.yaml
+                           (every_minutes, max_workers, stale_claim_minutes, reprompt_minutes,
+                           paused). --dry-run writes nothing. Never decides, closes or merges.
+    state [--json]         The state bar's projection (agent-playbook.state.v1): open version,
+                           phase, orchestrator state and last tick, counts (needs you, stale),
+                           and journal_seq — the change token a room polls with. Read-only.
+    graph [--json] [--version <name>]
+                           Read-only projection for a graph UI (schema agent-playbook.graph.v1):
                            start/goal bookends, task nodes with cycle+provenance+worker truth,
                            proven edges (dependencies inverted; a spawn comes from the row's
                            origin_task, i.e. the task that was in flight when it was planned),
@@ -6763,6 +7314,11 @@ function cmdHelp() {
     version carry <task> --to next|<draft> | drop <task> --reason ".."
                           Carry preserves the card ID and records both source and destination.
     version list [--json]  Version history (loops with a name, state, and stop checks).
+    version migrate --loop <legacy> --name <v> --next <v> --next-goal ".." --stop-check <cmd> [--park <task>]...
+                          D28: write a reviewable batch turning a pre-version loop into a closed version and
+                          opening the next (carry or park each open task). Writes the batch only.
+    version migrate --apply <batch>
+                          A person applies the reviewed batch (refused from agents, or if the backlog moved).
     version release-operation --pid <pid> --reason "..."
                           Human recovery after confirming a crashed worker's process tree is gone.
     loop new [--goal ".."] [--stop ".."] [--from-lessons] [--fresh]  Open a durable loop epoch.
@@ -6955,6 +7511,8 @@ if (isMainModule) {
   case 'task': cmdTask(args); break;
   case 'runcard': cmdRunCard(args); break;
   case 'graph': cmdGraph(args); break;
+  case 'state': cmdState(args); break;
+  case 'tick': cmdTick(args); break;
   case 'worker': cmdWorker(args); break;
   case 'record': cmdRecord(args); break;
   case 'comment': cmdComment(args); break;

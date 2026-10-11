@@ -224,7 +224,7 @@ export function FlowFaceBar({ node }: { node: FlowNode }) {
 
 export function FlowTaskCard({ data, selected }: NodeProps<FlowTaskNode>) {
   const { node, width, height, spawned } = data;
-  const { steeredIds } = useFlowView();
+  const { steeredIds, changedIds } = useFlowView();
   const state = faceState(node);
   const live = isLive(node);
   const owner = faceOwner(node);
@@ -244,10 +244,12 @@ export function FlowTaskCard({ data, selected }: NodeProps<FlowTaskNode>) {
     spawned ? "flow-popin" : "",
     selected ? "flow-face--selected" : "",
     steeredIds.includes(node.id) ? "flow-card--steered" : "",
+    changedIds?.includes(node.id) ? "flow-face--changed" : "",
   ].filter(Boolean).join(" ");
   return (
     <div className={classes} title={`${node.id} — ${node.title}`} data-beacon={beacon}
       data-id={node.id}
+      data-carried={node.carried_from ?? undefined}
       tabIndex={0}
       role="group"
       aria-label={`${state.label}: ${title.text}. Press Enter to open.`}
@@ -290,6 +292,9 @@ export function FlowTaskCard({ data, selected }: NodeProps<FlowTaskNode>) {
           {proof.text}
         </span>
         <span className="flex-1" />
+        {node.carried_from && (
+          <span className="flow-face__from" title={`carried from ${node.carried_from}`}>from {node.carried_from}</span>
+        )}
         <span className="flow-face__msgs" title="messages on this card">
           <MessageSquare size={13} aria-hidden />
           {messages}

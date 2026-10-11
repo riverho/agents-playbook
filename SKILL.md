@@ -167,6 +167,28 @@ PB_AGENT_ID=sub-1 PB_PARENT_AGENT_ID=you PB_CLAIM_TOKEN=<token> node scripts/pb.
 - `pb unlock [--force]` clears a leaked lock. Locks are only auto-broken by age, never by a
   liveness probe — a lock held too long costs latency, a lock broken too early costs data.
 
+### The orchestrator tick (for a harness that runs the schedule)
+
+The host owns the schedule; the engine owns the pass. A harness that keeps a playbook moving calls
+`node scripts/pb.mjs tick` on its own timer (the `orchestrator:` block's `every_minutes`, 15 by
+default) and reads `pb state --json` for what the room shows. One tick, over the open version:
+releases claims whose journal has been quiet past `stale_claim_minutes`, asks open questions
+(re-asked at `reprompt_minutes`), routes around blocked / waiting / failing work (a `defer` row
+each), **proposes** the next task, checks the end goal and **proposes** closing — and writes
+exactly one `tick` row. It never answers a decision, opens or closes a version, merges, or plans
+work; it starts no agents (`max_workers` is read, but starting work from a tick is not enabled
+until spending is decided). `paused: true` stops it; `--dry-run --json` shows the plan and
+writes nothing.
+
+```yaml
+orchestrator:            # in playbook.yaml — absent means "No orchestrator scheduled"
+  every_minutes: 15
+  max_workers: 0
+  stale_claim_minutes: 30
+  reprompt_minutes: [60, 240, 1440]
+  paused: false
+```
+
 ## Steering notes and the graph projection
 
 Two surfaces exist for a person (or a UI) watching the backlog:

@@ -102,9 +102,13 @@ export interface Message {
 
 /** Rows that are conversation: messages, decisions, and the work notes agents leave. */
 const SILENT = new Set(["claim", "release", "spawn"]);
+/** S8: what the orchestrator did to a card is conversation, in its own voice, with the reason —
+ *  including a release, which is silent bookkeeping when an agent lets go of its own claim. */
+const ORCHESTRATOR = "orchestrator";
+const ORCHESTRATOR_INTENT: Record<string, string> = { release: "released", defer: "deferred", ask: "question", tick: "tick" };
 export function conversation(node: FlowNode): Message[] {
   return (node.journal ?? [])
-    .filter(r => !SILENT.has(r.action) && (r.notes ?? "").trim())
+    .filter(r => (r.agent === ORCHESTRATOR || !SILENT.has(r.action)) && (r.notes ?? "").trim())
     .map((r: FlowJournalRow) => {
       const summary = rowSummary(r);
       const notes = (r.notes ?? "").trim();
@@ -113,7 +117,7 @@ export function conversation(node: FlowNode): Message[] {
         seq: r.seq,
         ts: r.ts ?? r.at,
         author: agentDisplayName(r.agent ?? "agent"),
-        intent: r.intent ?? (r.action === "decide" ? "decision" : r.action === "checker" ? "review" : r.action === "comment" ? "comment" : "work"),
+        intent: r.intent ?? (r.agent === ORCHESTRATOR ? ORCHESTRATOR_INTENT[r.action] : undefined) ?? (r.action === "decide" ? "decision" : r.action === "checker" ? "review" : r.action === "comment" ? "comment" : "work"),
         summary: summary.length > FOLD_AT ? `${summary.slice(0, summary.lastIndexOf(" ", FOLD_AT - 1))}…` : summary,
         full: folded ? notes : null,
       };

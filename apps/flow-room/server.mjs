@@ -29,7 +29,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildPrompt, detectHarnesses, sendToHarness } from './harness.mjs';
@@ -126,6 +126,17 @@ function runPb(root, args, { timeoutMs = 60000, env } = {}) {
   });
 }
 
+// the journal file's identity at the last /api/state answer: unchanged → 304 without pb
+let stateCache = null;
+function journalStat() {
+  // the journal and the master (its orchestrator: block is part of the state's change token)
+  try {
+    const j = statSync(join(ROOT, 'memory', 'journal.ndjson'));
+    const m = statSync(join(ROOT, 'playbook.yaml'));
+    return { size: `${j.size}:${m.size}`, mtimeMs: `${j.mtimeMs}:${m.mtimeMs}` };
+  } catch { return null; }
+}
+
 let askSlots = 0;
 const MAX_ASKS = 2;
 
@@ -218,12 +229,42 @@ async function serveApi(req, res, url) {
       ok: true,
       root: ROOT,
       engine: v ? v[1] : null,
-      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/attach', '/api/fork', '/api/worker', '/api/decide', '/api/harness', '/api/ask'],
+      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/attach', '/api/fork', '/api/worker', '/api/decide', '/api/harness', '/api/ask', '/api/state', '/api/history', '/api/graph?version='],
     });
   }
 
+  // ── D25: state, versions and history (all reads; refresh adds no write path — S3) ──
+  if (path === '/api/state' && req.method === 'GET') {
+    // S4: the room sends the journal seq it last saw. If the journal file has not changed
+    // since the seq we last computed for it, answer 304 without running pb at all.
+    const since = url.searchParams.get('since');
+    const stat = journalStat();
+    if (since !== null && stat && stateCache && stateCache.size === stat.size && stateCache.mtimeMs === stat.mtimeMs
+      && stateCache.token === since) {
+      res.writeHead(304, { 'cache-control': 'no-store', 'x-pb-change-token': stateCache.token });
+      return res.end();
+    }
+    const r = await runPb(ROOT, ['state', '--json']);
+    if (r.code !== 0) return json(res, 502, { error: 'pb state failed', detail: r.stderr.trim() });
+    let body;
+    try { body = JSON.parse(r.stdout); } catch { return json(res, 502, { error: 'pb state did not return JSON' }); }
+    if (stat) stateCache = { size: stat.size, mtimeMs: stat.mtimeMs, token: body.change_token };
+    if (since !== null && body.change_token === since) {
+      res.writeHead(304, { 'cache-control': 'no-store', 'x-pb-change-token': body.change_token });
+      return res.end();
+    }
+    return json(res, 200, body);
+  }
+  if (path === '/api/history' && req.method === 'GET') {
+    const r = await runPb(ROOT, ['version', 'list', '--json']);
+    if (r.code !== 0) return json(res, 502, { error: 'pb version list failed', detail: r.stderr.trim() });
+    try { return json(res, 200, JSON.parse(r.stdout)); } catch { return json(res, 502, { error: 'pb version list did not return JSON' }); }
+  }
+
   if (path === '/api/graph' && req.method === 'GET') {
-    const r = await runPb(ROOT, ['graph', '--json']);
+    const version = url.searchParams.get('version');
+    if (version !== null && !/^[\w.\-· ]+$/.test(version)) return json(res, 400, { error: 'version must be a version name or loop id' });
+    const r = await runPb(ROOT, version ? ['graph', '--json', '--version', version] : ['graph', '--json']);
     if (r.code !== 0) return json(res, 502, { error: 'pb graph failed', code: r.code, detail: r.stderr.trim() });
     try {
       return json(res, 200, JSON.parse(r.stdout));
@@ -353,6 +394,11 @@ async function serveApi(req, res, url) {
     if (body.from) argv.push('--dep', String(body.from));
     if (body.check) argv.push('--check', String(body.check));
     if (body.layer) argv.push('--layer', String(body.layer));
+    // a fork of a past version's card enters the open version as an experiment (V4, S7)
+    if (body.kind !== undefined && body.kind !== null && body.kind !== '') {
+      if (!['feature', 'fix', 'chore', 'experiment'].includes(String(body.kind))) return json(res, 400, { error: 'kind must be feature, fix, chore or experiment' });
+      argv.push('--kind', String(body.kind));
+    }
     const r = await runPb(ROOT, argv);
     if (r.code !== 0) {
       return json(res, 422, { error: 'pb plan refused', detail: r.stderr.trim() || r.stdout.trim() });

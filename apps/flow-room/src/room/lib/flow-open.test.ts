@@ -37,6 +37,18 @@ describe("M2 — messages lead with one line; long notes are folded", () => {
     expect(msgs[0].full?.length).toBeGreaterThan(FOLD_AT);
     expect(msgs[1]).toMatchObject({ summary: "Short note", full: null, intent: "steer", author: "Human" });
   });
+  it("S8: the orchestrator's release, defer and ask show in its own voice with the reason", () => {
+    const orch = { agent: "orchestrator" };
+    const msgs = conversation(t({ journal: [
+      row("release", { agent: "lead", notes: "let go" }),
+      row("release", { ...orch, notes: "The orchestrator released this claim: no journal row for 45 min." }),
+      row("defer", { ...orch, notes: "Deferred: waiting on your decision. The orchestrator took plan-y instead." }),
+      row("ask", { ...orch, intent: "question", notes: "Which store?" }),
+    ] }));
+    expect(msgs.map(m => [m.author, m.intent])).toEqual([["Orchestrator", "released"], ["Orchestrator", "deferred"], ["Orchestrator", "question"]]);
+    expect(msgs[0].summary).toMatch(/no journal row for 45 min/);
+    expect(msgs[1].summary).toMatch(/waiting on your decision/i);
+  });
   it("uses the engine's summary when the row carries one", () => {
     expect(conversation(t({ journal: [row("implement", { summary: "Proved the fix." })] }))[0].summary).toBe("Proved the fix.");
   });
