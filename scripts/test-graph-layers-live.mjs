@@ -42,6 +42,8 @@ const FAIL_GATE = `node -e "require('fs').writeFileSync('${MARK}','x');process.e
   const results = join(root, 'memory/gate-results.json');
 
   let g = pbJson(root, ['graph', '--json']);
+  // an engine without layers[] must FAIL here, cleanly: not crash and leave its temp root
+  if (!Array.isArray(g.layers)) { ok('pb graph --json carries layers[]', false, Object.keys(g).join(', ')); t.finish(); }
   ok('layers[] has one entry per declared layer, in order', Array.isArray(g.layers) && g.layers.map((l) => l.id).join() === 'L0,L1,L2', JSON.stringify(g.layers));
   const l1 = g.layers.find((l) => l.id === 'L1') || {};
   ok('a declared layer carries name, about, gate, human, position and source', l1.name === 'surfaces' && l1.about === 'what people see'
@@ -90,14 +92,16 @@ const FAIL_GATE = `node -e "require('fs').writeFileSync('${MARK}','x');process.e
   });
   const claimed = (task, ms) => ({ status: 'in_progress', claimed_by: 'lead', agent_id: 'lead', seq: 1, loop_id: 'loop-fix-001', updated_at: iso(ms) });
   const root = t.track(makeFixture({
-    tasks: [{ id: 'quiet' }, { id: 'busy' }, { id: 'edge' }, { id: 'finished' }, { id: 'loose', dependencies: ['finished'] }],
+    tasks: [{ id: 'quiet' }, { id: 'busy' }, { id: 'edge' }, { id: 'finished' }, { id: 'loose', dependencies: ['finished'] }, { id: 'future' }],
     journal: [
       row('quiet', 1, 60 * 60 * 1000), row('busy', 2, 60 * 1000), row('edge', 3, 16 * 60 * 1000),
       row('finished', 4, 30 * 1000, 'execute', 'done'), row('loose', 5, 30 * 1000, 'comment', 'todo'),
+      row('future', 6, -60 * 60 * 1000),
     ],
     state: {
       quiet: claimed('quiet', 60 * 60 * 1000), busy: claimed('busy', 60 * 1000), edge: claimed('edge', 16 * 60 * 1000),
       finished: { status: 'done', seq: 4, updated_at: iso(30 * 1000) },
+      future: claimed('future', -60 * 60 * 1000),
     },
   }));
   const g = pbJson(root, ['graph', '--json']);
@@ -106,6 +110,7 @@ const FAIL_GATE = `node -e "require('fs').writeFileSync('${MARK}','x');process.e
   ok('a held claim whose journal is an hour old is NOT live', n('quiet').live === false && /quiet/.test(n('quiet').live_detail.why), JSON.stringify(n('quiet').live_detail));
   ok('just past the 15-minute window is NOT live', n('edge').live === false, JSON.stringify(n('edge').live_detail));
   ok('a done task with a fresh row is NOT live', n('finished').live === false, JSON.stringify(n('finished').live_detail));
+  ok('a held claim whose journal row is stamped in the future is NOT live', n('future').live === false, JSON.stringify(n('future').live_detail));
   ok('an unclaimed task with a fresh comment is NOT live', n('loose').live === false, JSON.stringify(n('loose').live_detail));
 
   // ------------------------------------------------------------------------ 1 (derived)

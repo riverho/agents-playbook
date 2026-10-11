@@ -379,7 +379,9 @@ function persistGateResults(defs, results) {
   }
   try {
     ensureDir(dirname(GATE_RESULTS));
-    writeFileSync(p(GATE_RESULTS), JSON.stringify({ schema: 'agent-playbook.gate-results.v1', layers }, null, 2) + '\n', 'utf8');
+    // write-then-rename: a reader (pb graph, the room) never sees a half-written file. Two
+    // claimers racing can lose one merge, which is benign: both evaluated the same gates.
+    atomicReplace(p(GATE_RESULTS), JSON.stringify({ schema: 'agent-playbook.gate-results.v1', layers }, null, 2) + '\n');
   } catch (e) {
     console.error(`pb: could not record layer gate results (${e.message}) — the graph will show them as not run`);
   }
@@ -2217,8 +2219,9 @@ const GRAPH_LIVE_WINDOW_MS = 15 * 60 * 1000;
 function liveForCard(card, now = Date.now()) {
   const held = card.status === 'in_progress' && !!card.agent;
   const lastTs = card.journal.length ? Date.parse(card.journal[card.journal.length - 1].ts || '') : NaN;
-  const ageMs = Number.isFinite(lastTs) ? Math.max(0, now - lastTs) : null;
-  const recent = ageMs !== null && ageMs <= GRAPH_LIVE_WINDOW_MS;
+  const ageMs = Number.isFinite(lastTs) ? now - lastTs : null;
+  // a row stamped in the future is a clock problem, not evidence of work: never live
+  const recent = ageMs !== null && ageMs >= 0 && ageMs <= GRAPH_LIVE_WINDOW_MS;
   return {
     live: held && recent,
     why: !held ? 'no claim held' : (ageMs === null ? 'claim held, no journal row' : (recent ? 'claim held and the journal moved recently' : 'claim held but the journal is quiet')),
