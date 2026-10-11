@@ -84,6 +84,24 @@ try {
   console.log(`task cards: ${taskCards}`);
   if (taskCards < 5) problems.push(`only ${taskCards} task card(s) mounted — the room is not drawing a backlog (run in a playbook with tasks, or pass --root <playbook>)`);
 
+  // ── the legend's content fits the box the layout budgeted for it (plan-20261010-001) ──
+  // A unit test reads the CSS; this reads what the browser actually laid out, inherited
+  // values included (Tailwind's preflight line-height once made every row 2px too tall).
+  {
+    const lg = await evaluate(`(() => {
+      const el = document.querySelector('.flow-legend');
+      if (!el) return null;
+      const rows = [...el.querySelectorAll('.flow-legend__row, .flow-legend__h')].map((r) => r.getBoundingClientRect().height / (r.getBoundingClientRect().height ? (r.offsetHeight / r.getBoundingClientRect().height) : 1));
+      return { scrollH: el.scrollHeight, clientH: el.clientHeight, scrollW: el.scrollWidth, clientW: el.clientWidth, rowH: Math.max(...el.querySelectorAll('.flow-legend__row').length ? [...el.querySelectorAll('.flow-legend__row')].map((r) => r.offsetHeight) : [0]), lineHeight: getComputedStyle(el.querySelector('.flow-legend__row') ?? el).lineHeight, n: rows.length };
+    })()`);
+    console.log(`  legend: ${JSON.stringify(lg)}`);
+    if (!lg) problems.push('the legend was not drawn');
+    else {
+      if (lg.scrollH > lg.clientH + 1) problems.push(`the legend's content (${lg.scrollH}px) is taller than its box (${lg.clientH}px) — rows are clipped (row line-height ${lg.lineHeight})`);
+      if (lg.scrollW > lg.clientW + 1) problems.push(`the legend's content (${lg.scrollW}px) is wider than its box (${lg.clientW}px)`);
+    }
+  }
+
   // ── F1: nothing animates unless it is live or asking a person ──
   await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
   for (const z of [1, 0.05]) {

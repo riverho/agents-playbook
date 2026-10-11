@@ -625,6 +625,10 @@
 
 /* ── legend (bottom-left, the frame's panel) ── */
 .flow-legend {
+  /* explicit, and equal to FLOW_LEGEND_METRICS.rowH: Tailwind's preflight gives html a
+     line-height of 1.5, which every row would otherwise inherit (18px rows in a 16px
+     budget spilled ~17px past the box) — plan-20261010-001 */
+  line-height: 16px;
   position: absolute;
   left: 60px;
   bottom: 16px;

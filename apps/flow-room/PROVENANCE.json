@@ -261,13 +261,17 @@
       ]
     },
     "lib/flow-derive.ts": {
-      "sha256": "e5dcbe65a09293596a11b4bbdf3cb22b61c979190bb2c588e7b9e8bf291c5966",
-      "reason": "plan-20261010-028 (v2 contract) + checker seq 151 fixes: railAttrs(node) is the one place a rail is marked done (only when all six steps are filled); blocked is --tone-risk and the HIL edge --you (C3); legend metrics re-budgeted for 12px Atkinson; hollow glyph uses a measured tone (C1)",
-      "recorded": "2026-10-11T03:06:43.284Z",
+      "sha256": "8cc6487bc62577b66227798a2cc8c2e9389450127086d271840226b4216cae15",
+      "reason": "plan-20261010-028 + 001: railAttrs; v2 tones; legend metrics for 12px Atkinson — and the legend size counts the box border and the flex gap between a group's header and its first row (it was 5px short in the browser)",
+      "recorded": "2026-10-11T08:23:54.155Z",
       "superseded": [
         {
           "sha256": "c0406a1195e5c85b0d62d5f308fa81a2d92ff687f1d10a1848ed84a6e4e0742d",
           "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): blocked is amber --tone-risk and the HIL edge is --you (C3); legend metrics re-budgeted for 12px Atkinson (headerH/rowH 16, charW 6.8); hollow-gate glyph uses a measured tone (C1)"
+        },
+        {
+          "sha256": "e5dcbe65a09293596a11b4bbdf3cb22b61c979190bb2c588e7b9e8bf291c5966",
+          "reason": "plan-20261010-028 (v2 contract) + checker seq 151 fixes: railAttrs(node) is the one place a rail is marked done (only when all six steps are filled); blocked is --tone-risk and the HIL edge --you (C3); legend metrics re-budgeted for 12px Atkinson; hollow glyph uses a measured tone (C1)"
         }
       ]
     },
@@ -283,13 +287,17 @@
       ]
     },
     "lib/flow-legend-css.test.ts": {
-      "sha256": "7b7016280814392153b73637cd1a97ebdde10dc78f9349332fb87e4cf2ff0ce5",
-      "reason": "plan-20261010-028 + plan-20261010-001: T5 removed the header tracking; the inheritance chain now starts at the legend's real ancestors (:root, html, body, .flow-room, React Flow containers) and the selector lookup is anchored (an unanchored 'body' matched '.flow-body')",
-      "recorded": "2026-10-11T08:08:10.406Z",
+      "sha256": "0fd3cfe473f42dd881f8e89af2ba8546f3e32c44bff7052f37d7baf0bc3749f4",
+      "reason": "plan-20261010-028 + 001: the inheritance chain starts at the legend's real ancestors, the selector lookup is anchored, and Tailwind's preflight (html line-height 1.5) is modelled; the legend's own line-height must equal the budget's row height",
+      "recorded": "2026-10-11T08:23:54.233Z",
       "superseded": [
         {
           "sha256": "0672bb9e5fa4b29ce61e6c57139ebbfdf3e2b08b24f5c9676e2666bccbfbd798",
           "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): T5 removed the legend header's 0.1em tracking, so the ancestor-chain test now expects no letter-spacing anywhere"
+        },
+        {
+          "sha256": "7b7016280814392153b73637cd1a97ebdde10dc78f9349332fb87e4cf2ff0ce5",
+          "reason": "plan-20261010-028 + plan-20261010-001: T5 removed the header tracking; the inheritance chain now starts at the legend's real ancestors (:root, html, body, .flow-room, React Flow containers) and the selector lookup is anchored (an unanchored 'body' matched '.flow-body')"
         }
       ]
     },

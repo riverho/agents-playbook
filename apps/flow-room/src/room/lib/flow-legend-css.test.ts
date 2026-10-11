@@ -26,10 +26,18 @@ import { FLOW_LEGEND_METRICS } from "@/lib/flow-derive";
 // Comments are stripped first: a declaration that follows a `/* … */` inside a
 // block is still a declaration, and a parser that only looks after `;` would miss
 // it (which is exactly how this test's own first version missed `overflow`).
-const CSS = readFileSync(new URL("../index.css", import.meta.url), "utf8").replace(
+const SOURCE_CSS = readFileSync(new URL("../index.css", import.meta.url), "utf8").replace(
   /\/\*[\s\S]*?\*\//g,
   ""
 );
+/**
+ * What the BROWSER also applies but index.css does not spell out: `@tailwind base` is
+ * Tailwind's preflight, which sets `html { line-height: 1.5 }`. Reading only the room's
+ * own rules missed it, and the legend rows rendered 18px tall in a 16px budget. The
+ * preflight's inherited declarations are modelled here, ahead of the room's rules.
+ */
+const TAILWIND_PREFLIGHT = "html { line-height: 1.5; }\n";
+const CSS = (/@tailwind\s+base/.test(SOURCE_CSS) ? TAILWIND_PREFLIGHT : "") + SOURCE_CSS;
 
 /** The `line-height: normal` factor for Inter, measured conservatively. */
 const DEFAULT_LINE_FACTOR = 1.3;
@@ -240,11 +248,13 @@ describe("the legend metrics agree with the CSS that draws the legend", () => {
       expect(ANCESTORS[".flow-legend__row"]).toContain(a);
       expect(ANCESTORS[".flow-legend__h"]).toContain(a);
     }
-    // Today: no line-height anywhere in the chain (either element), and no
-    // letter-spacing on either: the v2 contract (T5, plan-20261010-028) removed the
-    // header's 0.1em tracking, so the budget is the plain glyph advance.
-    expect(inherited(".flow-legend__row", "line-height")).toBeUndefined();
-    expect(inherited(".flow-legend__h", "line-height")).toBeUndefined();
+    // Tailwind's preflight sets html { line-height: 1.5 } — the chain SEES it…
+    expect(effective("html", "line-height")).toBe("1.5");
+    // …and the legend overrides it with the budget's own row height, so what the rows
+    // inherit is exactly what the budget gives them. No letter-spacing: the v2 contract
+    // (T5, plan-20261010-028) removed the header's 0.1em tracking.
+    expect(inherited(".flow-legend__row", "line-height")).toBe(`${FLOW_LEGEND_METRICS.rowH}px`);
+    expect(inherited(".flow-legend__h", "line-height")).toBe(`${FLOW_LEGEND_METRICS.rowH}px`);
     expect(inherited(".flow-legend__row", "letter-spacing")).toBeUndefined();
     expect(inherited(".flow-legend__h", "letter-spacing")).toBeUndefined();
   });
