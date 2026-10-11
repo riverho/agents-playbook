@@ -28,7 +28,7 @@ import { execSync, execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, dirname, join, isAbsolute, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import yaml from 'js-yaml';
 
 // --- root + base helpers ---------------------------------------------------
@@ -1993,8 +1993,12 @@ function runValidate() {
     ok(typeof v.version === 'string' && v.version.trim() && !versionNames.has(v.version), `V1: duplicate or invalid version name: ${v.version}`);
     versionNames.add(v.version);
     ok(VERSION_STATES.includes(v.state), `Version ${v.version} has invalid state: ${v.state}`);
-    ok(Array.isArray(v.stop_checks) && v.stop_checks.length > 0 && v.stop_checks.every(c => typeof c === 'string' && c.trim()), `V5: ${v.version} needs executable stop_checks`);
-    if (v.state === 'closed') ok(v.stop_result?.outcome === 'passed', `V6: closed version ${v.version} lacks passing stop checks`);
+    // D28: a loop from before versions, closed by `pb version migrate`, never had executable stop
+    // checks — it is recorded as migrated (never passed), and that is the only closed version
+    // allowed without them
+    const migrated = v.state === 'closed' && v.stop_result?.outcome === 'migrated' && !!v.migrated_at && (v.stop_checks || []).length === 0;
+    if (!migrated) ok(Array.isArray(v.stop_checks) && v.stop_checks.length > 0 && v.stop_checks.every(c => typeof c === 'string' && c.trim()), `V5: ${v.version} needs executable stop_checks`);
+    if (v.state === 'closed') ok(migrated || v.stop_result?.outcome === 'passed', `V6: closed version ${v.version} lacks passing stop checks`);
   }
   // 6. structural guardrails for the layer/dependency graph. `pb validate` is the
   // structural gate, so a cycle or a task declared in an earlier layer than its
@@ -5538,7 +5542,8 @@ function cmdVersion(args) {
     for (const v of versions) console.log(`${v.version} · ${v.title || v.goal} · ${v.state} · ${v.id}`);
     return;
   }
-  if (!['new', 'open', 'freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|list|release-operation');
+  if (sub === 'migrate') return cmdVersionMigrate(args);
+  if (!['new', 'open', 'freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|list|migrate|release-operation');
   if (['freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) {
     const context = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID', 'PB_CLAIM_TOKEN'].filter(k => process.env[k]);
     if (context.length || args.token) versionRefusal('V6', `Lifecycle decisions require a person at the local CLI; agent context detected (${context.join(', ') || 'claim token'})`);
@@ -5651,6 +5656,176 @@ function cmdVersion(args) {
   } finally { versionInTxn = false; }
   if (args.json) return printJson({ schema: 'agent-playbook.version.v1', version: result });
   console.log(`Version ${result.version}: ${result.state} (${result.id})`);
+}
+
+// ============================================================================
+//  version migrate (D28) — a loop from before versions becomes a CLOSED version after
+//  the fact, the next version opens, and every task without a version is placed:
+//  finished work stays in the old version as history; each open task is carried into
+//  the new version or parked in the old one. Two steps, because a person decides:
+//
+//    pb version migrate --loop <id> --name v0.7 --title "…" --next v0.8 --next-title "…"
+//        --next-goal "…" --stop-check "<cmd>" [--park <id>]… [--out <file>]
+//      PLAN. Writes ONE reviewable batch file (artifacts/versions/migration-<loop>.yaml)
+//      and nothing else. An agent may run it. Edit any task's decision: carry | park.
+//
+//    pb version migrate --apply <batch file>
+//      APPLY. A person only (V6). Refused when the backlog moved since the batch was
+//      written (its fingerprint), when a carried card is still claimed, or when a
+//      decision is not carry/park. One state transaction; journal rows: the old version
+//      closed, the new one opened, and one migrate row with every assignment.
+//
+//  The old version closes as `migrated`, not `passed`: it never had executable stop
+//  checks, and the record must not claim proof that never ran. Its stop text becomes
+//  its description (D28).
+// ============================================================================
+const MIGRATION_SCHEMA = 'agent-playbook.migration.v1';
+function migrationScope(loopId) {
+  const tasks = backlogTasks().filter((t) => !t.version);
+  return tasks.map((t) => ({
+    id: t.id, title: t.title, status: t.status, loop_id: t.loop_id || null,
+    claimed_by: t.status === 'in_progress' ? (t.claimed_by || t.agent_id || null) : null,
+    // finished work of THIS loop (or of no loop) is the old version's history; finished
+    // work of an even older loop stays where it is (History lists those loops as legacy)
+    placement: t.status === 'done' ? ((!t.loop_id || t.loop_id === loopId) ? 'history' : 'legacy') : 'open',
+  }));
+}
+function migrationFingerprint(loopId) {
+  const loops = readLoops();
+  const scope = migrationScope(loopId).map((t) => [t.id, t.status, t.loop_id, t.claimed_by]).sort((a, b) => a[0].localeCompare(b[0]));
+  return createHash('sha256').update(JSON.stringify({ active: loops.active, versions: loops.loops.filter((l) => l.version).map((l) => [l.id, l.version, l.state]), scope })).digest('hex');
+}
+function cmdVersionMigrate(args) {
+  if (args.apply) return applyVersionMigration(args);
+  const loopId = typeof args.loop === 'string' ? args.loop.trim() : '';
+  const state = readLoops();
+  const loop = state.loops.find((l) => l.id === loopId);
+  if (!loop) versionRefusal('V1', `Name the legacy loop to migrate with --loop (loops: ${state.loops.filter((l) => !l.version).map((l) => l.id).join(', ') || 'none'})`);
+  if (loop.version) versionRefusal('V1', `${loopId} is already version ${loop.version}`);
+  const name = typeof args.name === 'string' ? args.name.trim() : '';
+  const next = typeof args.next === 'string' ? args.next.trim() : '';
+  const checks = (Array.isArray(args['stop-check']) ? args['stop-check'] : [args['stop-check']]).filter((c) => typeof c === 'string' && c.trim()).map((c) => c.trim());
+  if (!name || !next || typeof args['next-goal'] !== 'string' || !args['next-goal'].trim() || !checks.length) {
+    versionRefusal('V5', 'Provide --name (the old loop as a version), --next, --next-goal and at least one executable --stop-check for the next version');
+  }
+  if (name === next) versionRefusal('V1', 'The migrated version and the next one need different names');
+  for (const n of [name, next]) if (findVersion(n, state)) versionRefusal('V1', `Version ${n} already exists`);
+  if (openVersion(state)) versionRefusal('V1', `${openVersion(state).version} is open; a migration opens the next version itself`);
+  const parkRaw = args.park === undefined ? [] : (Array.isArray(args.park) ? args.park : [args.park]);
+  const park = new Set(parkRaw.map((x) => String(x).trim()).filter(Boolean));
+  const scope = migrationScope(loopId);
+  for (const id of park) if (!scope.some((t) => t.id === id && t.placement === 'open')) versionRefusal('V4', `--park ${id}: not an open task without a version`);
+  const batch = {
+    schema: MIGRATION_SCHEMA,
+    written_at: nowISO(),
+    fingerprint: migrationFingerprint(loopId),
+    review: 'Set each open task\'s decision to carry (into the next version) or park (stays in the closed one, forkable later). Then a person runs: pb version migrate --apply <this file>',
+    close: { loop: loop.id, version: name, title: args.title || name, goal: loop.goal || null, description: loop.stop || null, started_at: loop.started_at || null },
+    open: { version: next, title: args['next-title'] || next, goal: String(args['next-goal']).trim(), stop_checks: checks },
+    tasks: scope.map((t) => ({
+      id: t.id, title: t.title, status: t.status,
+      decision: t.placement === 'open' ? (park.has(t.id) ? 'park' : 'carry') : t.placement,
+      ...(t.claimed_by ? { note: `claimed by ${t.claimed_by} — release or finish it before applying` } : {}),
+    })),
+  };
+  const out = typeof args.out === 'string' && args.out.trim() ? args.out.trim() : `artifacts/versions/migration-${loop.id}.yaml`;
+  const abs = isAbsolute(out) ? out : p(out);
+  ensureDir(dirname(abs));
+  writeFileSync(abs, yaml.dump(batch, { lineWidth: 110 }), 'utf8');
+  const count = (d) => batch.tasks.filter((t) => t.decision === d).length;
+  if (args.json) return printJson({ ...batch, file: out });
+  console.log(`Migration batch written: ${out}`);
+  console.log(`  ${loop.id} → ${name} · ${batch.close.title} (closed after the fact, as migrated)`);
+  console.log(`  opens ${next} · ${batch.open.title}: ${batch.open.goal}`);
+  console.log(`  carry ${count('carry')} · park ${count('park')} · history ${count('history')} · legacy ${count('legacy')}`);
+  const claimed = batch.tasks.filter((t) => t.note);
+  for (const t of claimed) console.log(`  ! ${t.id}: ${t.note}`);
+  console.log('Nothing else was written. Review the batch, then a person applies it: pb version migrate --apply ' + out);
+}
+function applyVersionMigration(args) {
+  const context = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID', 'PB_CLAIM_TOKEN'].filter((k) => process.env[k]);
+  if (context.length || args.token) versionRefusal('V6', `Applying a migration is a lifecycle decision for a person at the local CLI; agent context detected (${context.join(', ') || 'claim token'})`);
+  const file = String(args.apply);
+  const abs = isAbsolute(file) ? file : p(file);
+  let batch;
+  try { batch = yaml.load(readFileSync(abs, 'utf8')); } catch (e) { versionRefusal('V1', `Cannot read the batch ${file}: ${e.message}`); }
+  if (batch?.schema !== MIGRATION_SCHEMA || !batch.close?.loop || !batch.open?.version || !Array.isArray(batch.tasks)) versionRefusal('V1', `${file} is not a migration batch (${MIGRATION_SCHEMA})`);
+  const agent = resolveAgentId(args);
+  let result;
+  try {
+    versionInTxn = true;
+    result = withStateTxn((draft, ctx) => {
+      ctx.draft = draft;
+      const state = readLoops();
+      const loop = state.loops.find((l) => l.id === batch.close.loop);
+      if (!loop || loop.version) versionRefusal('V1', `${batch.close.loop} is gone or already a version`);
+      if (migrationFingerprint(loop.id) !== batch.fingerprint) versionRefusal('V6', 'The backlog or the versions changed since this batch was written; write a fresh batch and review it again');
+      for (const n of [batch.close.version, batch.open.version]) if (findVersion(n, state)) versionRefusal('V1', `Version ${n} already exists`);
+      const checks = (batch.open.stop_checks || []).filter((c) => typeof c === 'string' && c.trim());
+      if (!checks.length || !String(batch.open.goal || '').trim()) versionRefusal('V5', 'The next version needs a goal and at least one executable stop check');
+      const scope = new Map(migrationScope(loop.id).map((t) => [t.id, t]));
+      const decided = new Map(batch.tasks.map((t) => [t.id, t]));
+      for (const [id, t] of scope) {
+        const d = decided.get(id)?.decision;
+        if (t.placement === 'open' && !['carry', 'park'].includes(d)) versionRefusal('V4', `${id}: decision must be carry or park (got ${JSON.stringify(d ?? null)})`);
+        if (t.placement === 'open' && t.claimed_by) versionRefusal('V6', `${id} is claimed by ${t.claimed_by}; release or finish it before migrating (a parked card's holder could no longer record)`);
+      }
+      const ts = nowISO();
+      const old = { ...loop, version: batch.close.version, title: batch.close.title || batch.close.version, state: 'closed', status: 'done',
+        description: loop.stop || null, stop_checks: [],
+        stop_result: { outcome: 'migrated', at: ts, note: 'Closed by migration (D28): a loop from before versions had no executable stop checks, so none ran.' },
+        closed_at: loop.closed_at || ts, migrated_at: ts,
+        journal: { ...(loop.journal || {}), last_line: journalLineCount() + 1 } };
+      const nu = { id: nextLoopId(state), version: batch.open.version, title: batch.open.title || batch.open.version, state: 'open', status: 'active',
+        goal: String(batch.open.goal).trim(), stop: String(batch.open.goal).trim(), stop_checks: checks,
+        created_at: ts, started_at: ts, closed_at: null, migrated_from: old.id,
+        journal: { first_line: journalLineCount() + 3, last_line: null }, artifacts: null };
+      nu.artifacts = loopArtifactsRel(nu.id);
+      const assignments = {};
+      const snapshot = [];
+      for (const [id, t] of scope) {
+        if (t.placement === 'legacy') continue;
+        const d = t.placement === 'history' ? 'history' : decided.get(id).decision;
+        const full = backlogTasks().find((x) => x.id === id);
+        if (d === 'carry') {
+          assignments[id] = { version: nu.version, loop_id: nu.id, carried_from: old.version };
+          snapshot.push({ ...full, version: old.version, disposition: 'carried', carried_to: nu.version });
+        } else {
+          assignments[id] = { version: old.version, loop_id: old.id, ...(d === 'park' ? { disposition: 'parked' } : {}) };
+          snapshot.push({ ...full, ...assignments[id] });
+        }
+      }
+      old.task_snapshot = snapshot;
+      old.phase_snapshot = readText(CYCLE);
+      state.loops[state.loops.findIndex((l) => l.id === old.id)] = old;
+      state.loops.push(nu);
+      state.active = nu.id;
+      let seq = ctx.seq;
+      const vrow = (v, active) => ({ seq: seq++, ts, task: `version:${v.id}`, loop_id: v.id, agent, action: 'version', status: 'event', checks: 'none',
+        version: v.version, version_record: v, active_loop: active, notes: `Version ${v.version}: ${v.state} (migration)` });
+      appendJournal(vrow(old, null));
+      appendJournal(vrow(nu, nu.id));
+      const counts = Object.values(assignments).reduce((a, x) => { const k = x.carried_from ? 'carried' : x.disposition || 'history'; a[k] = (a[k] || 0) + 1; return a; }, {});
+      const mseq = seq;
+      appendJournal({ seq: mseq, ts, task: `version:${nu.id}`, loop_id: nu.id, agent, action: 'migrate', status: 'event', checks: 'none',
+        from_loop: old.id, from_version: old.version, to_version: nu.version, assignments, batch: file,
+        notes: `Migrated ${old.id} to ${old.version} (closed) and opened ${nu.version}: ${counts.carried || 0} carried, ${counts.parked || 0} parked, ${counts.history || 0} kept as history.` });
+      const mctx = { ...ctx, seq: mseq };
+      for (const [id, a] of Object.entries(assignments)) applyTaskMutation(id, () => ({ ...a, updated_at: ts }), mctx, agent);
+      draft.__seq = mseq;
+      writeLoops(state);
+      seedCycleFromLoop(nu, { goal: nu.goal, stop: nu.stop });
+      return { old, nu, counts };
+    }, { agent });
+  } catch (err) {
+    if (err instanceof VersionRefused) process.exit(1);
+    if (!(err instanceof StateTxnBusy)) throw err;
+    console.error('Version state is busy; nothing was written. Retry after the current writer finishes.'); process.exit(1);
+  } finally { versionInTxn = false; }
+  if (args.json) return printJson({ schema: 'agent-playbook.version.v1', closed: result.old, opened: result.nu, counts: result.counts });
+  console.log(`Migrated: ${result.old.version} closed (${result.old.id}), ${result.nu.version} open (${result.nu.id}).`);
+  console.log(`  carried ${result.counts.carried || 0} · parked ${result.counts.parked || 0} · history ${result.counts.history || 0}`);
+  console.log('The cycle brief was reseeded for the new version: answer its questions before planning or claiming.');
 }
 
 function cmdLearn(args) {
@@ -7113,6 +7288,11 @@ function cmdHelp() {
     version carry <task> --to next|<draft> | drop <task> --reason ".."
                           Carry preserves the card ID and records both source and destination.
     version list [--json]  Version history (loops with a name, state, and stop checks).
+    version migrate --loop <legacy> --name <v> --next <v> --next-goal ".." --stop-check <cmd> [--park <task>]...
+                          D28: write a reviewable batch turning a pre-version loop into a closed version and
+                          opening the next (carry or park each open task). Writes the batch only.
+    version migrate --apply <batch>
+                          A person applies the reviewed batch (refused from agents, or if the backlog moved).
     version release-operation --pid <pid> --reason "..."
                           Human recovery after confirming a crashed worker's process tree is gone.
     loop new [--goal ".."] [--stop ".."] [--from-lessons] [--fresh]  Open a durable loop epoch.
