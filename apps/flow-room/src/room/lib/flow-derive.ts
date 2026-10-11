@@ -25,7 +25,7 @@ import {
 export const FLOW_TONE: Record<FlowStatus, string> = {
   done: "#2f2f2f",
   in_progress: "var(--accent-teal)",
-  blocked: "var(--accent-rose)",
+  blocked: "var(--tone-risk)",
   todo: "var(--text-tertiary)",
 };
 
@@ -43,7 +43,7 @@ export const FLOW_MINIMAP_TONE: Record<FlowStatus, string> = {
   todo: "rgba(17, 17, 17, 0.18)",
   done: "rgba(17, 17, 17, 0.22)",
   in_progress: "var(--accent-teal)",
-  blocked: "var(--accent-rose)",
+  blocked: "var(--tone-risk)",
 };
 
 /** The minimap panel's own background (`.minimap .mm`). */
@@ -95,14 +95,14 @@ export interface FlowLegendGroup {
 export const FLOW_LEGEND_METRICS = {
   padX: 10,
   padY: 8,
-  headerH: 12,
-  rowH: 13,
+  headerH: 16,
+  rowH: 16,
   rowGap: 3,
   groupGap: 18,
   swatchW: 26,
   swatchGap: 6,
-  /** Inter at 9.5 px, measured conservatively. */
-  charW: 5.6,
+  /** Atkinson Hyperlegible Next at 12 px (v2 floor), measured conservatively. */
+  charW: 6.8,
 } as const;
 
 /** The legend's content as data — payload-dependent only in the EDGES group. */
@@ -129,8 +129,8 @@ export function flowLegendModel(graph: FlowGraph): FlowLegendGroup[] {
           color: FLOW_TONE.in_progress,
           live: true,
         },
-        { kind: "dot", text: "blocked / human gate", color: FLOW_TONE.blocked },
-        { kind: "glyph", text: "hollow gate warning", glyph: "⚠", glyphColor: "#f59e0b" },
+        { kind: "dot", text: "blocked — waiting on a check", color: FLOW_TONE.blocked },
+        { kind: "glyph", text: "hollow gate warning", glyph: "⚠", glyphColor: "var(--tone-risk)" },
         { kind: "dot", text: "todo — unclaimed", color: FLOW_TONE.todo },
       ],
     },
@@ -180,7 +180,7 @@ export interface FlowEdgeStyle {
   width: number;
   /** stroke-dasharray, exactly as painted in flow.css. */
   dash?: string;
-  marker: "dep" | "ink" | "teal" | "rose" | "none";
+  marker: "dep" | "ink" | "teal" | "you" | "none";
   /** merge-back is drawn twice: a solid 2.25 px line plus a 1 px ghost. */
   double?: boolean;
   label?: string;
@@ -197,7 +197,7 @@ export const FLOW_EDGE_STYLE: Record<FlowEdgeKind, FlowEdgeStyle> = {
   spawn: { stroke: "var(--accent-teal)", width: 1.25, dash: "5 4", marker: "teal" },
   fork: { stroke: "var(--accent-teal)", width: 1.25, dash: "2 3", marker: "teal" },
   merge: { stroke: "var(--accent-teal)", width: 2.25, marker: "teal", double: true },
-  hil: { stroke: "var(--accent-rose)", width: 1.25, dash: "4 3", marker: "rose" },
+  hil: { stroke: "var(--you)", width: 1.25, dash: "4 3", marker: "you" },
   idle: { stroke: "var(--surface-3)", width: 1.25, dash: "2 4", marker: "none" },
 };
 
@@ -387,6 +387,19 @@ export function flowRail(node: FlowNode): RailState {
   }
   // blocked / todo: the task has not started. Nothing on the rail is filled.
   return { filled: 0, current: 0, step: null, pulsing: false, derived };
+}
+
+/**
+ * The rail's data attributes, in ONE place for the card and the inspector. `data-done`
+ * marks a rail that is all green, which is only true when all six steps are filled: a
+ * done card whose checks never ran stops at verify, and must not look finished (C4).
+ */
+export function railAttrs(node: FlowNode): { "data-step"?: number; "data-done"?: "" } {
+  const rail = flowRail(node);
+  return {
+    "data-step": rail.filled || undefined,
+    "data-done": node.status === "done" && rail.filled === 6 ? "" : undefined,
+  };
 }
 
 /** "verify · step 4/6" — the rail's caption, only where a step is current. */

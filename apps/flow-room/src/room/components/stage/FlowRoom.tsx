@@ -370,7 +370,7 @@ function FlowCanvas({
           right: FLOW_MARGIN,
         }}
       >
-        <span className={`flow-chip${counts.hil > 0 ? " flow-chip--rose" : ""}`}>
+        <span className={`flow-chip${counts.hil > 0 ? " flow-chip--hil" : ""}`}>
           🧑 HIL {counts.hil}
         </span>
         {graph.nodes.find(node => node.kind === "start")?.cron && (

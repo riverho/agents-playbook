@@ -39,19 +39,19 @@ export interface FlowEdgeData extends Record<string, unknown> {
 
 export type FlowEdgeType = Edge<FlowEdgeData, "flow">;
 
-/** The four arrow heads the frames use (dep · ink · teal · rose). */
+/** The four arrow heads the frames use (dep · ink · teal · you — the human gate). */
 export const FLOW_MARKERS = [
   { id: "flow-arrow-dep", stroke: "#c9c3bb" },
   { id: "flow-arrow-ink", stroke: "rgba(17, 17, 17, 0.35)" },
   { id: "flow-arrow-teal", stroke: "var(--accent-teal)" },
-  { id: "flow-arrow-rose", stroke: "var(--accent-rose)" },
+  { id: "flow-arrow-you", stroke: "var(--you)" }, // the hil edge's arrowhead
 ] as const;
 
 const MARKER_URL: Record<string, string> = {
   dep: "url(#flow-arrow-dep)",
   ink: "url(#flow-arrow-ink)",
   teal: "url(#flow-arrow-teal)",
-  rose: "url(#flow-arrow-rose)",
+  you: "url(#flow-arrow-you)",
   none: "",
 };
 
@@ -201,9 +201,9 @@ export function FlowEdge({
   );
 }
 
-/** Teal for the relations the orchestrator created, rose for the human gate. */
+/** Teal for the relations the orchestrator created, --you for the human gate (hil). */
 function labelTone(kind: FlowEdgeKind): string {
-  if (kind === "hil") return "flow-edgepill--rose";
+  if (kind === "hil") return "flow-edgepill--hil";
   if (kind === "spawn" || kind === "fork" || kind === "merge") {
     return "flow-edgepill--teal";
   }

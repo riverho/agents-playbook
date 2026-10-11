@@ -2,7 +2,7 @@
 //
 // One custom React Flow node per painted card. Geometry, radii and type sizes are
 // the measured values in flow.css / DESIGN §2.1 (`236 × 104` task cards, a 3 px
-// tone bar, Playfair bookends at 236 × 300, dashed fork cards, a rose HIL batch).
+// tone bar, Playfair bookends at 236 × 300, dashed fork cards, a fuchsia HIL batch).
 //
 // Every field a card shows comes off the projection node (`lib/flow-types.ts`):
 // the tone bar from `status`, the rail from `journal` (never hand-set), `⚠ hollow`
@@ -32,6 +32,7 @@ import {
   checksUnproven,
   flowRail,
   flowStepLabel,
+  railAttrs,
   hasRedCheck,
   isHollow,
   isProvenCondition,
@@ -53,7 +54,7 @@ function TonePill({
   return (
     <span
       title={title}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium tabular-nums whitespace-nowrap"
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium tabular-nums whitespace-nowrap"
       style={{ background: TONE_WASH[tone], color: TONE_COLOR[tone] }}
     >
       {children}
@@ -65,7 +66,7 @@ function TonePill({
 function InkPill({ children }: { children: React.ReactNode }) {
   return (
     <span
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium tabular-nums whitespace-nowrap"
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium tabular-nums whitespace-nowrap"
       style={{ background: "rgba(17,17,17,0.08)", color: "var(--text-primary)" }}
     >
       {children}
@@ -83,7 +84,7 @@ function LiveDot() {
 }
 
 /**
- * The human badge: a rose pill with a breathing halo (2.2 s, opacity .55 → 0).
+ * The human badge: a fuchsia (--you) pill with a breathing halo (2.2 s, opacity .55 → 0).
  * `attention` is the loud variant used on a card that is waiting; the batch card
  * and the goal card use the quiet one.
  */
@@ -102,7 +103,11 @@ function CycleRail({ node }: { node: FlowNode }) {
   const label = flowStepLabel(node);
   return (
     <>
-      <div className="flow-cycle" aria-label={`cycle: ${rail.step ?? "not started"}`}>
+      <div
+        className="flow-cycle"
+        {...railAttrs(node)}
+        aria-label={`cycle: ${rail.step ?? "not started"}`}
+      >
         {[0, 1, 2, 3, 4, 5].map(segment => {
           const filled = segment < rail.filled;
           const active = filled && rail.pulsing && segment === rail.current - 1;
@@ -249,7 +254,7 @@ export function FlowBookendCard({ data }: NodeProps<FlowBookendNode>) {
         {isGoal ? "END GOAL · CYCLE STOP" : "START POINT · LOOP"}
       </div>
       {!isGoal && data.loopId && (
-        <div className="flow-mono flow-bookend__loop">{data.loopId}</div>
+        <div className="flow-mono flow-code flow-bookend__loop">{data.loopId}</div>
       )}
       <div className="flow-bookend__title">{node.title}</div>
       {node.body && <div className="flow-bookend__body">{node.body}</div>}
@@ -305,7 +310,7 @@ export function FlowBookendCard({ data }: NodeProps<FlowBookendNode>) {
           {mergeBack && (
             <div className="flow-row">
               <TonePill tone="ok">merge-back · {mergeBack.verdict}</TonePill>
-              <span className="flow-mono">{mergeBack.fork}</span>
+              <span className="flow-mono flow-code">{mergeBack.fork}</span>
             </div>
           )}
           <div className="flow-mono flow-bookend__note">
@@ -332,7 +337,7 @@ export function FlowOrchestratorCard({ data }: NodeProps<FlowOrchestratorNode>) 
       <span className="flow-card__bar" style={{ background: FLOW_NOTE }} />
       <Handle type="target" position={Position.Left} className="flow-handle" />
       <div className="flow-row">
-        <span className="flow-id">orchestrator</span>
+        <span className="flow-kicker">orchestrator</span>
         <span className="flex-1" />
         {m.rounds !== undefined && <TonePill tone="note">round {m.rounds}</TonePill>}
       </div>
@@ -358,7 +363,7 @@ export function FlowForkCard({ data, selected }: NodeProps<FlowForkNode>) {
     <Shell data={data} selected={selected} type="fork">
       <Handle type="target" position={Position.Left} className="flow-handle" />
       <div className="flow-row">
-        <span className="flow-id">{node.id === "fork-a" ? "fork A · experiment" : "fork B · experiment"}</span>
+        <span className="flow-kicker">{node.id === "fork-a" ? "fork A · experiment" : "fork B · experiment"}</span>
         <span className="flex-1" />
         <TonePill tone={progress >= 40 ? "ok" : "muted"}>{progress}%</TonePill>
       </div>
@@ -389,10 +394,10 @@ export function FlowBatchCard({ data }: NodeProps<FlowBatchNode>) {
   const declared = unevaluated ?? [];
   return (
     <div className="flow-card" style={{ width: data.width, height: data.height }}>
-      <span className="flow-card__bar" style={{ background: "var(--accent-rose)" }} />
+      <span className="flow-card__bar flow-batch__bar" style={{ background: "var(--you)" }} />
       <Handle type="target" position={Position.Left} className="flow-handle" />
       <div className="flow-row">
-        <span className="flow-id">waiting on a human</span>
+        <span className="flow-kicker">waiting on a human</span>
         <span className="flex-1" />
         <HilBadge attention>
           {entries.length} gate{entries.length === 1 ? "" : "s"}
@@ -484,7 +489,7 @@ export function FlowSteeringCard({ data }: NodeProps<FlowSteeringNode>) {
     <div className="flow-card" style={{ width: data.width, height: data.height }}>
       <span className="flow-card__bar" style={{ background: "var(--accent-teal)" }} />
       <div className="flow-row">
-        <span className="flow-id">steering will write</span>
+        <span className="flow-kicker">steering will write</span>
         <span className="flex-1" />
         <TonePill tone={applied ? "ok" : "muted"}>{applied ? "applied" : "nothing yet"}</TonePill>
       </div>

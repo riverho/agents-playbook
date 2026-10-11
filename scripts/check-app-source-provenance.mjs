@@ -78,6 +78,13 @@ const FILES = [
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 const normalise = (buf) => Buffer.from(buf.toString('utf8').replace(/\r\n?/g, '\n'), 'utf8');
 const sameBytes = (a, b) => a.equals(b) || sha256(normalise(a)) === sha256(normalise(b));
+// A pin is about CONTENT, not about how this checkout spells line endings. With
+// core.autocrlf=true git rewrites every file to CRLF on checkout, and the original pins
+// were taken from a mix of LF and CRLF copies — so a byte hash alone reported 15 untouched
+// files as "EDITED after pinning" on a clean main. Accept the bytes as checked out, or the
+// same text with LF or with CRLF endings; anything else is a real edit.
+const crlf = (buf) => Buffer.from(normalise(buf).toString('utf8').replace(/\n/g, '\r\n'), 'utf8');
+const matchesPin = (buf, pinned) => [buf, normalise(buf), crlf(buf)].some((b) => sha256(b) === pinned);
 
 function sourcePath(rel) {
   return join(SOURCE_REPO, SOURCE_PREFIX, rel);
@@ -184,7 +191,7 @@ if (process.argv.includes('--record-edit')) {
   manifest.local_edits = manifest.local_edits ?? {};
   const prior = manifest.local_edits[rel];
   manifest.local_edits[rel] = {
-    sha256: sha256(bytes),
+    sha256: sha256(normalise(bytes)), // line-ending neutral: matches on any checkout
     reason,
     recorded: new Date().toISOString(),
     superseded: prior ? [...(prior.superseded ?? []), { sha256: prior.sha256, reason: prior.reason }] : undefined,
@@ -233,7 +240,7 @@ for (const rel of FILES) {
   // point is that it differs from the source. Moving its hash again requires re-recording.
   const localEdit = manifest.local_edits?.[rel];
   if (localEdit) {
-    if (sha256(bytes) !== localEdit.sha256) {
+    if (!matchesPin(bytes, localEdit.sha256)) {
       problems.push(
         `UNRECORDED change to ${rel}: a recorded local edit ("${localEdit.reason}") whose hash moved — re-record with --record-edit --reason "…"`
       );
@@ -244,7 +251,10 @@ for (const rel of FILES) {
   }
 
   // 1. the copy matches its recorded hash — it has not been edited since pinning
-  if (sha256(bytes) !== entry.sha256) {
+  // The blob hash at the pinned commit is the line-ending-free truth: a copy taken with MIXED
+  // endings (flow-graph-live.ts was) matches neither pure LF nor pure CRLF, but its text does.
+  const sameAsBlob = entry.blob_sha256 && sha256(normalise(bytes)) === entry.blob_sha256;
+  if (!matchesPin(bytes, entry.sha256) && !sameAsBlob) {
     problems.push(
       `EDITED after pinning: ${rel} is ${sha256(bytes).slice(0, 12)}, manifest says ${entry.sha256.slice(0, 12)}`
     );
