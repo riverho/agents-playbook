@@ -36,6 +36,7 @@ import { FLOW_SCHEMA } from "./flow-types";
 import { steeringPlan, type SteeringPlan } from "./flow-derive";
 import { FLOW_LIVE_GRAPH } from "@/mocks/flow-graph-live";
 import { FLOW_SAMPLE_LAYERED } from "@/mocks/flow-sample-layered";
+import type { DecisionRow } from "./flow-decisions";
 
 /** The four dock actions (frame 3). Only `steer` edits the cycle brief. */
 export type FlowSteeringMode = "steer" | "comment" | "fork" | "attach";
@@ -90,6 +91,7 @@ export interface FlowAdapter {
   forkTask?(task: string): Promise<{ ok: boolean; note: string }>;
   /** v2 (M3): one message on one card, with its intent — `pb comment --intent`. */
   sendMessage?(task: string, text: string, intent: "comment" | "steer" | "question"): Promise<{ ok: boolean; note: string }>;
+  decide?(task: string, option: string, reason: string): Promise<{ ok: boolean; note: string; row?: DecisionRow }>;
 }
 
 /**

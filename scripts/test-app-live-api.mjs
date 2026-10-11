@@ -96,6 +96,9 @@ try {
 
   const backlogFile = join(pbRoot, 'memory', 'backlog.yaml');
   const journalFile = join(pbRoot, 'memory', 'journal.ndjson');
+  const decisionPlan = step(['plan', '--goal', 'decision fixture', '--check', 'node -v', '--manual'], 'seed a human ask');
+  const decisionTask = /Planned \[([^\]]+)\]/.exec(decisionPlan.stdout)?.[1];
+  check(Boolean(decisionTask), 'decision fixture has no task id');
   const backlogBefore = readFileSync(backlogFile);
   const journalBeforeBoot = readFileSync(journalFile).length;
 
@@ -197,6 +200,25 @@ try {
   check(shout.status === 400, `an unknown intent returned ${shout.status}, expected 400`);
 
   // 8. the engine still owns state: backlog.yaml is untouched by the whole run
+  const beforeDecide = readFileSync(journalFile, 'utf8').trim().split('\n').length;
+  const decisionPayload = { task: decisionTask, option: 'approve', reason: 'Proceed with the verified path.' };
+  const unauthDecision = await fetch(`${base}/api/decide`, { method: 'POST', headers: CSRF, body: JSON.stringify(decisionPayload) });
+  check(unauthDecision.status === 403, 'a decision without a cookie was not refused');
+  const invalidDecision = await fetch(`${base}/api/decide`, { method: 'POST', headers: { ...CSRF, cookie }, body: JSON.stringify({ ...decisionPayload, option: 'nonexistent' }) });
+  const refusal = await invalidDecision.json();
+  check(invalidDecision.status === 422 && /has no option/.test(refusal.detail ?? ''), 'an unknown decision option did not show the engine refusal');
+  check(readFileSync(journalFile, 'utf8').trim().split('\n').length === beforeDecide, 'a refused decision wrote a row');
+  const decisionRes = await fetch(`${base}/api/decide`, { method: 'POST', headers: { ...CSRF, cookie }, body: JSON.stringify(decisionPayload) });
+  const decision = await decisionRes.json();
+  check(decisionRes.status === 200 && decision.row?.action === 'decide' && decision.row.option === 'approve' && decision.row.reason === decisionPayload.reason,
+    `decision did not return its recorded row: ${JSON.stringify(decision)}`);
+  const decidedRows = readFileSync(journalFile, 'utf8').trim().split('\n').map(JSON.parse);
+  check(decidedRows.length === beforeDecide + 1 && decidedRows.at(-1).seq === decision.row?.seq, 'a successful decision did not write exactly one matching row');
+  check(decidedRows.at(-1).status === 'todo', 'recording a decision changed task status');
+  for (const field of ['task', 'option', 'reason']) {
+    const r = await fetch(`${base}/api/decide`, { method: 'POST', headers: { ...CSRF, cookie }, body: JSON.stringify({ ...decisionPayload, [field]: '--force' }) });
+    check(r.status === 400, `decision ${field} accepted an argument shaped as a flag`);
+  }
   check(readFileSync(backlogFile).equals(backlogBefore),
     'memory/backlog.yaml changed during the run — the app must never edit state directly');
 

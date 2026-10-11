@@ -124,9 +124,9 @@
   },
   "local_edits": {
     "lib/flow-adapter.ts": {
-      "sha256": "0a5195844046492d67b2ee3510aa00e4ed965d17fdb92afb770947bdef26f726",
-      "reason": "plan-20261010-031/034 (v2): optional createTask / forkTask / sendMessage on the adapter interface; a snapshot has none and says it cannot write",
-      "recorded": "2026-10-11T03:55:27.857Z",
+      "sha256": "6d0b23ec156a70a69672bb653a3fa512fb6a8329137366366bd593a2f9861279",
+      "reason": "plan-20261010-035: typed optional decision write seam",
+      "recorded": "2026-10-11T05:24:32.625Z",
       "superseded": [
         {
           "sha256": "0828537b950b2c3b4e60aea5d655f8ddc6ab5dc142979d1661efd1630c573c77",
@@ -135,13 +135,17 @@
         {
           "sha256": "8f1194331be16381e5f785dfa9b0f2a8a3549b07ae7f42f86e93088e96386a78",
           "reason": "plan-20261010-031 (v2 layer view + jump-in, D21/D22; G1-G5, J1-J3): optional createTask / forkTask on the adapter interface: a snapshot or sample has none, so the room says it cannot write"
+        },
+        {
+          "sha256": "0a5195844046492d67b2ee3510aa00e4ed965d17fdb92afb770947bdef26f726",
+          "reason": "plan-20261010-031/034 (v2): optional createTask / forkTask / sendMessage on the adapter interface; a snapshot has none and says it cannot write"
         }
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "b0d636ee12ef1d57a6e41ef102f7ef58124ca0ab667123b4baf9d84e14554057",
-      "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view and jump-in, ?gate seam; the open card sends through adapter.sendMessage; the presence strip (M1)",
-      "recorded": "2026-10-11T03:55:27.783Z",
+      "sha256": "7a93ac9fc0c10de517d879209d1c5ea74e3fc4727e0352dab1f63fedbf62f87d",
+      "reason": "plan-20261010-035: decision inbox, batch entry point, live count and recorded row overlay",
+      "recorded": "2026-10-11T05:26:12.442Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -166,6 +170,14 @@
         {
           "sha256": "380e2a0e2af6540ac13058ebc894b571374f803f198f4d317e86c57f6acad17c",
           "reason": "plan-20261010-030/031 (v2): zoom tiers, minZoom 5%, reduced motion read once; the canvas is the layer view with the jump-in context; a new draft is brought into view; ?gate seam (viewport, center, nodes) for the browser gate"
+        },
+        {
+          "sha256": "b0d636ee12ef1d57a6e41ef102f7ef58124ca0ab667123b4baf9d84e14554057",
+          "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view and jump-in, ?gate seam; the open card sends through adapter.sendMessage; the presence strip (M1)"
+        },
+        {
+          "sha256": "6c2560d07d51cf4620fde582037553d0c0367f3f9267bea870130dfab7cbc528",
+          "reason": "plan-20261010-035: decision inbox, live header count, recorded decision overlay"
         }
       ]
     },

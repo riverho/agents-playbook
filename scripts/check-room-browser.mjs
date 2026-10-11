@@ -16,8 +16,8 @@
 //  Needs a build: npm --prefix apps/flow-room run build
 // ============================================================================
 import { openRoom, sleep } from './lib-room-browser.mjs';
-import { makeFixture } from './test-fixture-playbook.mjs';
-import { readFileSync, rmSync } from 'node:fs';
+import { makeFixture, runPb } from './test-fixture-playbook.mjs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // By default the gate draws a FIXTURE playbook it builds itself, so what it watches does not
@@ -42,6 +42,7 @@ function roomFixture() {
       { id: 'live-claim', title: 'A claim whose journal moved a minute ago', layer: 'L1', priority: 1 },
       { id: 'quiet-claim', title: 'A claim nobody has touched for two hours', layer: 'L1', priority: 1 },
       { id: 'asks-you', title: 'Publish the package, or close it as superseded?', layer: 'L2', manual: true },
+      { id: 'agent-question', title: 'Choose a platform', layer: 'L1', extra: ['human:', '  question: "Which platform first?"', '  options:', '    - { id: windows, label: Windows, effect: Verify Windows first }', '    - { id: posix, label: POSIX, effect: Verify POSIX first }', '  recommended: windows', '  recommended_by: Lead'] },
       { id: 'blocked-one', title: 'Waiting on a missing engine primitive', layer: 'L2' },
       { id: 'done-proven', title: 'Finished with its checks passing', layer: 'L0' },
       { id: 'done-unproven', title: 'Closed without a passing check', layer: 'L0' },
@@ -256,6 +257,64 @@ try {
         problems.push(`M3: the row written is ${JSON.stringify({ action: last.action, intent: last.intent, task: last.task, notes: last.notes })}`);
       }
     }
+  }
+
+  // H1-H4: the inbox is keyboard reachable; no write until an explicit answer.
+  if (fixture) {
+    const journalFile = resolve(fixture, 'memory/journal.ndjson');
+    const before = readFileSync(journalFile, 'utf8').trim().split('\n').length;
+    const receipt = await evaluate(`(async () => {
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      const toggle = document.querySelector('button[aria-label^="Waiting on you:"]');
+      if (!toggle) return { error: 'no inbox button' };
+      toggle.focus(); toggle.click(); await wait(150);
+      const dialog = document.querySelector('.flow-decisions');
+      if (!dialog) return { error: 'inbox did not open' };
+      const kinds = [...dialog.querySelectorAll('.flow-decisions__inbox .flow-decisions__kind')].map(n => n.textContent);
+      const question = [...dialog.querySelectorAll('.flow-decisions__inbox button')].find(n => /Which platform/.test(n.textContent));
+      question?.click(); await wait(100);
+      const panel = dialog.querySelector('form');
+      if (!panel) return { error: 'no decision panel' };
+      const options = panel.querySelectorAll('input[type=radio]').length;
+      const recommendation = panel.querySelector('.flow-decisions__rec')?.textContent;
+      const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      const text = panel.querySelector('textarea'); set.call(text, 'Start on Windows.'); text.dispatchEvent(new Event('input', { bubbles: true })); await wait(100);
+      const submit = panel.querySelector('button[type=submit]'); submit.focus(); submit.click(); submit.click();
+      for (let i = 0; i < 50 && !dialog.querySelector('.flow-decisions__receipt'); i++) await wait(150);
+      return { kinds, options, recommendation, receipt: dialog.querySelector('.flow-decisions__receipt')?.textContent, count: toggle.textContent };
+    })()`);
+    const after = readFileSync(journalFile, 'utf8').trim().split('\n').map(JSON.parse);
+    if (receipt.error) problems.push(`H3: ${receipt.error}`);
+    else {
+      if (!receipt.kinds.includes('Approval') || !receipt.kinds.includes('Question')) problems.push('H1: inbox does not distinguish approvals and questions');
+      if (receipt.options < 2 || receipt.recommendation !== 'Lead recommends') problems.push('H2: question has no options or named recommendation');
+      if (!/Decision recorded.*row/.test(receipt.receipt ?? '') || !/Start on Windows/.test(receipt.receipt ?? '')) problems.push(`H3: no recorded row is displayed: ${receipt.receipt}`);
+      if (after.length !== before + 1 || after.at(-1).action !== 'decide' || after.at(-1).task !== 'agent-question') problems.push('H3: double-click did not write exactly one decision row');
+      if (!/Waiting on you 1/.test(receipt.count)) problems.push(`H4: header count was not updated after answering: ${receipt.count}`);
+    }
+    if (flag('--shots')) {
+      const dest = resolve(flag('--shots'));
+      mkdirSync(dest, { recursive: true });
+      const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(resolve(dest, 'decision-recorded.png'), Buffer.from(shot.data, 'base64'));
+    }
+    const finishAsk = runPb(fixture, ['record', '--task', 'asks-you', '--action', 'execute', '--status', 'done', '--notes', 'Fixture completed after the inbox loaded.']);
+    if (finishAsk.code !== 0) problems.push(`H3 refusal fixture: could not complete asks-you: ${finishAsk.combined}`);
+    const beforeRefusal = readFileSync(journalFile, 'utf8');
+    const refused = await evaluate(`(async () => {
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      const dialog = document.querySelector('.flow-decisions');
+      const panel = dialog.querySelector('form');
+      const text = panel.querySelector('textarea');
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(text, 'Answer a card completed elsewhere.');
+      text.dispatchEvent(new Event('input', { bubbles: true })); await wait(100);
+      panel.querySelector('button[type=submit]').click();
+      for (let i = 0; i < 50 && !panel.querySelector('.flow-decisions__result'); i++) await wait(150);
+      return panel.querySelector('.flow-decisions__result')?.textContent;
+    })()`);
+    if (refused !== '[asks-you] is already done — there is nothing left to decide. Nothing was written.') problems.push(`H3: engine refusal not shown verbatim: ${refused}`);
+    if (readFileSync(journalFile, 'utf8') !== beforeRefusal) problems.push('H3: a refused decision wrote a row');
+    await evaluate(`document.querySelector('button[aria-label="Close decisions"]')?.click()`);
   }
 
   // ── F4: reduced motion, on an injected probe card ─────────────────────────

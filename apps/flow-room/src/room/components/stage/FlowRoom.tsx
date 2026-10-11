@@ -84,6 +84,8 @@ import {
   FlowEdge as FlowEdgeComponent,
 } from "./FlowEdges";
 import { FlowInspector } from "./FlowInspector";
+import { FlowDecisions } from "./FlowDecisions";
+import { decisionItems, type DecisionRow } from "@/lib/flow-decisions";
 import { FlowBandCard, FlowDraftCard, FlowLayerGateCard, FlowStackCard } from "./FlowLayerView";
 import { layoutLayers, nextBandId, type BandDraft } from "@/lib/flow-bands";
 import { FlowJumpContext, type FlowJump } from "@/lib/flow-jump";
@@ -169,7 +171,14 @@ function FlowCanvas({
   // this repo's live snapshot and the labelled three-layer sample.
   const [showSample, setShowSample] = useState(false);
   const active = adapter ?? (showSample ? SAMPLE_LAYERED_ADAPTER : DEFAULT_FLOW_ADAPTER);
-  const graph = useMemo(() => active.load(), [active]);
+  const sourceGraph = useMemo(() => active.load(), [active]);
+  const [recorded, setRecorded] = useState<Record<string, DecisionRow>>({});
+  const graph = useMemo(() => ({ ...sourceGraph, nodes: sourceGraph.nodes.map(n => recorded[n.id] ? {
+    ...n, human: { ...n.human, decided: { option: recorded[n.id].option, reason: recorded[n.id].reason, by: recorded[n.id].agent, ts: recorded[n.id].ts, seq: recorded[n.id].seq } },
+  } : n) }), [sourceGraph, recorded]);
+  useEffect(() => { setRecorded({}); }, [active]);
+  const inbox = useMemo(() => decisionItems(graph), [graph]);
+  const [showDecisions, setShowDecisions] = useState(false);
   const filtered = useMemo(() => filterGraph(graph, view, query), [graph, view, query]);
   // v2 layer view (D21): bands from the plan's layers; done stacked unless expanded;
   // drafts are view state until Create (J3).
@@ -296,6 +305,7 @@ function FlowCanvas({
 
   // Escape unwinds exactly one level: selection → inspector → the stage.
   useStageEscape(useCallback(() => {
+    if (showDecisions) { setShowDecisions(false); return true; }
     if (selectedIds.length > 0) {
       setNodes(current => current.map(node => ({ ...node, selected: false })));
       setSelectedIds([]);
@@ -306,7 +316,7 @@ function FlowCanvas({
       return true;
     }
     return false;
-  }, [selectedIds.length, openNode, setNodes]));
+  }, [showDecisions, selectedIds.length, openNode, setNodes]));
 
   const runSteering = useCallback(
     async (mode: FlowSteeringMode) => {
@@ -349,7 +359,7 @@ function FlowCanvas({
   const present = useMemo(() => presence(graph), [graph]);
 
   const counts = {
-    hil: graph.human.batch.length,
+    hil: inbox.length,
     forks: graph.nodes.filter(node => node.kind === "fork").length,
   };
 
@@ -369,6 +379,7 @@ function FlowCanvas({
         onNodesChange={onNodesChange}
         onNodeClick={(_event, node) => {
           if (node.id === STEERING_NODE_ID) return;
+          if (node.type === "flowBatch") { setOpenId(null); setShowDecisions(true); return; }
           // bands, gate posts, stacks and drafts are places and view state, not cards to open
           if (node.type === "flowBand" || node.type === "flowLayerGate" || node.type === "flowStack" || node.type === "flowDraft") return;
           setOpenId(node.id);
@@ -454,9 +465,9 @@ function FlowCanvas({
           right: FLOW_MARGIN,
         }}
       >
-        <span className={`flow-chip${counts.hil > 0 ? " flow-chip--hil" : ""}`}>
-          🧑 HIL {counts.hil}
-        </span>
+        <button type="button" className={`flow-chip${counts.hil > 0 ? " flow-chip--hil" : ""}`} onClick={() => { setOpenId(null); setShowDecisions(true); }} aria-label={`Waiting on you: ${counts.hil}`}>
+          🧑 Waiting on you {counts.hil}
+        </button>
         {graph.nodes.find(node => node.kind === "start")?.cron && (
           <span className="flow-chip">
             ⏱ {graph.nodes.find(node => node.kind === "start")?.cron?.every}
@@ -500,7 +511,9 @@ function FlowCanvas({
 
       {toast && <FlowSteeringToast toast={toast} onDismiss={() => setToast(null)} />}
 
-      {openNode && openNode.kind !== "gatepost" && (
+      {showDecisions && <FlowDecisions items={inbox} onClose={() => setShowDecisions(false)} onDecide={active.decide} onRecorded={(task, row) => setRecorded(previous => ({ ...previous, [task]: row }))} />}
+
+      {!showDecisions && openNode && openNode.kind !== "gatepost" && (
         <FlowInspector
           node={openNode}
           onClose={() => setOpenId(null)}

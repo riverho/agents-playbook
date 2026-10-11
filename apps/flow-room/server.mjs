@@ -204,7 +204,7 @@ async function serveApi(req, res, url) {
       ok: true,
       root: ROOT,
       engine: v ? v[1] : null,
-      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/fork', '/api/worker'],
+      routes: ['/api/graph', '/api/task/<id>', '/api/comment', '/api/steer', '/api/fork', '/api/worker', '/api/decide'],
     });
   }
 
@@ -233,6 +233,22 @@ async function serveApi(req, res, url) {
   }
 
   // ── writes: each one is a pb invocation, never a direct file edit ──────────
+  if (path === '/api/decide' && req.method === 'POST') {
+    const body = await readBody(req);
+    if (!body || typeof body.task !== 'string' || !/^[\w][\w.-]*$/.test(body.task) ||
+        typeof body.option !== 'string' || !/^[\w][\w.-]*$/.test(body.option) ||
+        typeof body.reason !== 'string' || !body.reason.trim() || body.reason.trim().startsWith('-')) {
+      return json(res, 400, { error: 'expected { task: id, option: id, reason: non-empty text not starting with "-" }' });
+    }
+    const r = await runPb(ROOT, ['decide', '--task', body.task, '--option', body.option, '--reason', body.reason.trim(), '--agent', 'human']);
+    if (r.code !== 0) return json(res, 422, { error: 'pb decide refused', detail: r.stderr.trim() || r.stdout.trim() });
+    const seq = /\(seq (\d+)/.exec(r.stdout)?.[1];
+    const shown = await runPb(ROOT, ['runcard', 'show', body.task, '--json']);
+    let row = null;
+    try { row = JSON.parse(shown.stdout)?.journal?.find(row => row.seq === Number(seq)) ?? null; } catch { /* reported below */ }
+    if (!row) return json(res, 502, { error: 'decision was recorded, but its row could not be read', detail: r.stdout.trim() });
+    return json(res, 200, { ok: true, row, output: r.stdout.trim() });
+  }
   if (path === '/api/comment' && req.method === 'POST') {
     const body = await readBody(req);
     if (!body || typeof body.task !== 'string' || typeof body.text !== 'string' || !body.text.trim()) {

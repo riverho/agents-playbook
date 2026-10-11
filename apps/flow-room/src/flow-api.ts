@@ -21,6 +21,7 @@
 import { createPbGraphAdapter, type FlowAdapter, type FlowSteeringMode } from "@/lib/flow-adapter";
 import { steeringPlan } from "@/lib/flow-derive";
 import type { FlowGraph, FlowNode } from "@/lib/flow-types";
+import type { DecisionRow } from "@/lib/flow-decisions";
 
 const CSRF_HEADER = { "x-pb-ui": "1", "content-type": "application/json" } as const;
 
@@ -70,6 +71,14 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
   const base = createPbGraphAdapter(() => graph);
   return {
     ...base,
+    decide: async (task, option, reason) => {
+      try {
+        const r = await decide(task, option, reason, apiBase);
+        return { ok: r.ok, note: r.output, row: r.row };
+      } catch (err) {
+        return { ok: false, note: err instanceof Error ? err.message : String(err) };
+      }
+    },
     sendMessage: async (task, text, intent) => {
       try {
         const r = await comment(task, text, apiBase, intent);
@@ -169,3 +178,6 @@ export const fork = (goal: string, from?: string, check?: string, apiBase = "", 
 /** A worker slot for a card: `pb worker create <task> --execute` (D22 fork). */
 export const workerCreate = (task: string, apiBase = "") =>
   post<{ ok: boolean; task: string; output: string }>("/api/worker", { task }, apiBase);
+
+export const decide = (task: string, option: string, reason: string, apiBase = "") =>
+  post<{ ok: boolean; row: DecisionRow; output: string }>("/api/decide", { task, option, reason }, apiBase);
