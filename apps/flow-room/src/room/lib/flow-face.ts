@@ -89,6 +89,7 @@ export function isLive(node: FlowNode, now = Date.now()): boolean {
   if (node.status !== "in_progress" || !node.claim?.by) return false;
   const rows = node.journal ?? [];
   const last = rows.length ? rowTime(rows[rows.length - 1]) : NaN;
+  // a row stamped in the future is a clock problem, not evidence of work: not live
   return Number.isFinite(last) && now - last >= 0 && now - last <= LIVE_WINDOW_MS;
 }
 
@@ -204,7 +205,9 @@ export function fitText(text: string, perLine: number, maxLines: number): { text
 
 /** The face title: the engine's `headline` when it sends one, else the title, fitted (K2). */
 export function faceTitle(node: FlowNode, perLine = charsPerLine(FACE_TITLE_PX)): { text: string; cut: boolean; lines: number; full: string } {
-  const source = (node.headline && node.headline.trim()) || node.title;
+  // K4: a title that quotes its own ID does not put the ID on the face
+  const source = ((node.headline && node.headline.trim()) || node.title)
+    .split(`[${node.id}]`).join("this task").split(node.id).join("this task");
   const fit = fitText(source, perLine, FACE_TITLE_LINES);
   return { ...fit, full: node.title };
 }
@@ -285,9 +288,10 @@ export function messageRows(node: FlowNode): FlowJournalRow[] {
 
 // ── the rail on the face (C5, D19) ──────────────────────────────────────────
 
-export function faceBar(node: FlowNode): { filled: number; current: number; working: boolean } {
+/** `working` drives the bar's sweep, so it is LIVE, not in_progress: a quiet claim is still (F1). */
+export function faceBar(node: FlowNode, now = Date.now()): { filled: number; current: number; working: boolean } {
   const rail = flowRail(node);
-  return { filled: rail.filled, current: rail.current, working: node.status === "in_progress" };
+  return { filled: rail.filled, current: rail.current, working: isLive(node, now) };
 }
 
 // ── height (K5: 120–220, follows content) ───────────────────────────────────
@@ -330,12 +334,21 @@ export function zoomTier(zoom: number): ZoomTier {
 }
 
 /** The beacon an overview shows for a card (G5): only states a person must see from far away. */
-export function beaconFor(node: FlowNode, now = Date.now()): "you" | "work" | "block" | "done" | "ready" {
+export type Beacon = "you" | "work" | "held" | "block" | "done" | "closed" | "ready";
+
+/**
+ * The overview dot. Only a LIVE card pulses ("work", F1); a held but quiet claim is a still
+ * "held" dot. Only a proven done is the green "done" (C4): a card closed without a passing
+ * check, or a decision not yet worked, is a neutral "closed".
+ */
+export function beaconFor(node: FlowNode, now = Date.now()): Beacon {
   const s = faceState(node);
   if (s.kind === "you") return "you";
-  if (s.kind === "working" || isLive(node, now)) return "work";
+  if (isLive(node, now)) return "work";
+  if (s.kind === "working") return "held";
   if (s.kind === "blocked") return "block";
-  if (s.kind === "done" || s.kind === "closed" || s.kind === "decided") return "done";
+  if (s.kind === "done") return "done";
+  if (s.kind === "closed" || s.kind === "decided") return "closed";
   return "ready";
 }
 

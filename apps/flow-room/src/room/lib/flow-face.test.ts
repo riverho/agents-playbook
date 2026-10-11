@@ -15,6 +15,7 @@ import {
   FACE_SLOTS,
   FACE_TITLE_LINES,
   beaconFor,
+  faceBar,
   charsPerLine,
   faceHeight,
   faceNow,
@@ -168,5 +169,29 @@ describe("T3 — zoom tiers", () => {
   it("the smallest full-tier text (12px) stays ≥ 9px at 75%, the glance text (28px) at 40%", () => {
     expect(12 * 0.75).toBeGreaterThanOrEqual(9);
     expect(28 * 0.4).toBeGreaterThanOrEqual(9);
+  });
+});
+
+describe("checker seq 158 — still cards stay still, unproven never green", () => {
+  const held = (min: number) =>
+    task({ status: "in_progress", claim: { by: "lead", seq: 1 }, journal: [row("implement", { ts: ago(min) })] });
+  it("a held but quiet claim does not sweep its bar and shows the still 'held' beacon (F1)", () => {
+    expect(faceBar(held(120), NOW).working).toBe(false);
+    expect(beaconFor(held(120), NOW)).toBe("held");
+  });
+  it("a live claim sweeps and pulses", () => {
+    expect(faceBar(held(2), NOW).working).toBe(true);
+    expect(beaconFor(held(2), NOW)).toBe("work");
+  });
+  it("a journal row from the future is not live", () => {
+    expect(isLive(task({ status: "in_progress", claim: { by: "lead", seq: 1 }, journal: [row("implement", { ts: ago(-30) })] }), NOW)).toBe(false);
+  });
+  it("closed without a passing check, or decided, is never the green done beacon (C4)", () => {
+    expect(beaconFor(task({ status: "done" }), NOW)).toBe("closed");
+    expect(beaconFor(task({ manual: true, journal: [row("decide")] }), NOW)).toBe("closed");
+    expect(beaconFor(task({ status: "done", journal: [row("execute", { checks: "passed", status: "done" })] }), NOW)).toBe("done");
+  });
+  it("a title quoting its own ID does not put the ID on the face (K4)", () => {
+    expect(faceTitle(task({ title: "Follow-up to [plan-x]: tidy the gate" })).text).not.toContain("plan-x");
   });
 });

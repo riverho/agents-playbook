@@ -32,6 +32,30 @@ try {
   const mounted = await room.navigate();
   console.log(`room: ${room.url} · ${mounted} node(s) mounted`);
 
+  // the gate must be looking at a backlog: a room with no task cards passes nothing vacuously
+  await evaluate('window.__flowRoom.setViewport({ x: 20, y: 20, zoom: 1 })');
+  await sleep(300);
+  const taskCards = await evaluate("document.querySelectorAll('.flow-face[data-live]').length");
+  console.log(`task cards: ${taskCards}`);
+  if (taskCards < 5) problems.push(`only ${taskCards} task card(s) mounted — the room is not drawing a backlog (run in a playbook with tasks, or pass --root <playbook>)`);
+
+  // ── F1: nothing animates unless it is live or asking a person ──
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+  for (const z of [1, 0.05]) {
+    await evaluate(`window.__flowRoom.setViewport({ x: 20, y: 20, zoom: ${z} })`);
+    await sleep(450);
+    const f1 = await evaluate(`(() => {
+      const cards = [...document.querySelectorAll('.flow-room:not(#__motion-probe) .flow-face[data-live]')];
+      const still = cards.filter((c) => c.dataset.live === 'false' && !c.dataset.hil);
+      const moving = still.filter((c) => c.getAnimations({ subtree: true }).some((a) => a.constructor.name === 'CSSAnimation' && a.playState === 'running'));
+      const live = cards.filter((c) => c.dataset.live === 'true');
+      return { cards: cards.length, still: still.length, live: live.length, moving: moving.map((c) => (c.title || '').split(' — ')[0]).slice(0, 5), movingN: moving.length };
+    })()`);
+    console.log(`  F1 ${Math.round(z * 100)}%: ${f1.cards} card(s), ${f1.live} live, ${f1.still} still · ${f1.movingN} still card(s) animating`);
+    if (f1.still === 0) problems.push(`F1 ${z}: no still card to watch — the check stopped watching`);
+    if (f1.movingN) problems.push(`F1 ${z}: ${f1.movingN} card(s) that are not live animate: ${f1.moving.join(', ')}`);
+  }
+
   // ── T3 + G5 ────────────────────────────────────────────────────────────────
   for (const zoom of ZOOMS) {
     await evaluate(`window.__flowRoom.setViewport({ x: 20, y: 20, zoom: ${zoom} })`);

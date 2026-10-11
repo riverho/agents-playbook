@@ -296,6 +296,8 @@ function FlowCanvas({
   // The browser gate's seam (scripts/check-room-browser.mjs): drive the zoom from outside
   // and read it back. Read-only apart from the viewport, which is view state anyway.
   useEffect(() => {
+    // only when asked for (?gate): a production build does not expose it by default
+    if (!/[?&]gate\b/.test(window.location.search)) return;
     const w = window as unknown as { __flowRoom?: unknown };
     w.__flowRoom = { setViewport: reactFlow.setViewport, getZoom: reactFlow.getZoom };
     return () => { delete w.__flowRoom; };

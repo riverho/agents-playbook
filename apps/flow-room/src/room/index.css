@@ -1114,11 +1114,12 @@ code,
   background: var(--warn-tint);
   color: var(--tone-risk);
 }
-.flow-st--done,
-.flow-st--decided {
+.flow-st--done {
   background: var(--done-tint);
   color: var(--tone-ok);
 }
+/* decided is steady but not finished, and closed-not-proven is not a pass (F2, C4) */
+.flow-st--decided,
 .flow-st--closed,
 .flow-st--ready {
   background: var(--surface-2);
@@ -1225,6 +1226,17 @@ code,
 }
 .flow-beacon--done {
   background: var(--s6) !important;
+}
+/* a held but quiet claim: a still teal ring, never a pulse (F1) */
+.flow-beacon--held {
+  background: var(--surface-1) !important;
+  box-shadow: 0 0 0 3px var(--accent-teal) !important;
+}
+/* closed without proof, or decided and waiting: neutral, never the done green (C4) */
+.flow-beacon--closed {
+  background: var(--text-tertiary) !important;
+  width: 11px !important;
+  height: 11px !important;
 }
 .flow-beacon--ready {
   background: var(--surface-1) !important;

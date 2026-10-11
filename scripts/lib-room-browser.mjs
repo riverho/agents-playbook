@@ -123,7 +123,8 @@ export async function openRoom({ url = null, playbookRoot = ROOT, width = 1600, 
       return r.result?.value;
     };
     const navigate = async () => {
-      await cdp.send('Page.navigate', { url: target });
+      // ?gate installs the room's test seam (window.__flowRoom); a plain visit does not
+      await cdp.send('Page.navigate', { url: target + (target.includes('?') ? '&' : '?') + 'gate=1' });
       for (let i = 0; i < 80; i += 1) {
         const n = await evaluate('document.querySelectorAll(".react-flow__node").length').catch(() => 0);
         const seam = await evaluate('!!window.__flowRoom').catch(() => false);

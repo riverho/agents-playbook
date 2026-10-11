@@ -129,9 +129,9 @@
       "recorded": "2026-10-10T07:36:14.141Z"
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "ee07a0e945baeb15595a71f3630893ba005b3fb8037e38c3700e8e19c9dcffe4",
-      "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): zoom tier (full/glance/overview) and --inv on the room, minZoom 5%, reduced motion read once, window.__flowRoom seam for the browser gate",
-      "recorded": "2026-10-11T03:20:37.707Z",
+      "sha256": "3dd4dd2846b08dddfced32f49695a1d842be03c65217af7c8febdc2a6ca046ec",
+      "reason": "plan-20261010-030 (v2 card face) + checker seq 158 fixes: zoom tier and --inv on the room, minZoom 5%, reduced motion read once, window.__flowRoom seam installed only with ?gate",
+      "recorded": "2026-10-11T03:30:27.707Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -140,6 +140,10 @@
         {
           "sha256": "22c1f09a016528a96009133e5d5da5d25c128318da74ee9334a7bb239cc8aedb",
           "reason": "plan-20261010-023 (async steering, toast branches on persisted) + plan-20261010-028 (v2 contract, D12/D13/D19/D20): the HIL chip class is flow-chip--hil, coloured --you (C3)"
+        },
+        {
+          "sha256": "ee07a0e945baeb15595a71f3630893ba005b3fb8037e38c3700e8e19c9dcffe4",
+          "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): zoom tier (full/glance/overview) and --inv on the room, minZoom 5%, reduced motion read once, window.__flowRoom seam for the browser gate"
         }
       ]
     },
@@ -166,9 +170,9 @@
       ]
     },
     "components/stage/FlowCards.tsx": {
-      "sha256": "4ae97c7764febb1900215b7e8b231028272029bd434c42b7db40b82316d5b12b",
-      "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): the task card is the five-slot face (state + owner, title, bar, now, proof + messages) from lib/flow-face.ts; no ID/skill/mode/layer on the face; flashing light, needs-you label and overview beacons",
-      "recorded": "2026-10-11T03:20:37.563Z",
+      "sha256": "fe45cc0ab730f6a4560289897a0b68c47c2dbe9fec57d9f3b64be2baa542687e",
+      "reason": "plan-20261010-030 (v2 card face) + checker seq 158 fixes: the five-slot face from lib/flow-face.ts; no ID/skill/mode/layer on the face; data-live on the card; the bar sweeps and the beacon pulses only when LIVE (F1); unproven done is a neutral beacon (C4)",
+      "recorded": "2026-10-11T03:30:27.631Z",
       "superseded": [
         {
           "sha256": "b7ffdddba6b596037b4c5935e69279476bf6eb88ccedfc0e38ea0713de04f315",
@@ -177,6 +181,10 @@
         {
           "sha256": "ccad48b2f2d44e3be3d050ee00d26a45390ff407d1f30fc82c83e6528e38eb75",
           "reason": "plan-20261010-028 (v2 contract) + checker seq 151 fixes: the cycle rail takes railAttrs(node), so data-done marks only a fully filled rail (C4/C5); inline sizes on the 12px floor (T2); the HIL batch bar is --you (C3); prose kickers use the UI face, IDs and branches the code face (T4)"
+        },
+        {
+          "sha256": "4ae97c7764febb1900215b7e8b231028272029bd434c42b7db40b82316d5b12b",
+          "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): the task card is the five-slot face (state + owner, title, bar, now, proof + messages) from lib/flow-face.ts; no ID/skill/mode/layer on the face; flashing light, needs-you label and overview beacons"
         }
       ]
     },

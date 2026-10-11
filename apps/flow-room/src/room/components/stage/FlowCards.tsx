@@ -245,6 +245,7 @@ export function FlowTaskCard({ data, selected }: NodeProps<FlowTaskNode>) {
   return (
     <div className={classes} title={`${node.id} — ${node.title}`} data-beacon={beacon}
       data-hil={state.kind === "you" ? "asking" : undefined}
+      data-live={live ? "true" : "false"}
       style={{ width, height, ["--glance-lines" as string]: glanceLines }}>
       <Handle type="target" position={Position.Left} className="flow-handle" />
       <span className={`flow-beacon flow-beacon--${beacon === "you" ? "hil" : beacon}`} aria-hidden />
