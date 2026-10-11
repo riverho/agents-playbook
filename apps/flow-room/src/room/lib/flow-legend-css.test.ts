@@ -46,7 +46,8 @@ function escapeSelector(selector: string): string {
  */
 function blocks(selector: string): string[] {
   const found = [
-    ...CSS.matchAll(new RegExp(`${escapeSelector(selector)}\\s*\\{([^}]*)\\}`, "g")),
+    // anchored: `body` must not match the tail of `.flow-body`, `html` not `.x-html`
+    ...CSS.matchAll(new RegExp(`(?<![\\w.#:-])${escapeSelector(selector)}\\s*\\{([^}]*)\\}`, "g")),
   ].map(match => match[1]);
   if (found.length === 0) throw new Error(`index.css has no rule for ${selector}`);
   return found;
@@ -69,19 +70,31 @@ function effective(selector: string, property: string): string | undefined {
  * grew to ~232px against a 121px reserve (four rows clipped silently). So both
  * properties are resolved down the chain, the element's own rule winning last.
  */
+// The legend's REAL ancestors, outermost first (plan-20261010-001): it is drawn in a
+// ViewportPortal inside the React Flow viewport, inside the room, inside the page. A
+// line-height set on any of them is inherited by the rows just as surely as one set on
+// .flow-legend, so the chain starts at the root, not at the legend.
+export const LEGEND_PAGE_ANCESTORS = [":root", "html", "body", ".flow-room", ".react-flow", ".react-flow__viewport"];
 const ANCESTORS: Record<string, string[]> = {
-  ".flow-legend": [],
-  ".flow-legend__grp": [".flow-legend"],
-  ".flow-legend__h": [".flow-legend", ".flow-legend__grp"],
-  ".flow-legend__row": [".flow-legend", ".flow-legend__grp"],
-  ".flow-legend__row i": [".flow-legend", ".flow-legend__grp", ".flow-legend__row"],
+  ".flow-legend": [...LEGEND_PAGE_ANCESTORS],
+  ".flow-legend__grp": [...LEGEND_PAGE_ANCESTORS, ".flow-legend"],
+  ".flow-legend__h": [...LEGEND_PAGE_ANCESTORS, ".flow-legend", ".flow-legend__grp"],
+  ".flow-legend__row": [...LEGEND_PAGE_ANCESTORS, ".flow-legend", ".flow-legend__grp"],
+  ".flow-legend__row i": [...LEGEND_PAGE_ANCESTORS, ".flow-legend", ".flow-legend__grp", ".flow-legend__row"],
 };
+
+function hasRule(selector: string): boolean {
+  try { return blocks(selector).length > 0; } catch { return false; }
+}
 
 /** The inherited value: ancestors first (in order), the element's own rule last. */
 function inherited(selector: string, property: string): string | undefined {
   const chain = [...(ANCESTORS[selector] ?? []), selector];
   let value: string | undefined;
   for (const step of chain) {
+    // a page ancestor with no rule in index.css declares nothing (the legend's own
+    // selectors still MUST exist: a missing one there is a renamed class, and throws)
+    if (LEGEND_PAGE_ANCESTORS.includes(step) && !hasRule(step)) continue;
     const declared = effective(step, property);
     if (declared !== undefined) value = declared;
   }
@@ -218,6 +231,15 @@ describe("the legend metrics agree with the CSS that draws the legend", () => {
     // group) IS the row's value; the budget must resolve the chain, not ignore it.
     expect(ANCESTORS[".flow-legend__row"]).toContain(".flow-legend");
     expect(ANCESTORS[".flow-legend__h"]).toContain(".flow-legend");
+    // the selector match is anchored: `.flow-body` (line-height 1.45) is NOT `body` — an
+    // unanchored match read it as the page's line-height and called the rows clipped
+    expect(CSS.includes(".flow-body")).toBe(true);
+    expect(hasRule("body")).toBe(false);
+    // …and from the page down: the room, React Flow's containers, body, html, :root
+    for (const a of [":root", "html", "body", ".flow-room", ".react-flow", ".react-flow__viewport"]) {
+      expect(ANCESTORS[".flow-legend__row"]).toContain(a);
+      expect(ANCESTORS[".flow-legend__h"]).toContain(a);
+    }
     // Today: no line-height anywhere in the chain (either element), and no
     // letter-spacing on either: the v2 contract (T5, plan-20261010-028) removed the
     // header's 0.1em tracking, so the budget is the plain glyph advance.

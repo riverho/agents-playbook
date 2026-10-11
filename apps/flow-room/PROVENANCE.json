@@ -273,9 +273,15 @@
       "recorded": "2026-10-10T18:51:09.133Z"
     },
     "lib/flow-legend-css.test.ts": {
-      "sha256": "0672bb9e5fa4b29ce61e6c57139ebbfdf3e2b08b24f5c9676e2666bccbfbd798",
-      "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): T5 removed the legend header's 0.1em tracking, so the ancestor-chain test now expects no letter-spacing anywhere",
-      "recorded": "2026-10-10T18:51:09.211Z"
+      "sha256": "7b7016280814392153b73637cd1a97ebdde10dc78f9349332fb87e4cf2ff0ce5",
+      "reason": "plan-20261010-028 + plan-20261010-001: T5 removed the header tracking; the inheritance chain now starts at the legend's real ancestors (:root, html, body, .flow-room, React Flow containers) and the selector lookup is anchored (an unanchored 'body' matched '.flow-body')",
+      "recorded": "2026-10-11T08:08:10.406Z",
+      "superseded": [
+        {
+          "sha256": "0672bb9e5fa4b29ce61e6c57139ebbfdf3e2b08b24f5c9676e2666bccbfbd798",
+          "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): T5 removed the legend header's 0.1em tracking, so the ancestor-chain test now expects no letter-spacing anywhere"
+        }
+      ]
     },
     "lib/stage-tokens.ts": {
       "sha256": "793acbe09161286025fb30dc4543fb407c274a3b4ab245185406f0b93c93587e",
