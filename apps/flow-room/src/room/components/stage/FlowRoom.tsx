@@ -28,6 +28,7 @@ import {
   ViewportPortal,
   useNodesState,
   useReactFlow,
+  useStore,
   type NodeTypes,
   type EdgeTypes,
 } from "@xyflow/react";
@@ -67,6 +68,8 @@ import {
   FlowTaskCard,
 } from "./FlowCards";
 import { FlowViewContext } from "@/lib/flow-view";
+import { zoomTier } from "@/lib/flow-face";
+import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion";
 import {
   STEERING_NODE_ID,
   buildEdges,
@@ -198,9 +201,10 @@ function FlowCanvas({
   );
   const plan = useMemo(() => steeringPlan(selection), [selection]);
   const multi = selection.length > 1;
+  const reducedMotion = usePrefersReducedMotion();
   const viewState = useMemo(
-    () => ({ goalDiff, steeredIds }),
-    [goalDiff, steeredIds]
+    () => ({ goalDiff, steeredIds, reducedMotion }),
+    [goalDiff, steeredIds, reducedMotion]
   );
 
   // The frame-3 summary card: view state, placed under the orchestrator.
@@ -289,13 +293,29 @@ function FlowCanvas({
     [active, prompt]
   );
 
+  // The browser gate's seam (scripts/check-room-browser.mjs): drive the zoom from outside
+  // and read it back. Read-only apart from the viewport, which is view state anyway.
+  useEffect(() => {
+    const w = window as unknown as { __flowRoom?: unknown };
+    w.__flowRoom = { setViewport: reactFlow.setViewport, getZoom: reactFlow.getZoom };
+    return () => { delete w.__flowRoom; };
+  }, [reactFlow]);
+
+  // T3: the zoom tier decides what text exists at all, so nothing renders under 9px.
+  const zoom = useStore(state => state.transform[2]);
+  const tier = zoomTier(zoom);
+
   const counts = {
     hil: graph.human.batch.length,
     forks: graph.nodes.filter(node => node.kind === "fork").length,
   };
 
   return (
-    <div className="flow-room">
+    <div
+      className="flow-room"
+      data-tier={tier}
+      style={{ ["--inv" as string]: (1 / Math.max(zoom, 0.01)).toFixed(3) }}
+    >
       <FlowViewContext.Provider value={viewState}>
         <ReactFlow
         nodes={nodes}
@@ -313,7 +333,8 @@ function FlowCanvas({
         }
         // No `fitView` prop: the fit happens in the seed effect below, because it
         // must fit the layout rect (legend included) rather than the node box.
-        minZoom={0.2}
+        // 5% is the overview the layer view is designed for (D22, G5)
+        minZoom={0.05}
         maxZoom={1.6}
         nodesConnectable={false}
         edgesFocusable={false}

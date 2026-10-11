@@ -22,7 +22,7 @@ import {
   type EdgeProps,
 } from "@xyflow/react";
 import { flowEdgeStyle } from "@/lib/flow-derive";
-import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion";
+import { useFlowView } from "@/lib/flow-view";
 import type { FlowEdgeEvidence, FlowEdgeKind } from "@/lib/flow-types";
 
 export interface FlowEdgeData extends Record<string, unknown> {
@@ -104,7 +104,7 @@ export function FlowEdge({
   data,
   selected,
 }: EdgeProps<FlowEdgeType>) {
-  const reduced = usePrefersReducedMotion();
+  const reduced = useFlowView().reducedMotion ?? true;
   const kind: FlowEdgeKind = data?.kind ?? "dep";
   // Proof decides the dash: a SPAWN edge backed by an `action: spawn` row is
   // solid, one standing on a bare claim keeps the dashed `5 4` pattern.

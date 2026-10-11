@@ -97,6 +97,20 @@ export interface FlowJournalRow {
   origin_agent_id?: string;
   origin_runtime?: string | null;
   origin_session_id?: string | null;
+  /** v2 (D16): a one-line human summary of the row; fallback is the first sentence of `notes`. */
+  summary?: string;
+  /** v2 (M3): a person's message carries why it was written. */
+  intent?: "comment" | "steer" | "question" | string;
+}
+
+/** v2 (D17): what a human-in-the-loop item asks, and what each answer does. */
+export interface FlowHumanAsk {
+  question?: string;
+  options?: { id: string; label: string; effect?: string }[];
+  recommended?: string | null;
+  recommended_by?: string | null;
+  /** Tasks that cannot move until this is answered. */
+  waiting_on?: string[];
 }
 
 /**
@@ -239,6 +253,15 @@ export interface FlowNode {
   gate?: { id: string; command: string; passing: boolean; evaluated?: boolean };
   /** The engine stamps every node it projects. */
   updated_at?: string | null;
+  /** v2 (D16): a short title for the card face; fallback is the title, cut at a boundary. */
+  headline?: string;
+  /** v2 (D16): what is happening now; fallback is the newest row's summary. */
+  now?: string;
+  /** v2 (D21, F1): a claim is held AND the journal moved within 15 minutes. */
+  live?: boolean;
+  live_detail?: { live: boolean; why: string; last_row_age_s: number | null; window_s: number };
+  /** v2 (D17): the question a person is asked, when the task declares one. */
+  human?: FlowHumanAsk | null;
 }
 
 /**

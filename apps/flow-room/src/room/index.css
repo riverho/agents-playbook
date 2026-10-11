@@ -52,6 +52,11 @@
   /* needs a person — fuchsia, kept off the progress ramp (C3) */
   --you: #b4167f;
   --you-tint: rgba(180, 22, 127, 0.1);
+  /* v2 state washes (chips sit on these; text on them measured >= 4.5:1) */
+  --accent-tint: #e3f1ee;
+  --line-strong: #d9d5cf;
+  --warn-tint: #f6ecd9;
+  --done-tint: #e2f0e6;
   /* the six loop steps, red (1) to green (6) (C5, D19) */
   --s1: #d64541;
   --s2: #e06a2e;
@@ -947,4 +952,340 @@
 code,
 .flow-panel__cmd {
   font-family: var(--f-code);
+}
+
+/* ─── v2 card face (contract K1–K5, F1–F4, T3, C2; D13, D14, D19, D20) ───
+   Five slots: state + owner → title → bar → now → proof + messages. Every flash is
+   slower than 3 per second (F3) and every flash has a steady reduced-motion form (F4). */
+
+.flow-face {
+  position: relative;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 14px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--surface-3);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgba(17, 17, 17, 0.06);
+  font-family: var(--f-ui);
+  color: var(--text-primary);
+  overflow: hidden;
+  transition: box-shadow 160ms ease, border-color 160ms ease;
+}
+.flow-face:hover {
+  border-color: var(--text-tertiary);
+}
+.flow-face--selected {
+  border-color: var(--accent-teal);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+.flow-face__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.flow-face__who {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.flow-face__av {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-tint);
+  color: var(--accent-teal);
+  font-size: 12px;
+  font-weight: 700;
+}
+.flow-face__age {
+  white-space: nowrap;
+}
+.flow-face__title {
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 21px;
+  font-weight: 600;
+  overflow-wrap: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.flow-face__now {
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 19px;
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: var(--now-lines, 2);
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.flow-face__now b {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.flow-face__foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--surface-2);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.flow-face__proof,
+.flow-face__msgs {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.flow-meter {
+  display: inline-grid;
+  grid-auto-flow: column;
+  gap: 2px;
+}
+.flow-meter i {
+  width: 10px;
+  height: 6px;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+.flow-meter i.is-ok {
+  background: var(--s6);
+}
+.flow-meter i.is-no {
+  background: var(--tone-bad);
+}
+
+/* the bar: the 6-step rail at face size (C5 colours come from .flow-cycle[data-step]) */
+.flow-face__bar {
+  height: 6px;
+  gap: 3px;
+  margin: 0;
+}
+.flow-face__bar i {
+  height: 6px;
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+.flow-face__bar--working i.flow-cycle__cur::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+  transform: translateX(-100%);
+  animation: flow-sweep 1.2s linear infinite;
+}
+
+/* state chips: a word and an icon for every state (C2) */
+.flow-st {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.flow-st__sh {
+  display: none;
+}
+.flow-st--working {
+  background: var(--accent-tint);
+  color: var(--accent-teal);
+}
+.flow-st--blocked {
+  background: var(--warn-tint);
+  color: var(--tone-risk);
+}
+.flow-st--done,
+.flow-st--decided {
+  background: var(--done-tint);
+  color: var(--tone-ok);
+}
+.flow-st--closed,
+.flow-st--ready {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+.flow-st--asking {
+  background: var(--you-tint);
+  color: var(--you);
+  animation: flow-asking 1s steps(1, end) infinite;
+}
+
+/* F1: the working light, only on a LIVE card (claim held + journal moved) */
+.flow-led {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: flow-led 1.2s ease-in-out infinite;
+}
+.flow-face--live {
+  animation: flow-breathe 2.4s ease-in-out infinite;
+}
+/* F2: the card that needs a person rings until it is answered */
+.flow-face[data-hil="asking"] {
+  border-color: var(--you);
+  animation: flow-hil-halo 1.6s ease-out infinite;
+}
+
+@keyframes flow-led {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 1px currentColor; }
+  50% { opacity: 0.25; box-shadow: 0 0 0 0 currentColor; }
+}
+@keyframes flow-breathe {
+  50% { box-shadow: 0 0 0 4px var(--accent-tint); }
+}
+@keyframes flow-asking {
+  0% { background: var(--you); color: var(--surface-1); }
+  50% { background: var(--you-tint); color: var(--you); }
+}
+@keyframes flow-hil-halo {
+  0% { box-shadow: 0 0 0 0 rgba(180, 22, 127, 0.5); }
+  100% { box-shadow: 0 0 0 14px rgba(180, 22, 127, 0); }
+}
+@keyframes flow-sweep {
+  to { transform: translateX(100%); }
+}
+@keyframes flow-sonar {
+  0% { transform: scale(0.6); opacity: 1; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+
+/* ── zoom tiers (T3): full ≥ 75 % · glance 40–75 % · overview < 40 % ── */
+.flow-beacon {
+  display: none;
+}
+/* glance: state + title + bar, at sizes that stay ≥ 9px on screen at 40 % */
+.flow-room[data-tier="glance"] .flow-face [data-slot="now"],
+.flow-room[data-tier="glance"] .flow-face [data-slot="foot"],
+.flow-room[data-tier="glance"] .flow-face__who,
+.flow-room[data-tier="glance"] .flow-face__age {
+  display: none;
+}
+.flow-room[data-tier="glance"] .flow-face {
+  gap: 6px;
+  padding: 12px 14px;
+}
+.flow-room[data-tier="glance"] .flow-face__title {
+  font-size: 28px;
+  line-height: 32px;
+  -webkit-line-clamp: var(--glance-lines, 2);
+}
+.flow-room[data-tier="glance"] .flow-st {
+  font-size: 28px;
+  padding: 2px 12px;
+}
+.flow-room[data-tier="glance"] .flow-st__lg {
+  display: none;
+}
+.flow-room[data-tier="glance"] .flow-st__sh {
+  display: inline;
+}
+.flow-room[data-tier="glance"] .flow-face__bar,
+.flow-room[data-tier="glance"] .flow-face__bar i {
+  height: 14px;
+}
+/* overview: no card text at all; a beacon per card that matters, at a fixed screen size */
+.flow-room[data-tier="overview"] .flow-face > :not(.flow-beacon):not(.flow-handle) {
+  visibility: hidden;
+}
+.flow-room[data-tier="overview"] .flow-face {
+  overflow: visible;
+}
+.flow-room[data-tier="overview"] .flow-beacon {
+  display: block;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(var(--inv, 1));
+  background: var(--text-tertiary);
+  box-shadow: 0 0 0 2px var(--surface-1);
+}
+.flow-beacon--done {
+  background: var(--s6) !important;
+}
+.flow-beacon--ready {
+  background: var(--surface-1) !important;
+  box-shadow: 0 0 0 2px var(--text-tertiary) !important;
+}
+.flow-beacon--block {
+  background: var(--tone-risk) !important;
+}
+.flow-beacon--work {
+  background: var(--accent-teal) !important;
+  color: var(--accent-teal);
+  animation: flow-led 1.2s ease-in-out infinite;
+}
+.flow-beacon--hil {
+  background: var(--you) !important;
+  width: 22px !important;
+  height: 22px !important;
+}
+.flow-beacon--work::before,
+.flow-beacon--hil::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 3px solid currentColor;
+  animation: flow-sonar 1.6s ease-out infinite;
+}
+.flow-beacon--hil::before {
+  border-color: var(--you);
+}
+/* below full size the old canvas labels would render under 9px: hide them (T3) */
+.flow-room:not([data-tier="full"]) .flow-legend,
+.flow-room:not([data-tier="full"]) .flow-gatepill,
+.flow-room:not([data-tier="full"]) .flow-edgepill,
+.flow-room:not([data-tier="full"]) .flow-card > *,
+.flow-room:not([data-tier="full"]) .flow-bookend > * {
+  visibility: hidden;
+}
+
+/* F4: reduced motion — nothing flashes; a solid ring and the label carry the state */
+@media (prefers-reduced-motion: reduce) {
+  .flow-led,
+  .flow-face--live,
+  .flow-st--asking,
+  .flow-face[data-hil="asking"],
+  .flow-face__bar--working i.flow-cycle__cur::after,
+  .flow-beacon--work,
+  .flow-beacon--work::before,
+  .flow-beacon--hil::before {
+    animation: none !important;
+  }
+  .flow-st--asking {
+    background: var(--you);
+    color: var(--surface-1);
+    outline: 2px solid var(--you);
+    outline-offset: 2px;
+  }
+  .flow-face[data-hil="asking"] {
+    box-shadow: 0 0 0 3px var(--you);
+  }
+  .flow-face--live {
+    box-shadow: 0 0 0 3px var(--accent-teal);
+  }
 }

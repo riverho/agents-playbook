@@ -11,6 +11,22 @@
 // goal-diff the steering dock just applied — both belong to the surface.
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { Ban, Check, Circle, Hand, MessageSquare, Minus } from "lucide-react";
+import {
+  ageLabel,
+  beaconFor,
+  faceBar,
+  faceNow,
+  faceNowLines,
+  faceOwner,
+  faceProof,
+  faceState,
+  faceTitle,
+  isLive,
+  lastMoved,
+  messageRows,
+  type FaceState,
+} from "@/lib/flow-face";
 import { TONE_COLOR, TONE_WASH } from "@/lib/stage-tokens";
 import { useFlowView } from "@/lib/flow-view";
 import {
@@ -30,13 +46,10 @@ import {
   checksCount,
   checksSummary,
   checksUnproven,
-  flowRail,
-  flowStepLabel,
   railAttrs,
   hasRedCheck,
   isHollow,
   isProvenCondition,
-  needsHuman,
 } from "@/lib/flow-derive";
 import type { FlowNode } from "@/lib/flow-types";
 
@@ -56,18 +69,6 @@ function TonePill({
       title={title}
       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium tabular-nums whitespace-nowrap"
       style={{ background: TONE_WASH[tone], color: TONE_COLOR[tone] }}
-    >
-      {children}
-    </span>
-  );
-}
-
-/** The frame's ink pill — a `done` badge is ink, never green. */
-function InkPill({ children }: { children: React.ReactNode }) {
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium tabular-nums whitespace-nowrap"
-      style={{ background: "rgba(17,17,17,0.08)", color: "var(--text-primary)" }}
     >
       {children}
     </span>
@@ -94,38 +95,6 @@ function HilBadge({ children, attention }: { children: React.ReactNode; attentio
       <span aria-hidden>🧑</span>
       {children}
     </span>
-  );
-}
-
-/** The 6-segment cycle rail, derived from this task's journal rows. */
-function CycleRail({ node }: { node: FlowNode }) {
-  const rail = flowRail(node);
-  const label = flowStepLabel(node);
-  return (
-    <>
-      <div
-        className="flow-cycle"
-        {...railAttrs(node)}
-        aria-label={`cycle: ${rail.step ?? "not started"}`}
-      >
-        {[0, 1, 2, 3, 4, 5].map(segment => {
-          const filled = segment < rail.filled;
-          const active = filled && rail.pulsing && segment === rail.current - 1;
-          return (
-            <i
-              key={segment}
-              className={active ? "flow-cycle__on flow-cycle__act" : filled ? "flow-cycle__on" : ""}
-            />
-          );
-        })}
-      </div>
-      {label && (
-        <div className="flow-cycle-lbl">
-          <span>{label}</span>
-          {node.elapsed && <span>{node.elapsed}</span>}
-        </div>
-      )}
-    </>
   );
 }
 
@@ -201,42 +170,122 @@ function Shell({
   );
 }
 
-// ── the task card ────────────────────────────────────────────────────────
+// ── the task card (v2 face: K1–K5, F1, F2, C2) ──────────────────────────
+//
+// Exactly five slots, in this order, and nothing else: state + owner → title → bar →
+// now / next → proof + messages. The task ID, skill, mode and layer are not on the
+// face (K3, K4): the ID is on hover (the root's title) and in the open card.
+
+function StateIcon({ icon }: { icon: FaceState["icon"] }) {
+  const size = 14;
+  if (icon === "led") return <span className="flow-led" aria-hidden />;
+  if (icon === "hand") return <Hand size={size} aria-hidden />;
+  if (icon === "check") return <Check size={size} aria-hidden />;
+  if (icon === "block") return <Ban size={size} aria-hidden />;
+  if (icon === "dash") return <Minus size={size} aria-hidden />;
+  return <Circle size={size} aria-hidden />;
+}
+
+export function FlowStateChip({ state, live }: { state: FaceState; live: boolean }) {
+  const classes = [
+    "flow-st",
+    `flow-st--${state.kind}`,
+    state.flashing ? "flow-st--asking" : "",
+    state.kind === "working" && !live ? "flow-st--quiet" : "",
+  ].filter(Boolean).join(" ");
+  return (
+    <span className={classes} data-state={state.kind}>
+      {state.kind === "working" && !live ? <Circle size={14} aria-hidden /> : <StateIcon icon={state.icon} />}
+      <span className="flow-st__lg">{state.label}</span>
+      <span className="flow-st__sh">{state.short}</span>
+    </span>
+  );
+}
+
+export function FlowFaceBar({ node }: { node: FlowNode }) {
+  const bar = faceBar(node);
+  return (
+    <div
+      className={`flow-cycle flow-face__bar${bar.working ? " flow-face__bar--working" : ""}`}
+      {...railAttrs(node)}
+      role="img"
+      aria-label={bar.filled ? `step ${bar.current} of 6` : "not started"}
+    >
+      {[0, 1, 2, 3, 4, 5].map(segment => {
+        const filled = segment < bar.filled;
+        const current = filled && bar.working && segment === bar.current - 1;
+        return <i key={segment} className={current ? "flow-cycle__on flow-cycle__cur" : filled ? "flow-cycle__on" : ""} />;
+      })}
+    </div>
+  );
+}
 
 export function FlowTaskCard({ data, selected }: NodeProps<FlowTaskNode>) {
-  const { node } = data;
-  const human = needsHuman(node);
-  const mergeAllowed = node.worker?.merge_ready === true && node.checker?.verdict === "pass";
+  const { node, width, height, spawned } = data;
+  const { steeredIds } = useFlowView();
+  const state = faceState(node);
+  const live = isLive(node);
+  const owner = faceOwner(node);
+  const age = ageLabel(lastMoved(node));
+  const title = faceTitle(node);
+  const now = faceNow(node);
+  const proof = faceProof(node);
+  const messages = messageRows(node).length;
+  const beacon = beaconFor(node);
+  // glance tier: the title is 28px, so a short card shows fewer of its lines (T3)
+  const glanceLines = Math.max(1, Math.min(3, Math.floor((height - 104) / 32)));
+  const classes = [
+    "flow-face",
+    `flow-face--${state.kind}`,
+    live ? "flow-face--live" : "",
+    spawned ? "flow-popin" : "",
+    selected ? "flow-face--selected" : "",
+    steeredIds.includes(node.id) ? "flow-card--steered" : "",
+  ].filter(Boolean).join(" ");
   return (
-    <Shell data={data} selected={selected} type="task">
+    <div className={classes} title={`${node.id} — ${node.title}`} data-beacon={beacon}
+      data-hil={state.kind === "you" ? "asking" : undefined}
+      style={{ width, height, ["--glance-lines" as string]: glanceLines }}>
       <Handle type="target" position={Position.Left} className="flow-handle" />
-      <div className="flow-row">
-        <span className="flow-id" title={node.id}>
-          {node.id}
+      <span className={`flow-beacon flow-beacon--${beacon === "you" ? "hil" : beacon}`} aria-hidden />
+      <div className="flow-face__top" data-slot="state">
+        <FlowStateChip state={state} live={live} />
+        <span className="flex-1" />
+        {owner ? (
+          <span className="flow-face__who">
+            <span className="flow-face__av" aria-hidden>{owner.initial}</span>
+            {owner.name}
+          </span>
+        ) : (
+          age && <span className="flow-face__age">{age}</span>
+        )}
+      </div>
+      <div className="flow-face__title" data-slot="title">{title.text}</div>
+      <div data-slot="bar">
+        <FlowFaceBar node={node} />
+      </div>
+      {now && (
+        <p className="flow-face__now" data-slot="now" style={{ ["--now-lines" as string]: faceNowLines(node) }}>
+          <b>{now.label}:</b> {now.text}
+        </p>
+      )}
+      <div className="flow-face__foot" data-slot="foot">
+        <span className="flow-face__proof tabular-nums whitespace-nowrap">
+          {proof.cells.length > 0 && (
+            <span className="flow-meter" aria-hidden>
+              {proof.cells.map((c, i) => <i key={i} className={c === "none" ? "" : `is-${c}`} />)}
+            </span>
+          )}
+          {proof.text}
         </span>
         <span className="flex-1" />
-        {node.status === "done" && <InkPill>done</InkPill>}
-        {node.status === "in_progress" && (
-          <TonePill tone="ok">
-            <LiveDot />
-            run
-          </TonePill>
-        )}
-        {human && <HilBadge attention>human</HilBadge>}
+        <span className="flow-face__msgs" title="messages on this card">
+          <MessageSquare size={13} aria-hidden />
+          {messages}
+        </span>
       </div>
-      <div className="flow-title">{node.title}</div>
-      <CycleRail node={node} />
-      <MicroRow node={node}>
-        {/* Only a card an `action: spawn` row actually created wears the chip:
-            provenance alone is on every old task and would crowd this row. */}
-        {data.spawned && <TonePill tone="note">spawned</TonePill>}
-        {node.layer.startsWith("L") && <TonePill tone="muted">{node.layer}</TonePill>}
-        {mergeAllowed && (
-          <span style={{ color: TONE_COLOR.ok, fontWeight: 600 }}>✓ merge-back</span>
-        )}
-      </MicroRow>
       <Handle type="source" position={Position.Right} className="flow-handle" />
-    </Shell>
+    </div>
   );
 }
 
