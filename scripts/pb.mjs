@@ -1023,7 +1023,7 @@ function evalLayerGate(gate) {
       runCommandSync(file, argv, { cwd: ROOT, stdio: 'pipe', timeout: 120000 });
       result = { ok: true, output: '' };
     } catch (e) {
-      result = { ok: false, output: [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim().split(/\r?\n/).slice(-8).join('\n') };
+      result = { ok: false, output: boundedTail([e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim()) };
     }
   }
   layerGateCache.set(gate, result);
@@ -1569,7 +1569,7 @@ function runOneCheck(cmd, cwd, limit) {
       overflow: status === 'output-limit' || isOutputOverflow(e),
       kill_failed: killFailed,
       elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput,
-      output: out ? out.split(/\r?\n/).slice(-8).join('\n') : '',
+      output: out ? boundedTail(out) : '',
     };
   } finally {
     try { rmSync(statusFile, { force: true }); } catch { /* best effort */ }
@@ -1600,9 +1600,32 @@ function warnCheckLimit(limit) {
 // A kill that FAILED is not a detail: the engine has stopped waiting, but the check's
 // processes may still be running and writing. Say so next to the verdict, never only in
 // the check's own stderr (checker note on plan-20261010-026, seq 147).
+// The tail of a check's output that a report echoes: the last lines, AND at most this many
+// bytes — a red check that prints one 20 MiB line must not dump 20 MiB to the console.
+const ECHO_TAIL_LINES = 8;
+const ECHO_TAIL_BYTES = 4096;
+function boundedTail(text) {
+  const tail = String(text || '').split(/\r?\n/).slice(-ECHO_TAIL_LINES).join('\n');
+  if (Buffer.byteLength(tail) <= ECHO_TAIL_BYTES) return tail;
+  const cut = Buffer.from(tail).subarray(-ECHO_TAIL_BYTES).toString('utf8').replace(/^\uFFFD+/, '');
+  return `… [${Buffer.byteLength(tail) - Buffer.byteLength(cut)} earlier bytes not shown]${cut}`;
+}
 function printKillFailure(r) {
   if (!r.kill_failed) return;
   console.log(`        WARNING: the check's process tree could NOT be killed (${r.kill_failed}) — some of its processes may still be running. Find and stop them before trusting the next run.`);
+}
+// Each no-verdict outcome gets ITS remedy, and only its own: a pure output overflow must
+// not be told to raise a time limit. An overflow also says when it was cut — a check that
+// printed fast and then hung would only reveal its hang if the output bound were raised.
+function printLimitRemedies(timeouts, overflows) {
+  if (timeouts.length) {
+    console.error(`  TIMED OUT: limit ${timeouts[0].limit_ms}ms from ${timeouts[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
+  }
+  if (overflows.length) {
+    const o = overflows[0];
+    console.error(`  OUTPUT-LIMIT: bound ${o.max_output_bytes} bytes; make the check quieter (send its output to a file), or raise it with PB_CHECK_MAX_OUTPUT_BYTES=<bytes>.`);
+    console.error(`  It was cut after ${o.elapsed_ms}ms of a ${o.limit_ms}ms time limit: with a bigger bound it may still run on — and time out — if it is hanging.`);
+  }
 }
 function printResultOutcome(r, { okLabel, noun }) {
   if (r.ok) { console.log(`  ${okLabel}  ${r.cmd}`); return; }
@@ -4125,8 +4148,7 @@ function cmdRecord(args) {
           const what = timeouts.length ? 'TIMED OUT' : 'exceeded the output limit';
           console.error(`\nRefusing to record [${task.id}] as done — ${noVerdict.length} acceptance check(s) ${what}.`);
           console.error('No verdict was reached; this is NOT a failed check.');
-          console.error(`  limit ${noVerdict[0].limit_ms}ms from ${noVerdict[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
-          if (overflows.length) console.error(`  output bound ${overflows[0].max_output_bytes} bytes; raise it with PB_CHECK_MAX_OUTPUT_BYTES=<bytes>.`);
+          printLimitRemedies(timeouts, overflows);
         } else if (!noVerdict.length) {
           console.error(`\nRefusing to record [${task.id}] as done — acceptance checks failed.`);
         } else {
@@ -4134,7 +4156,7 @@ function cmdRecord(args) {
           // one sentence call the whole refusal "not a failed check".
           console.error(`\nRefusing to record [${task.id}] as done — ${reds.length} check(s) FAILED and ${noVerdict.length} reached no verdict${timeouts.length ? ` (${timeouts.length} TIMED OUT)` : ''}${overflows.length ? ` (${overflows.length} output-limit)` : ''}.`);
           console.error('The FAILED check(s) above are failures; the TIMED OUT / OUTPUT-LIMIT check(s) are NOT — no verdict was reached for them.');
-          console.error(`  limit ${noVerdict[0].limit_ms}ms from ${noVerdict[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
+          printLimitRemedies(timeouts, overflows);
         }
         console.error('Fix the work, or record --status blocked with notes. (--skip-checks overrides, and is stamped on the entry.)');
         process.exit(1);
@@ -4448,7 +4470,12 @@ function cmdLoopRunAuto(args) {
     process.exit(1);
   }
   const maxTasks = Number(args['max-tasks']) || Infinity;
-  const retry = Number(args.retry) || 3;
+  // an explicit 0 means "no retries"; `Number(x) || 3` once turned it into 3
+  const retry = args.retry === undefined ? 3 : Number(args.retry);
+  if (!Number.isInteger(retry) || retry < 0) {
+    console.error(`--retry must be a whole number of retries, 0 or more (got ${JSON.stringify(args.retry)}).`);
+    process.exit(1);
+  }
   const dryRun = args['dry-run'];
   // --defer-blocked: keep going past a faulted task instead of stopping the whole
   // run. A blocked task drops out of the `todo` filter, so the run naturally ends
