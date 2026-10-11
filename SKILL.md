@@ -108,8 +108,13 @@ reach: a process the check deliberately detaches (`start /b`, a daemon) after it
 exited is outside any tree `taskkill /T` can walk. A kill that fails is reported next to the
 verdict — `WARNING: the check's process tree could NOT be killed (…)` under TIMEOUT or
 OUTPUT-LIMIT — because the check may still be running; stop its processes before trusting the
-next run (`scripts/test-kill-failure-reported.mjs`). `PB_TASKKILL` points at `taskkill.exe` when
-it is not under `%SystemRoot%\System32`. Each check costs one extra Node process (about 0.1 s).
+next run (`scripts/test-kill-failure-reported.mjs`). An autonomous run journals it in the row's
+`check_timeouts`; a refused `record` writes one `check-run` row (no status change) saying so.
+`PB_TASKKILL` is for tests and unusual installs only: it must name a `taskkill.exe` (anything
+else is ignored) and replaces `%SystemRoot%\System32\taskkill.exe`. Layer gates run through the
+same launcher, with their own limit: `gate_timeout_ms` on the layer, then
+`layer_gate_timeout_ms` in the master, then `PB_GATE_TIMEOUT_MS`, else 120 s (gates run inside every claim, so the default stays short); a gate past it is TIMEOUT —
+not a pass, never a failure. Each check costs one extra Node process (about 0.1 s).
 
 **The same contract covers mode checks, which are a different list with their own budget.**
 `pb mode check` and `validate --mode` run a mode's `kind:check` principles — usually the whole

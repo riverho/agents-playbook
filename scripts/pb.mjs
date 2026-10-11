@@ -392,7 +392,7 @@ function persistGateResults(defs, results) {
   for (const def of defs) {
     const r = results[def.id];
     if (!def.gate || !r) continue;
-    layers[def.id] = { ok: !!r.ok, at, gate: def.gate, output: String(r.output || '').slice(-2000) };
+    layers[def.id] = { ok: !!r.ok, outcome: r.outcome || (r.ok ? 'pass' : 'fail'), at, gate: def.gate, output: String(r.output || '').slice(-2000), ...(r.limit_ms ? { limit_ms: r.limit_ms } : {}) };
   }
   try {
     ensureDir(dirname(GATE_RESULTS));
@@ -1087,6 +1087,7 @@ function readLayerDefs() {
       // the plan author knows that no agent retry will ever turn this gate green. The
       // flag changes reporting and hand-off, never whether the gate gates.
       human: entry.human === true,
+      gate_timeout_ms: entry.gate_timeout_ms,
     });
   });
   return { declared: true, layers, errors };
@@ -1100,20 +1101,23 @@ function readLayerDefs() {
 // into the next (identical gate text, DIFFERENT working tree), which read as a gate
 // that could never go green.
 const layerGateCache = new Map();
-function evalLayerGate(gate) {
-  if (layerGateCache.has(gate)) return layerGateCache.get(gate);
-  const parts = shellSplit(gate);
-  let result = { ok: false, output: 'the gate is not a runnable command' };
-  if (parts.length) {
-    const [file, ...argv] = parts;
-    try {
-      runCommandSync(file, argv, { cwd: ROOT, stdio: 'pipe', timeout: 120000 });
-      result = { ok: true, output: '' };
-    } catch (e) {
-      result = { ok: false, output: boundedTail([e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim()) };
-    }
-  }
-  layerGateCache.set(gate, result);
+function evalLayerGate(gate, def = null) {
+  const limit = resolveGateTimeout(def);
+  const key = `${gate}\u0000${limit.ms}`;
+  if (layerGateCache.has(key)) return layerGateCache.get(key);
+  for (const w of limit.warnings) console.error(`  ⚠ ${w} — using ${limit.ms}ms from ${limit.source}.`);
+  const r = runOneCheck(gate, ROOT, limit);
+  const result = !r
+    ? { ok: false, outcome: 'fail', output: 'the gate is not a runnable command' }
+    : {
+      ok: r.ok,
+      // pass | fail | timeout | output-limit — a limit is a NON-verdict, not a failure
+      outcome: r.ok ? 'pass' : r.timedOut ? 'timeout' : r.overflow ? 'output-limit' : 'fail',
+      output: r.ok ? '' : (r.output || ''),
+      limit_ms: r.limit_ms, limit_source: r.limit_source, elapsed_ms: r.elapsed_ms,
+      ...(r.kill_failed ? { kill_failed: r.kill_failed } : {}),
+    };
+  layerGateCache.set(key, result);
   return result;
 }
 
@@ -1230,7 +1234,7 @@ function computeLayerPlan({ checkGates = false, allTasks = null, persistGates = 
   if (checkGates) {
     for (const def of defs.layers) {
       if (!def.gate) continue;
-      gateResults[def.id] = evalLayerGate(def.gate);
+      gateResults[def.id] = evalLayerGate(def.gate, def);
     }
     if (persistGates) persistGateResults(defs.layers, gateResults);
   }
@@ -1536,6 +1540,28 @@ function resolveModeCheckTimeout(principle, doc) {
     ?? attempt(process.env.PB_MODE_CHECK_TIMEOUT_MS, 'env PB_MODE_CHECK_TIMEOUT_MS')
     ?? attempt(process.env.PB_CHECK_TIMEOUT_MS, 'env PB_CHECK_TIMEOUT_MS')
     ?? { ms: DEFAULT_MODE_CHECK_TIMEOUT_MS, source: 'default', warnings };
+}
+// ── layer gates: the same runner, their own limit ─────────────────────────────
+//  A gate was a hard-coded `timeout: 120000`, and a gate killed by it was reported as a
+//  FAILING gate — which silently partitions every layer above it. Now a gate runs under
+//  the check launcher (tree kill, bounded output) with its own limit, and a timeout is a
+//  TIMEOUT: still not a pass (the layer above stays blocked), but never called a failure.
+// 120s by default, NOT the checks' 600s: gates run one after another inside every `pb next
+// --claim`, so one hung gate would stall each claim for ten minutes (checker note, seq 222).
+const DEFAULT_GATE_TIMEOUT_MS = 120_000;
+function resolveGateTimeout(def) {
+  const warnings = [];
+  const attempt = (raw, source) => {
+    if (raw === undefined || raw === null || String(raw).trim() === '') return null;
+    const ms = asPositiveMs(raw);
+    if (ms === null) { warnings.push(`${source} is not a positive number of milliseconds (${JSON.stringify(raw)}) — ignored`); return null; }
+    if (ms > MAX_CHECK_TIMEOUT_WARN_MS) warnings.push(`${source} is ${ms}ms — an unusually large limit; a hang will not surface for ${Math.round(ms / 60000)} minutes`);
+    return { ms, source, warnings };
+  };
+  return attempt(def?.gate_timeout_ms, `gate_timeout_ms on layer [${def?.id}]`)
+    ?? attempt(master?.layer_gate_timeout_ms, 'master layer_gate_timeout_ms')
+    ?? attempt(process.env.PB_GATE_TIMEOUT_MS, 'env PB_GATE_TIMEOUT_MS')
+    ?? { ms: DEFAULT_GATE_TIMEOUT_MS, source: 'default', warnings };
 }
 function checkLimitNote(task) {
   const { ms, source } = resolveCheckTimeout(task);
@@ -2344,7 +2370,7 @@ function graphStepIds() {
 // nothing. An action the table does not know is work that happened — `act`.
 const GRAPH_STEP_ACTION = {
   claim: 'select', release: 'select',
-  verify: 'verify', checker: 'verify',
+  verify: 'verify', checker: 'verify', 'check-run': 'verify',
   record: 'record', comment: 'record', correct: 'record', provider_rate_limit: 'record',
   reflect: 'report', report: 'report',
 };
@@ -2713,7 +2739,7 @@ function graphLayers(plan, nodes) {
         id: l.id, name: l.name || null, about: l.about || null, position: l.position,
         source: 'declared', gate: l.gate || null, human: !!l.human,
         gate_result: !l.gate ? { state: 'no-gate' }
-          : fresh ? { state: r.ok ? 'pass' : 'fail', at: r.at, output: r.output || '' }
+          : fresh ? { state: r.ok ? 'pass' : (r.outcome === 'timeout' || r.outcome === 'output-limit' ? r.outcome : 'fail'), at: r.at, output: r.output || '', ...(r.limit_ms ? { limit_ms: r.limit_ms } : {}) }
           : { state: 'not-run', reason: r ? 'the gate command changed since it last ran' : 'no claim or autonomous run has evaluated this gate yet' },
         counts: l.counts, total: l.total,
         tasks: nodes.filter((n) => n.declared_layer === l.id).map((n) => n.id),
@@ -3997,7 +4023,10 @@ function renderPlanLayers(plan, { checkGates = false, strict = false } = {}) {
       const behind = plan.layers.filter((l) => l.position < layer.position && !l.counts.done);
       if (behind.length) held.push(`waiting on lower layer(s): ${behind.map((l) => l.id).join(', ')}`);
       const gateState = layer.gate
-        ? (layer.gate_result ? (layer.gate_result.ok ? 'gate PASS' : (layer.human ? 'gate BLOCKED (human)' : 'gate FAIL')) : (checkGates ? 'gate ?' : 'gate unchecked'))
+        ? (layer.gate_result ? (layer.gate_result.ok ? 'gate PASS'
+          : layer.gate_result.outcome === 'timeout' ? `gate TIMEOUT (limit ${layer.gate_result.limit_ms}ms from ${layer.gate_result.limit_source})`
+          : layer.gate_result.outcome === 'output-limit' ? 'gate OUTPUT-LIMIT'
+          : (layer.human ? 'gate BLOCKED (human)' : 'gate FAIL')) : (checkGates ? 'gate ?' : 'gate unchecked'))
         : 'no gate';
       console.log(`\n  ${layer.id}${layer.name ? ` (${layer.name})` : ''} — ${statusCount(layer.counts)} · ${gateState}`);
       if (layer.gate) console.log(`      gate: $ ${layer.gate}`);
@@ -4042,7 +4071,12 @@ function renderPlanLayers(plan, { checkGates = false, strict = false } = {}) {
     console.log(`\n  Plan is structurally valid: ${plan.layers.length} layer(s), ${plan.tasks.length} task(s), no cycles.`);
   }
 
-  const gateFailed = Object.entries(plan.gate_results).filter(([, r]) => !r.ok).map(([id]) => id);
+  const gateFailed = Object.entries(plan.gate_results).filter(([, r]) => !r.ok && r.outcome !== 'timeout' && r.outcome !== 'output-limit').map(([id]) => id);
+  const gateNoVerdict = Object.entries(plan.gate_results).filter(([, r]) => r.outcome === 'timeout' || r.outcome === 'output-limit');
+  if (checkGates && gateNoVerdict.length) {
+    console.log(`  Gates with NO VERDICT: ${gateNoVerdict.map(([id, g]) => `${id} (${g.outcome === 'timeout' ? `timed out after ${g.elapsed_ms}ms, limit ${g.limit_ms}ms from ${g.limit_source}` : 'output limit'})`).join(', ')} — not a failure, but not a pass: every layer above stays blocked. Raise the limit with gate_timeout_ms on the layer or PB_GATE_TIMEOUT_MS.`);
+    for (const [id, g] of gateNoVerdict) if (g.kill_failed) console.log(`  WARNING: gate ${id}'s process tree could NOT be killed (${g.kill_failed}) — it may still be running.`);
+  }
   if (checkGates && gateFailed.length) {
     console.log(`  Gates FAILING: ${gateFailed.join(', ')} — every layer above them is blocked.`);
   }
@@ -4346,6 +4380,20 @@ function cmdRecord(args) {
           printLimitRemedies(timeouts, overflows);
         }
         console.error('Fix the work, or record --status blocked with notes. (--skip-checks overrides, and is stamped on the entry.)');
+        // A refusal writes nothing — except that a check whose tree could NOT be killed may
+        // still be running, and that must outlive the console: one 'check-run' row, no
+        // status change, carrying what was left running (checker note on plan-20261010-042).
+        const leaked = noVerdict.filter((r) => r.kill_failed);
+        if (leaked.length) {
+          const agentId = resolveAgentId(args);
+          commitIteration(task.id, {
+            ts: nowISO(), loop_id: activeLoop()?.id || 'legacy', task: task.id, agent: agentId, agent_id: agentId,
+            action: 'check-run', status: task.status, checks: 'no-verdict', result: null, files: [],
+            notes: `record --status done was refused; ${leaked.length} check(s) could not be killed and may still be running.`,
+            check_timeouts: timeoutDetail(leaked), check_output_limits: overflowDetail(leaked),
+          }, () => ({}), { agent: agentId });
+          console.error(`Journalled a 'check-run' row: ${leaked.length} check process tree(s) could not be killed.`);
+        }
         process.exit(1);
       }
       checksOutcome = 'passed';
@@ -4811,7 +4859,8 @@ function cmdLoopRunAuto(args) {
   }
   const maxTasks = Number(args['max-tasks']) || Infinity;
   // an explicit 0 means "no retries"; `Number(x) || 3` once turned it into 3
-  const retry = args.retry === undefined ? 3 : Number(args.retry);
+  // a bare --retry (no number) or an empty --retry= is a typo, not 1 or 0
+  const retry = args.retry === undefined ? 3 : (typeof args.retry === 'string' && args.retry.trim() !== '' ? Number(args.retry) : NaN);
   if (!Number.isInteger(retry) || retry < 0) {
     console.error(`--retry must be a whole number of retries, 0 or more (got ${JSON.stringify(args.retry)}).`);
     process.exit(1);

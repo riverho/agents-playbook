@@ -103,6 +103,7 @@ export function makeFixture({ prefix = 'pbv2-', layers = null, tasks = [], journ
       if (l.about) lines.push(`    about: ${yamlScalar(l.about)}`);
       if (l.human) lines.push('    human: true');
       if (l.gate) lines.push(`    gate: ${yamlScalar(l.gate)}`);
+      if (l.gate_timeout_ms !== undefined) lines.push(`    gate_timeout_ms: ${l.gate_timeout_ms}`);
     }
   }
   writeFileSync(join(root, 'playbook.yaml'), lines.join('\n') + '\n');
