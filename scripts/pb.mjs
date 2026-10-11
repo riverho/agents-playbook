@@ -1819,6 +1819,10 @@ function runValidate() {
         ok(exists(rel), `Task ${t.id} docs path does not exist: ${rel}`);
       }
     }
+    // A declared human: block is a contract with a person (H1, H2): a malformed one —
+    // a question that is not a question, one option, an option with no effect, a
+    // recommendation nobody signs — FAILS. A manual task with no block only warns.
+    for (const e of humanBlockProblems(t).errors) ok(false, e);
   }
 
   // 6. structural guardrails for the layer/dependency graph. `pb validate` is the
@@ -1943,6 +1947,14 @@ function cmdValidate(args) {
     for (const t of hollowActionable) console.log(`  ⚠hollow  [${t.id}] ${t.title || ''}`);
     console.log('Add task-specific acceptance_checks that test the work itself. Run `node scripts/check-hollow.mjs .` for details.');
     if (args.strict) { console.error('\nFailing (--strict): hollow gates on actionable tasks.'); process.exit(1); }
+  }
+
+  // Human-in-the-loop asks (H1): a manual task should say what it asks a person.
+  const humanWarnings = backlogTasks().flatMap((t) => humanBlockProblems(t).warnings);
+  if (humanWarnings.length) {
+    console.log(`\n⚠ Human-in-the-loop warning: ${humanWarnings.length} task(s) ask a person without a real question:`);
+    for (const w of humanWarnings) console.log(`  ⚠  ${w}`);
+    console.log('Add human.question (ending in "?") and human.options (each with an effect) to the task.');
   }
 
   // Tracked-state trap: runtime state committed to git gets reverted by merges,
@@ -2197,9 +2209,12 @@ function graphStepForAction(action) {
 // The card's cycle rail: which loop steps this task's journal rows show it passed
 // through, and the step of its most recent row. A step, never a percentage — the
 // engine has no completion fraction and must not grow one (rule 25).
-function cycleForJournal(journal) {
+function cycleForJournal(allRows) {
   const steps = graphStepIds();
   const filled = [];
+  // a person's decision is an answer to the agent, not a step of the agent's loop: it
+  // neither fills a segment nor moves the card back to the start of the rail
+  const journal = allRows.filter((row) => row.action !== 'decide');
   for (const row of journal) {
     const step = graphStepForAction(row.action);
     if (!filled.includes(step)) filled.push(step);
@@ -2229,9 +2244,143 @@ function liveForCard(card, now = Date.now()) {
     window_s: GRAPH_LIVE_WINDOW_MS / 1000,
   };
 }
-function graphNodeFor(task, planned) {
+// ── the human-facing text fields (D16; contract K2, M2) ─────────────────────
+// Each is optional on the task and has the fallback proposal.html §8 documents, and
+// each says where it came from (`*_source`), so a room never mistakes a guess for
+// something an agent wrote.
+const HEADLINE_MAX = 72;
+// "DEMONSTRATED, not just described" → "Demonstrated, not just described": shouting is
+// how a note marks emphasis in a terminal; a one-line lead should read as a sentence.
+// ...but an acronym is not shouting: words of four letters or fewer (YAML, JSON, CSRF,
+// WCAG) and a few longer ones keep their capitals.
+const KEEP_CAPS = new Set(['POSIX', 'ASCII', 'HTTPS', 'JSONL', 'NDJSON', 'OAUTH', 'WSL2']);
+function deShout(text) {
+  const out = String(text).replace(/\b([A-Z][A-Z'-]{4,})\b/g, (w) => (KEEP_CAPS.has(w) ? w : w.toLowerCase()));
+  return out.charAt(0).toUpperCase() + out.slice(1);
+}
+function firstSentence(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  const m = /^(.{12,}?[.!?])(\s|$)/.exec(t);
+  return m ? m[1] : t;
+}
+function cutAtWord(text, max) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length <= max) return t;
+  const head = t.slice(0, max - 1);
+  const sp = head.lastIndexOf(' ');
+  return `${(sp > max * 0.4 ? head.slice(0, sp) : head).replace(/[\s,;:(—-]+$/, '')}…`;
+}
+function graphHeadline(task) {
+  if (typeof task.headline === 'string' && task.headline.trim()) return { headline: task.headline.trim(), headline_source: 'task' };
+  const title = String(task.title || '').replace(/\s+/g, ' ').trim();
+  // a clause boundary first ("P2: …", "Engine (D16): …" keep their head), else the sentence
+  const sentence = firstSentence(title).replace(/[.]$/, '');
+  return { headline: cutAtWord(sentence, HEADLINE_MAX), headline_source: 'title' };
+}
+function rowSummary(row) {
+  if (typeof row.summary === 'string' && row.summary.trim()) return row.summary.trim();
+  return deShout(firstSentence(row.notes || ''));
+}
+function graphNow(task, status, journal) {
+  if (typeof task.now === 'string' && task.now.trim()) return { now: task.now.trim(), now_source: 'task' };
+  if (status === 'todo' && !journal.some((r) => r.action !== 'spawn' && r.action !== 'comment')) {
+    return { now: 'Nobody has picked this up', now_source: 'fallback' };
+  }
+  const last = [...journal].reverse().find((r) => (r.notes || r.summary));
+  return last ? { now: rowSummary(last), now_source: 'journal' } : { now: null, now_source: 'none' };
+}
+// "node scripts/test-graph-layers-live.mjs" → "test graph layers live". A check may also
+// declare its own name: `acceptance_checks: [{ run: "…", name: "…" }]` is not the format,
+// so names come from the task's optional `check_names: [..]`, index for index.
+function checkName(command, declared) {
+  if (typeof declared === 'string' && declared.trim()) return declared.trim();
+  const tokens = String(command || '').trim().split(/\s+/);
+  const script = tokens.find((t) => /\.(mjs|cjs|js|ts|sh|py|ps1)$/i.test(t));
+  if (script) return basename(script).replace(/\.[^.]+$/, '').replace(/[-_.]+/g, ' ').trim();
+  return tokens.slice(0, 4).join(' ');
+}
+
+// ── human-in-the-loop (D17; contract H1–H3) ─────────────────────────────────
+// A task that needs a person may say exactly what it asks:
+//   human:
+//     question: "Publish 0.6.2 to npm, or close it as superseded?"
+//     options:
+//       - { id: publish, label: Publish, effect: "a person runs npm publish; the task closes" }
+//       - { id: close,   label: Close,   effect: "the task is closed as superseded by 0.7.0" }
+//     recommended: close
+//     recommended_by: lead
+// A manual task without one still gets an ask, by the documented fallback — and
+// `pb validate` warns, because a generic "Approve?" is a worse question than a real one.
+const DEFAULT_HUMAN_OPTIONS = [
+  { id: 'approve', label: 'Approve', effect: 'the work goes ahead as described' },
+  { id: 'reject', label: 'Reject', effect: 'the task is not done; the agent stops and records why' },
+  { id: 'ask', label: 'Ask a question', effect: 'nothing changes yet; the agent answers first' },
+];
+function humanBlockProblems(task) {
+  const errors = [];
+  const warnings = [];
+  const h = task.human;
+  if (h === undefined || h === null) {
+    if (task.manual && task.status !== 'done') warnings.push(`[${task.id}] is manual: true but declares no human.question — a person will see the generic "Approve: …?" (H1)`);
+    return { errors, warnings };
+  }
+  if (typeof h !== 'object' || Array.isArray(h)) { errors.push(`Task ${task.id} human: must be a mapping (question, options, recommended, recommended_by)`); return { errors, warnings }; }
+  if (h.question !== undefined && (typeof h.question !== 'string' || !h.question.trim().endsWith('?'))) {
+    errors.push(`Task ${task.id} human.question must be a question ending in "?" (H1)`);
+  }
+  if (h.question === undefined && task.status !== 'done') warnings.push(`[${task.id}] declares human: without a question (H1)`);
+  if (h.options !== undefined) {
+    if (!Array.isArray(h.options) || h.options.length < 2) errors.push(`Task ${task.id} human.options must list at least two options (H1)`);
+    else {
+      const ids = new Set();
+      h.options.forEach((o, i) => {
+        if (!o || typeof o !== 'object' || typeof o.id !== 'string' || !o.id.trim()) { errors.push(`Task ${task.id} human.options[${i}] needs an id`); return; }
+        if (ids.has(o.id)) errors.push(`Task ${task.id} human.options has the id "${o.id}" twice`);
+        ids.add(o.id);
+        if (typeof o.effect !== 'string' || !o.effect.trim()) errors.push(`Task ${task.id} human.options "${o.id}" must state its effect (H2)`);
+      });
+      if (h.recommended !== undefined && h.recommended !== null && !ids.has(h.recommended)) errors.push(`Task ${task.id} human.recommended "${h.recommended}" is not one of its options`);
+    }
+  }
+  if (h.recommended && !(typeof h.recommended_by === 'string' && h.recommended_by.trim())) {
+    errors.push(`Task ${task.id} human.recommended needs recommended_by — a recommendation names who makes it (H2)`);
+  }
+  return { errors, warnings };
+}
+function humanOptions(task) {
+  const h = task.human && typeof task.human === 'object' ? task.human : {};
+  return Array.isArray(h.options) && h.options.length >= 2
+    ? h.options.map((o) => ({ id: String(o.id), label: String(o.label || o.id), effect: String(o.effect || '') }))
+    : DEFAULT_HUMAN_OPTIONS;
+}
+function lastDecision(journal) {
+  const row = [...journal].reverse().find((r) => r.action === 'decide');
+  return row ? { option: row.option || null, reason: row.reason || row.notes || null, by: row.agent || null, ts: row.ts || null, seq: typeof row.seq === 'number' ? row.seq : null } : null;
+}
+function graphHuman(task, headline, journal, dependents) {
+  const declared = task.human && typeof task.human === 'object' && !Array.isArray(task.human) ? task.human : null;
+  if (!declared && !task.manual) return null;
+  const question = declared && typeof declared.question === 'string' && declared.question.trim()
+    ? { question: declared.question.trim(), question_source: 'task' }
+    // a title that opens with a shouted label ("HUMAN APPROVAL: accept ...") drops the label
+    : { question: `Approve: ${headline.replace(/^[A-Z][A-Z0-9 -]{2,}:\s*/, '').replace(/[.…]+$/, '')}?`, question_source: 'fallback' };
+  const waiting = declared && Array.isArray(declared.waiting_on) ? declared.waiting_on.map(String) : dependents;
+  return {
+    ...question,
+    options: humanOptions(task),
+    options_source: declared && Array.isArray(declared.options) && declared.options.length >= 2 ? 'task' : 'fallback',
+    recommended: declared?.recommended ?? null,
+    recommended_by: declared?.recommended_by ?? null,
+    waiting_on: waiting,
+    waiting_on_source: declared && Array.isArray(declared.waiting_on) ? 'task' : 'dependencies',
+    decided: lastDecision(journal),
+  };
+}
+
+function graphNodeFor(task, planned, dependents = []) {
   const card = runCardForTask(task);
   const live = liveForCard(card);
+  const declaredNames = Array.isArray(task.check_names) ? task.check_names : [];
   const state = taskState(task.id);
   const gate = mergeReadyPayload(task);
   const declared = planned?.layer || null;
@@ -2267,10 +2416,15 @@ function graphNodeFor(task, planned) {
     merge_reasons: gate.reasons,
     merge_warnings: gate.warnings,
     cycle: cycleForJournal(card.journal),
+    ...graphHeadline(task),
+    ...graphNow(task, card.status, card.journal),
+    human: graphHuman(task, graphHeadline(task).headline, card.journal, dependents),
+    check_names: card.checks.map((c, i) => checkName(c.command, declaredNames[i])),
     live: live.live,
     live_detail: live,
     docs: docsOfTask(task),
-    journal: card.journal,
+    // rows verbatim, plus a one-line `summary` (the row's own, or its first sentence)
+    journal: card.journal.map((row) => ({ ...row, summary: rowSummary(row) })),
     updated_at: card.updated_at,
   };
 }
@@ -2437,7 +2591,14 @@ function graphPayload() {
   const tasks = backlogTasks();
   const plan = computeLayerPlan({ checkGates: false, allTasks: tasks });
   const plannedById = new Map(plan.tasks.map((t) => [t.id, t]));
-  const nodes = tasks.map((t) => graphNodeFor(t, plannedById.get(t.id)));
+  // who waits on whom: the open tasks that depend on each task (human.waiting_on's fallback)
+  const dependentsOf = new Map();
+  for (const t of tasks) for (const dep of Array.isArray(t.dependencies) ? t.dependencies : []) {
+    if (t.status === 'done') continue;
+    if (!dependentsOf.has(dep)) dependentsOf.set(dep, []);
+    dependentsOf.get(dep).push(t.id);
+  }
+  const nodes = tasks.map((t) => graphNodeFor(t, plannedById.get(t.id), dependentsOf.get(t.id) || []));
   const human = graphHumanBatch(nodes, plan);
   const start = graphStart(activeLoop());
   return {
@@ -4023,11 +4184,86 @@ function cmdRecord(args) {
 // scripts/test-pb-graph.mjs — a "comment" that could close a task would be a status
 // change wearing a note's clothes.
 // ============================================================================
+// D17 / H3: a person answers a human-in-the-loop ask. ONE journal row (action: decide),
+// carrying the option and the reason; the task's status does not move — the agent acts
+// on the decision next, and its own record closes the task through its checks.
+function cmdDecide(args) {
+  const taskId = typeof args.task === 'string' ? args.task.trim() : '';
+  const option = typeof args.option === 'string' ? args.option.trim() : '';
+  const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+  if (!taskId || !option || !reason) {
+    console.error('Usage: pb decide --task <id> --option <option-id> --reason "..." [--agent <name>]');
+    process.exit(1);
+  }
+  const task = backlogTasks().find((t) => t.id === taskId);
+  if (!task) { console.error(`Task not found in backlog: ${taskId}. Nothing was written.`); process.exit(1); }
+  if (!task.manual && !task.human) {
+    console.error(`[${taskId}] does not ask a person anything (no manual: true, no human:). Use pb comment to leave a note. Nothing was written.`);
+    process.exit(1);
+  }
+  if (task.status === 'done') { console.error(`[${taskId}] is already done — there is nothing left to decide. Nothing was written.`); process.exit(1); }
+  const options = humanOptions(task);
+  const chosen = options.find((o) => o.id === option);
+  if (!chosen) {
+    console.error(`[${taskId}] has no option "${option}". Options: ${options.map((o) => o.id).join(', ')}. Nothing was written.`);
+    process.exit(1);
+  }
+  const agent = resolveAgentId(args);
+  const claim = readBacklogState()[taskId] || {};
+  // H3: a human gate is answered by a person, never by the agent doing the work. The engine
+  // cannot see a person, but it can refuse the two writers that are certainly not one:
+  // the agent that holds this task, and any writer carrying a claim token (an agent
+  // mid-task — a token is minted by `pb next --claim`, and people do not hold one).
+  if (claim.status === 'in_progress' && claim.claimed_by && claim.claimed_by === agent) {
+    console.error(`[${taskId}] is held by "${agent}", the writer of this decision. An agent cannot answer its own human gate. Nothing was written.`);
+    process.exit(1);
+  }
+  if (process.env.PB_CLAIM_TOKEN || args.token) {
+    console.error(`pb decide refuses a writer that holds a claim token: decisions come from a person, not from an agent mid-task. Nothing was written.`);
+    process.exit(1);
+  }
+  const prior = readJournal().filter((e) => !e.__malformed && e.task === taskId && e.action === 'decide').pop() || null;
+  const entry = {
+    ts: nowISO(),
+    loop_id: activeLoop()?.id || 'legacy',
+    task: taskId,
+    agent,
+    agent_id: agent,
+    claimed_by: claim.claimed_by || agent,
+    mode: claim.mode || resolveModeId() || undefined,
+    ownership: 'decision',
+    // a second decision does not erase the first; it says which one it replaces
+    replaces: prior && typeof prior.seq === 'number' ? prior.seq : undefined,
+    agent_chain: resolveAgentChain(args),
+    action: 'decide',
+    intent: 'decision',
+    option: chosen.id,
+    reason,
+    status: task.status,
+    checks: 'none',
+    result: null,
+    files: [],
+    notes: `Decided: ${chosen.label} — ${reason}`,
+  };
+  const commit = commitIteration(taskId, entry, () => ({}), { agent });
+  if (!commit) process.exit(1);
+  console.log(`Decision on [${taskId}] recorded (seq ${commit.seq}): ${chosen.label}. Effect: ${chosen.effect || '(none stated)'} — status unchanged (${task.status}).`);
+  if (prior) console.log(`This REPLACES the decision at seq ${prior.seq} by ${prior.agent || 'unknown'} (${prior.option || '?'}). Both rows stay in the journal.`);
+}
+
+// M3: a person's message says WHY it was written. `steer` changes direction, `question`
+// asks the agent something, `finding` reports something learned; a plain note is `comment`.
+const COMMENT_INTENTS = ['comment', 'steer', 'question', 'finding'];
 function cmdComment(args) {
   const taskId = typeof args.task === 'string' ? args.task.trim() : '';
   const text = typeof args.text === 'string' ? args.text : '';
   if (!taskId || !text.trim()) {
-    console.error('Usage: pb comment --task <id> --text "..." [--agent <name>] [--token <claim-token>] [--chain <a,b>]');
+    console.error('Usage: pb comment --task <id> --text "..." [--intent comment|steer|question|finding] [--agent <name>] [--token <claim-token>] [--chain <a,b>]');
+    process.exit(1);
+  }
+  const intent = args.intent === undefined ? 'comment' : String(args.intent).trim();
+  if (!COMMENT_INTENTS.includes(intent)) {
+    console.error(`--intent must be one of: ${COMMENT_INTENTS.join(', ')} (got "${intent}"). Nothing was written.`);
     process.exit(1);
   }
   const task = backlogTasks().find((t) => t.id === taskId);
@@ -4054,6 +4290,7 @@ function cmdComment(args) {
     // declared path unconditionally instead of inheriting that hole.)
     agent_chain: resolveAgentChain(args),
     action: 'comment',
+    intent,
     status: task.status,          // current status, so a replay cannot move it
     checks: 'none',
     result: null,
@@ -4062,7 +4299,7 @@ function cmdComment(args) {
   };
   const commit = commitIteration(taskId, entry, () => ({}), { agent });
   if (!commit) process.exit(1);
-  console.log(`Comment on [${taskId}] recorded (seq ${commit.seq}, ownership: ${entry.ownership}) — status unchanged (${task.status}).`);
+  console.log(`Comment on [${taskId}] recorded (seq ${commit.seq}, intent: ${intent}, ownership: ${entry.ownership}) — status unchanged (${task.status}).`);
 }
 
 // ============================================================================
@@ -5775,6 +6012,12 @@ function cmdHelp() {
                            OUTPUT-LIMIT, a third outcome — not a timeout, not a failure.
     comment --task <id> --text "..."   Journal-native steering note (action: comment).
                            Append-only and attributable; it cannot change task status.
+                           --intent comment|steer|question|finding (default comment) is
+                           stamped on the row, so a steer or a question is a distinct message.
+    decide --task <id> --option <id> --reason "..."
+                           Answer a human-in-the-loop ask (manual: true or a human: block): ONE
+                           journal row (action: decide) with the option and reason. Unknown
+                           options are refused; the task's status does not move.
     report [--since DATE]  Roll the journal up into ${REPORTS_DIR}/report-<date>.md
     plan --goal ".." [--skill <id>] [--priority <n>] [--check <cmd>] [--dep <task-id>] [--manual] [--layer <id>]
                           Convert a goal into a backlog task with acceptance_checks.
@@ -5972,6 +6215,7 @@ if (isMainModule) {
   case 'worker': cmdWorker(args); break;
   case 'record': cmdRecord(args); break;
   case 'comment': cmdComment(args); break;
+  case 'decide': cmdDecide(args); break;
   case 'report': cmdReport(args); break;
   case 'plan': cmdPlan(args); break;
   case 'loop': cmdLoop(args); break;
