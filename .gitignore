@@ -3,6 +3,7 @@
 # directory is excluded.
 docs/*
 !docs/wenmei-pb-integration-contract.md
+!docs/flow-room-retirement.md
 .wenmei/
 .wenmei/*
 node_modules/

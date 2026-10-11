@@ -72,6 +72,89 @@
   --s6: #23955a;
 }
 
+/* ─── Dark theme (contract C1: light AND dark) ───
+   The dark half of the token table in artifacts/graph-flow-ui/v2/CONTRACT.md, with the brighter
+   ramp and bands from the approved illustration (proposal.html, the "brighter set in the mock" the
+   table refers to). Every text token below is measured >= 4.5:1 against every painted surface IN
+   THIS THEME by scripts/check-room-contract.mjs, which switches to the dark token set as soon as
+   one exists — so a value that fails is a failing gate, not a matter of taste.
+
+   The block is written twice on purpose: once behind the OS preference and once behind the
+   explicit [data-theme] escape hatch, and CSS cannot share one declaration block across a media
+   query and a plain selector. The mock duplicates it the same way. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --surface-0: #161514;
+    --surface-1: #232220;
+    --surface-2: #2a2826;
+    --surface-3: #34312d;
+    --surface-glass: rgba(35, 34, 32, 0.65);
+    --text-primary: #f1eee9;
+    --text-secondary: #c9c4bc;
+    --text-tertiary: #a29c93;
+    --tone-ok: #8fc7a2;
+    --tone-risk: #e2b55a;
+    --tone-bad: #ff8a80;
+    --tone-muted: #a29c93;
+    --tone-note: #b3b1f0;
+    --accent-teal: #4cc3ac;
+    --on-accent-teal: #161514;
+    --you: #ff6ccb;
+    --you-tint: #3a1a30;
+    --accent-tint: #173530;
+    --line-strong: #46423d;
+    --band-0: #2b2824;
+    --band-1: #26231f;
+    --band-2: #211f1c;
+    --band-x: #1e1c1a;
+    --band-edge: rgba(0, 0, 0, 0.45);
+    --warn-tint: #3a2f17;
+    --done-tint: #1e3126;
+    --s1: #ff6b63;
+    --s2: #ff8c4a;
+    --s3: #f2b440;
+    --s4: #cfc54a;
+    --s5: #84c95e;
+    --s6: #45c47d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --surface-0: #161514;
+  --surface-1: #232220;
+  --surface-2: #2a2826;
+  --surface-3: #34312d;
+  --surface-glass: rgba(35, 34, 32, 0.65);
+  --text-primary: #f1eee9;
+  --text-secondary: #c9c4bc;
+  --text-tertiary: #a29c93;
+  --tone-ok: #8fc7a2;
+  --tone-risk: #e2b55a;
+  --tone-bad: #ff8a80;
+  --tone-muted: #a29c93;
+  --tone-note: #b3b1f0;
+  --accent-teal: #4cc3ac;
+  --on-accent-teal: #161514;
+  --you: #ff6ccb;
+  --you-tint: #3a1a30;
+  --accent-tint: #173530;
+  --line-strong: #46423d;
+  --band-0: #2b2824;
+  --band-1: #26231f;
+  --band-2: #211f1c;
+  --band-x: #1e1c1a;
+  --band-edge: rgba(0, 0, 0, 0.45);
+  --warn-tint: #3a2f17;
+  --done-tint: #1e3126;
+  --s1: #ff6b63;
+  --s2: #ff8c4a;
+  --s3: #f2b440;
+  --s4: #cfc54a;
+  --s5: #84c95e;
+  --s6: #45c47d;
+  color-scheme: dark;
+}
+
 /* ─── Flow room (playground) ───
    Values measured from the approved frames (artifacts/graph-flow-ui/frames/
    flow.css): card 236×104 / radius 8, 3 px tone bar, 6-segment cycle rail,
@@ -232,7 +315,7 @@
 }
 .flow-card--fork {
   border-style: dashed;
-  background: #fcfbfa;
+  background: var(--surface-1);
 }
 .flow-card--steered {
   border-color: var(--accent-teal);
@@ -449,7 +532,7 @@
   border: 1px solid var(--surface-3);
   border-radius: 6px;
   padding: 7px 8px;
-  background: #fbfaf9;
+  background: var(--surface-2);
 }
 .flow-cronrow {
   display: flex;
@@ -544,7 +627,7 @@
 .flow-edgepill--teal {
   border-color: var(--accent-teal);
   color: var(--accent-teal);
-  background: #f2fbf9;
+  background: var(--accent-tint);
 }
 .flow-edgepill--hil {
   border-color: var(--you);
@@ -713,7 +796,7 @@
   height: 40px;
   border: 1px solid var(--surface-3);
   border-radius: 6px;
-  background: #fcfbfa;
+  background: var(--surface-1);
   padding: 6px 8px;
   font-size: 12px;
   font-family: inherit;
@@ -807,7 +890,7 @@
   flex: none;
   border-top: 1px solid var(--surface-3);
   padding: 9px 13px;
-  background: #fbfaf9;
+  background: var(--surface-2);
 }
 .flow-sec {
   margin-top: 11px;
@@ -846,7 +929,7 @@
   padding: 5px 7px;
   border: 1px solid var(--surface-2);
   border-radius: 5px;
-  background: #fcfbfa;
+  background: var(--surface-1);
   font-size: 12px;
   color: var(--text-secondary);
 }
@@ -1959,3 +2042,52 @@ code,
   color: var(--text-primary);
   white-space: pre-wrap;
 }
+/* D17: the decision inbox and panel use the room's existing semantic tokens. */
+.flow-decisions {
+  position: absolute;
+  inset: 60px 16px 16px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-1);
+  color: var(--text-primary);
+  border: 1px solid var(--surface-3);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.16);
+  overflow: hidden;
+  font-family: var(--f-ui);
+  font-size: 14px;
+}
+.flow-decisions__head { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--surface-3); }
+.flow-decisions__head h2 { margin: 0; font-size: 20px; }
+.flow-decisions__head > svg { color: var(--you); }
+.flow-decisions__head > button { margin-left: auto; }
+.flow-decisions button { border: 1px solid var(--surface-3); border-radius: 8px; background: var(--surface-1); color: var(--text-primary); font-family: var(--f-ui); font-size: 14px; cursor: pointer; padding: 8px 12px; }
+.flow-decisions button:disabled { cursor: default; }
+.flow-decisions__body { display: grid; grid-template-columns: minmax(220px, 32%) minmax(0, 1fr); min-height: 0; flex: 1; }
+.flow-decisions__inbox { overflow: auto; padding: 12px; border-right: 1px solid var(--surface-3); }
+.flow-decisions__inbox > button { display: grid; gap: 8px; width: 100%; text-align: left; margin-bottom: 8px; }
+.flow-decisions__inbox > button[aria-current="true"] { border-color: var(--you); background: var(--surface-2); }
+.flow-decisions__inbox > button > span:last-child { color: var(--text-secondary); font-size: 12px; }
+.flow-decisions__kind { color: var(--you); font-size: 12px; font-weight: 600; }
+.flow-decisions__detail { overflow: auto; }
+.flow-decisions__panel { display: grid; gap: 12px; padding: 20px; }
+.flow-decisions__panel h3 { font-size: 20px; margin: 0; overflow-wrap: anywhere; }
+.flow-decisions__panel h4 { font-size: 14px; margin: 8px 0 0; }
+.flow-decisions__panel p { margin: 0; color: var(--text-secondary); line-height: 1.5; }
+.flow-decisions__panel fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.flow-decisions__panel legend { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+.flow-decisions__option { display: flex; align-items: flex-start; gap: 10px; padding: 12px; margin-bottom: 8px; border: 1px solid var(--surface-3); border-radius: 8px; cursor: pointer; }
+.flow-decisions__option > span { display: grid; gap: 6px; }
+.flow-decisions__option > span > span { font-size: 13px; color: var(--text-secondary); }
+.flow-decisions__option:has(input:checked) { border-color: var(--you); }
+.flow-decisions__rec { font-weight: 600; }
+.flow-decisions__panel textarea { min-height: 80px; resize: vertical; padding: 10px; border: 1px solid var(--surface-3); border-radius: 8px; font-family: var(--f-ui); font-size: 14px; background: var(--surface-1); color: var(--text-primary); }
+.flow-decisions__panel > button { justify-self: end; border-color: var(--accent-teal); }
+.flow-decisions pre { font-family: var(--f-code); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-decisions code { font-family: var(--f-code); font-size: 13px; }
+.flow-decisions__receipt { margin: 16px 20px 0; padding: 12px; border: 1px solid var(--accent-teal); border-radius: 8px; }
+.flow-decisions__result { white-space: pre-wrap; overflow-wrap: anywhere; }
+.flow-decisions__empty { padding: 20px; }
+.flow-decisions button:focus-visible, .flow-decisions textarea:focus-visible, .flow-decisions input:focus-visible, .flow-chipbar button:focus-visible { outline: 3px solid var(--accent-teal); outline-offset: 2px; }
+@media (max-width: 700px) { .flow-decisions__body { grid-template-columns: minmax(0, 1fr); overflow: auto; } .flow-decisions__inbox { max-height: 200px; border-right: 0; border-bottom: 1px solid var(--surface-3); } .flow-decisions__detail { overflow: visible; } }

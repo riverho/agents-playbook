@@ -105,9 +105,11 @@ could land after the engine had declared no verdict. `scripts/test-timeout-kills
 pins it; the POSIX branch is written but unverified on the Windows machine that built it.
 The output bound counts stdout and stderr **together**, as it always did. What the kill cannot
 reach: a process the check deliberately detaches (`start /b`, a daemon) after its parent has
-exited is outside any tree `taskkill /T` can walk. A kill that fails is written to the check's
-stderr, but the TIMEOUT / OUTPUT-LIMIT report does not show it yet (filed as a follow-up). Each
-check costs one extra Node process (about 0.1 s).
+exited is outside any tree `taskkill /T` can walk. A kill that fails is reported next to the
+verdict — `WARNING: the check's process tree could NOT be killed (…)` under TIMEOUT or
+OUTPUT-LIMIT — because the check may still be running; stop its processes before trusting the
+next run (`scripts/test-kill-failure-reported.mjs`). `PB_TASKKILL` points at `taskkill.exe` when
+it is not under `%SystemRoot%\System32`. Each check costs one extra Node process (about 0.1 s).
 
 **The same contract covers mode checks, which are a different list with their own budget.**
 `pb mode check` and `validate --mode` run a mode's `kind:check` principles — usually the whole
@@ -469,6 +471,49 @@ New records are stamped with the active `loop_id`; long-running commands should 
   steps in order — one epoch, fail-fast — handing off through explicit artifact dirs. The monitoring
   scaffold driver is `node scripts/pb-daily-monitor.mjs --mode <id>` (default `default_monitor_mode`,
   declared in `playbook.yaml`).
+
+### Optional versions
+
+Versions use the existing loop store and journal. A playbook that never calls `pb version`
+retains the legacy loop workflow.
+
+```bash
+pb version new --name v1 --goal "..." --stop-check "node scripts/check-goal.mjs"
+pb plan --goal "..." --kind feature --check "..."
+pb version freeze
+pb plan --goal "..." --kind fix --check "..."
+pb version new --draft --name v2 --goal "..." --stop-check "..."
+pb version carry <task-id> --to next
+pb version drop <task-id> --reason "..."
+pb version close
+pb version open --name v2
+pb version list --json
+```
+
+Only one version may be open or frozen. A draft stages the destination for explicit
+carry-over without opening another version. `--to next` requires exactly one draft;
+name it explicitly when several drafts exist. Carry keeps the card ID/history and writes
+source and destination rows with distinct sequence numbers. A held claim must be released
+before carry/drop. Dropped cards remain in history, excluded from selection; dropping never
+pretends their checks passed.
+
+Versioned tasks are stamped at birth. Follow-ups inherit their parent's version; a frozen
+version accepts fixes, chores and experiments, but no features. Closed versions permit
+comments and reflections, with other writes refused. Closing executes every stop check,
+refuses unfinished cards without explicit carry/drop, and refuses live tracked processes.
+The close snapshot retains carried-out cards so the historical version does not lose them.
+
+Versioned worker Git/state operations serialize with lifecycle changes. Long worker exec and
+verification operations use tracked process leases instead of holding the state lock: other
+agents can still record, while close/carry/drop wait for the operation to finish. If a worker
+process crashes before releasing its lease, inspect and stop its process tree, then use
+`pb version release-operation --pid <pid> --reason "<confirmed cleanup>"` from a human CLI.
+The engine never silently discards an unfinished operation based on a liveness probe.
+
+When versions are in use, use `pb version close` instead of `pb loop close`; the latter
+cannot bypass the version checks. New/open seeds the normal cycle brief: answer its memory
+conflict question before planning or claiming. The host still owns scheduling and human
+decisions; these commands do not schedule themselves.
 
 Promote reusable lessons into `memory/project-memory.md`, backlog tasks with acceptance checks, or
 new/updated skills and processes. Keep raw details in `memory/lessons.ndjson`.

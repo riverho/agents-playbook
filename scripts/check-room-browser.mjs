@@ -16,8 +16,8 @@
 //  Needs a build: npm --prefix apps/flow-room run build
 // ============================================================================
 import { openRoom, sleep } from './lib-room-browser.mjs';
-import { makeFixture } from './test-fixture-playbook.mjs';
-import { readFileSync, rmSync } from 'node:fs';
+import { makeFixture, runPb } from './test-fixture-playbook.mjs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // By default the gate draws a FIXTURE playbook it builds itself, so what it watches does not
@@ -42,6 +42,7 @@ function roomFixture() {
       { id: 'live-claim', title: 'A claim whose journal moved a minute ago', layer: 'L1', priority: 1 },
       { id: 'quiet-claim', title: 'A claim nobody has touched for two hours', layer: 'L1', priority: 1 },
       { id: 'asks-you', title: 'Publish the package, or close it as superseded?', layer: 'L2', manual: true },
+      { id: 'agent-question', title: 'Choose a platform', layer: 'L1', extra: ['human:', '  question: "Which platform first?"', '  options:', '    - { id: windows, label: Windows, effect: Verify Windows first }', '    - { id: posix, label: POSIX, effect: Verify POSIX first }', '  recommended: windows', '  recommended_by: Lead'] },
       { id: 'blocked-one', title: 'Waiting on a missing engine primitive', layer: 'L2' },
       { id: 'done-proven', title: 'Finished with its checks passing', layer: 'L0' },
       { id: 'done-unproven', title: 'Closed without a passing check', layer: 'L0' },
@@ -322,6 +323,63 @@ try {
       if (!kb.menuOpen || !kb.menuClosed) problems.push(`A1: Escape does not close an open + menu (open ${kb.menuOpen}, closed after Escape ${kb.menuClosed})`);
     }
   }
+  // H1-H4: the inbox is keyboard reachable; no write until an explicit answer.
+  if (fixture) {
+    const journalFile = resolve(fixture, 'memory/journal.ndjson');
+    const before = readFileSync(journalFile, 'utf8').trim().split('\n').length;
+    const receipt = await evaluate(`(async () => {
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      const toggle = document.querySelector('button[aria-label^="Waiting on you:"]');
+      if (!toggle) return { error: 'no inbox button' };
+      toggle.focus(); toggle.click(); await wait(150);
+      const dialog = document.querySelector('.flow-decisions');
+      if (!dialog) return { error: 'inbox did not open' };
+      const kinds = [...dialog.querySelectorAll('.flow-decisions__inbox .flow-decisions__kind')].map(n => n.textContent);
+      const question = [...dialog.querySelectorAll('.flow-decisions__inbox button')].find(n => /Which platform/.test(n.textContent));
+      question?.click(); await wait(100);
+      const panel = dialog.querySelector('form');
+      if (!panel) return { error: 'no decision panel' };
+      const options = panel.querySelectorAll('input[type=radio]').length;
+      const recommendation = panel.querySelector('.flow-decisions__rec')?.textContent;
+      const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      const text = panel.querySelector('textarea'); set.call(text, 'Start on Windows.'); text.dispatchEvent(new Event('input', { bubbles: true })); await wait(100);
+      const submit = panel.querySelector('button[type=submit]'); submit.focus(); submit.click(); submit.click();
+      for (let i = 0; i < 50 && !dialog.querySelector('.flow-decisions__receipt'); i++) await wait(150);
+      return { kinds, options, recommendation, receipt: dialog.querySelector('.flow-decisions__receipt')?.textContent, count: toggle.textContent };
+    })()`);
+    const after = readFileSync(journalFile, 'utf8').trim().split('\n').map(JSON.parse);
+    if (receipt.error) problems.push(`H3: ${receipt.error}`);
+    else {
+      if (!receipt.kinds.includes('Approval') || !receipt.kinds.includes('Question')) problems.push('H1: inbox does not distinguish approvals and questions');
+      if (receipt.options < 2 || receipt.recommendation !== 'Lead recommends') problems.push('H2: question has no options or named recommendation');
+      if (!/Decision recorded.*row/.test(receipt.receipt ?? '') || !/Start on Windows/.test(receipt.receipt ?? '')) problems.push(`H3: no recorded row is displayed: ${receipt.receipt}`);
+      if (after.length !== before + 1 || after.at(-1).action !== 'decide' || after.at(-1).task !== 'agent-question') problems.push('H3: double-click did not write exactly one decision row');
+      if (!/Waiting on you 1/.test(receipt.count)) problems.push(`H4: header count was not updated after answering: ${receipt.count}`);
+    }
+    if (flag('--shots')) {
+      const dest = resolve(flag('--shots'));
+      mkdirSync(dest, { recursive: true });
+      const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(resolve(dest, 'decision-recorded.png'), Buffer.from(shot.data, 'base64'));
+    }
+    const finishAsk = runPb(fixture, ['record', '--task', 'asks-you', '--action', 'execute', '--status', 'done', '--notes', 'Fixture completed after the inbox loaded.']);
+    if (finishAsk.code !== 0) problems.push(`H3 refusal fixture: could not complete asks-you: ${finishAsk.combined}`);
+    const beforeRefusal = readFileSync(journalFile, 'utf8');
+    const refused = await evaluate(`(async () => {
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      const dialog = document.querySelector('.flow-decisions');
+      const panel = dialog.querySelector('form');
+      const text = panel.querySelector('textarea');
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(text, 'Answer a card completed elsewhere.');
+      text.dispatchEvent(new Event('input', { bubbles: true })); await wait(100);
+      panel.querySelector('button[type=submit]').click();
+      for (let i = 0; i < 50 && !panel.querySelector('.flow-decisions__result'); i++) await wait(150);
+      return panel.querySelector('.flow-decisions__result')?.textContent;
+    })()`);
+    if (refused !== '[asks-you] is already done — there is nothing left to decide. Nothing was written.') problems.push(`H3: engine refusal not shown verbatim: ${refused}`);
+    if (readFileSync(journalFile, 'utf8') !== beforeRefusal) problems.push('H3: a refused decision wrote a row');
+    await evaluate(`document.querySelector('button[aria-label="Close decisions"]')?.click()`);
+  }
 
   // ── F4: reduced motion, on an injected probe card ─────────────────────────
   const probe = `(() => {
@@ -360,6 +418,56 @@ try {
     if (still[k] !== 'none') problems.push(`F4: ${k} still animates (${still[k]}) under prefers-reduced-motion`);
   }
   if (still.outline === 'none') problems.push('F4: under reduced motion the needs-a-person label lost its solid outline');
+  // C1 in a real browser, in DARK. The token set is contrast-checked statically by
+  // check-room-contract.mjs, but a static check cannot see an inline style, a literal background or
+  // a stacked context — this asks the DOM what colour each visible text element actually ended up
+  // with and what surface is painted behind it, after the dark tokens have applied.
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: 'dark' }] });
+  await sleep(250);
+  const dark = await evaluate(`(() => {
+    const lum = (rgb) => {
+      const parts = (rgb || '').match(/[\\d.]+/g) || [];
+      const [r, g, b] = parts.slice(0, 3).map(Number).map((v) => { const c = v / 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + 0.05) / (y + 0.05); };
+    // A background can be TRANSLUCENT (--you-tint is a 10% wash). Reading rgba(180,22,127,0.1) as
+    // if it were opaque says fuchsia-on-fuchsia is 1:1, which is a measurement bug, not a defect:
+    // the layers are composited from the root down instead.
+    const layersOf = (el) => { const out = []; let n = el; while (n) { out.push(getComputedStyle(n).backgroundColor); n = n.parentElement; } return out.reverse(); };
+    const composite = (layers) => {
+      let acc = [255, 255, 255];
+      for (const c of layers) {
+        const m = (c || '').match(/[\\d.]+/g);
+        if (!m) continue;
+        const [r, g, b] = m.slice(0, 3).map(Number);
+        const a = m.length > 3 ? Number(m[3]) : 1;
+        if (a === 0) continue;
+        acc = [r * a + acc[0] * (1 - a), g * a + acc[1] * (1 - a), b * a + acc[2] * (1 - a)];
+      }
+      return 'rgb(' + acc.map((v) => Math.round(v)).join(', ') + ')';
+    };
+    const paintedBehind = (el) => composite(layersOf(el));
+    const sample = [...document.querySelectorAll('.flow-face, .flow-chip, .flow-dock, .flow-insp, .flow-band, .react-flow__node')]
+      .filter((el) => el.offsetParent !== null && (el.textContent || '').trim()).slice(0, 40);
+    const bad = [];
+    let checked = 0;
+    for (const el of sample) {
+      const fg = getComputedStyle(el).color;
+      const bg = paintedBehind(el);
+      checked += 1;
+      const r = ratio(fg, bg);
+      if (r < 4.5) bad.push({ cls: String(el.className).slice(0, 40), fg, bg, r: Number(r.toFixed(2)) });
+    }
+    const canvas = document.querySelector('.react-flow, .flow-room, main') || document.body;
+    const surface = composite(layersOf(canvas));
+    return { checked, bad: bad.slice(0, 4), surface, surfaceLum: Number(lum(surface).toFixed(4)) };
+  })()`);
+  console.log(`  dark    canvas ${dark.surface} (luminance ${dark.surfaceLum}) · ${dark.checked} text sample(s), ${dark.bad.length} under 4.5:1`);
+  if (!(dark.surfaceLum < 0.12)) problems.push(`C1 dark: the canvas is still light (${dark.surface}, luminance ${dark.surfaceLum}) — the dark tokens did not apply`);
+  if (dark.checked < 5) problems.push(`C1 dark: only ${dark.checked} text element(s) measured — too few to mean anything`);
+  for (const b of dark.bad) problems.push(`C1 dark: .${b.cls} is ${b.r}:1 (${b.fg} on ${b.bg})`);
+  await cdp.send('Emulation.setEmulatedMedia', { features: [] });
   for (const e of room.cdp.errors.slice(0, 5)) problems.push(`page error: ${String(e).split('\n')[0]}`);
 } catch (err) {
   problems.push(`browser harness failed: ${err.message}`);

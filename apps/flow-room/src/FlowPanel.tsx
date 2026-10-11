@@ -1,6 +1,12 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import FlowRoom from "@/components/stage/FlowRoom";
 import { LIVE_SNAPSHOT_ADAPTER, type FlowAdapter } from "@/lib/flow-adapter";
+
+/** The one-word source claim, taken from the adapter's own label ("live …" / "snapshot …"). */
+function sourceWord(adapter: FlowAdapter): string {
+  if (adapter.kind === "sample") return "sample";
+  return adapter.label.split(" ·")[0];
+}
 import { liveAdapter, probeEngine } from "./flow-api";
 
 /**
@@ -154,7 +160,9 @@ export default function FlowPanel({ apiBase = "", showFooter = true }: FlowPanel
             background: "var(--surface-1)",
           }}
         >
-          live · {state.root}
+          {/* The source word comes from the ADAPTER, like the room's chip: this footer said
+              "live · …" even while the captured snapshot was on screen (plan-20261010-022). */}
+          {sourceWord(state.adapter)} · {state.root}
           {state.engine ? ` · engine ${state.engine}` : ""}
         </div>
       )}

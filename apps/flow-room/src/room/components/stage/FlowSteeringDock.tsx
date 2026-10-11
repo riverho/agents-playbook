@@ -17,6 +17,10 @@ export interface SteeringToast {
   readonly plan: SteeringPlan;
   readonly goalEdited: boolean;
   readonly persisted: boolean;
+  /** Something was written even though not everything asked for landed (a partial steer). */
+  readonly applied?: boolean;
+  /** What actually ran: a comment (or steer) writes journal rows; attach writes a card's docs:. */
+  readonly verb?: "comment" | "attach";
   /** Why it did not persist, in the adapter's words (fixture, refusal, error). */
   readonly note?: string;
 }
@@ -99,6 +103,11 @@ export function FlowSteeringDock({
  */
 export function FlowSteeringToast({ toast, onDismiss }: { toast: SteeringToast; onDismiss: () => void }) {
   const done = toast.persisted;
+  // Three states, not two. `persisted` means everything asked for landed; `applied` means something
+  // did. Rendering a partial steer (rows written, goal edit refused) as "nothing written yet" was
+  // a self-contradiction in one toast: the journal HAD changed.
+  const partial = !done && toast.applied === true;
+  const wrote = done || partial;
   return (
     <div className="flow-toast">
       <div className="flow-toast__h">
@@ -106,7 +115,7 @@ export function FlowSteeringToast({ toast, onDismiss }: { toast: SteeringToast; 
           className="inline-block w-1.5 h-1.5 rounded-full animate-pulse"
           style={{ background: done ? TONE_COLOR.ok : TONE_COLOR.risk }}
         />
-        {done ? "Steering applied" : "Steering preview — nothing written yet"}
+        {done ? "Steering applied" : partial ? "Steering applied in part — read the note" : "Steering preview — nothing written yet"}
         <span className="flex-1" />
         <button
           className="flow-mono"
@@ -121,8 +130,9 @@ export function FlowSteeringToast({ toast, onDismiss }: { toast: SteeringToast; 
         <li>
           <span>①</span>
           <span>
-            {done ? "orchestrator commented on" : "would comment on"} {toast.plan.cards} card
-            {toast.plan.cards === 1 ? "" : "s"} (1 journal row each)
+            {toast.verb === "attach"
+              ? `${wrote ? "orchestrator attached a document to" : "would attach a document to"} ${toast.plan.cards} card${toast.plan.cards === 1 ? "" : "s"} (docs: plus 1 journal row each)`
+              : `${wrote ? "orchestrator commented on" : "would comment on"} ${toast.plan.cards} card${toast.plan.cards === 1 ? "" : "s"} (1 journal row each)`}
           </span>
         </li>
         {toast.goalEdited && (
@@ -134,7 +144,7 @@ export function FlowSteeringToast({ toast, onDismiss }: { toast: SteeringToast; 
         <li>
           <span>{toast.goalEdited ? "③" : "②"}</span>
           <span>
-            {done
+            {wrote
               ? "next cron tick re-reads it — no re-prompt needed"
               : "nothing to re-read yet: the playbook has not changed"}
           </span>

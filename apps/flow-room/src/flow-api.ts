@@ -21,6 +21,7 @@
 import { createPbGraphAdapter, type FlowAdapter, type FlowSteeringMode } from "@/lib/flow-adapter";
 import { steeringPlan } from "@/lib/flow-derive";
 import type { FlowGraph, FlowNode } from "@/lib/flow-types";
+import type { DecisionRow } from "@/lib/flow-decisions";
 
 const CSRF_HEADER = { "x-pb-ui": "1", "content-type": "application/json" } as const;
 
@@ -72,6 +73,14 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
     ...base,
     listHarnesses: () => listHarnesses(apiBase),
     ask: (task, text, harness, onEvent) => askHarness(task, text, harness, onEvent, apiBase),
+    decide: async (task, option, reason) => {
+      try {
+        const r = await decide(task, option, reason, apiBase);
+        return { ok: r.ok, note: r.output, row: r.row };
+      } catch (err) {
+        return { ok: false, note: err instanceof Error ? err.message : String(err) };
+      }
+    },
     sendMessage: async (task, text, intent) => {
       try {
         const r = await comment(task, text, apiBase, intent);
@@ -101,30 +110,75 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
       const wrote = steeringPlan(selection);
 
       if (mode === "attach") {
-        // No pb command writes a task's `docs:` yet, and the room will not edit
-        // memory/backlog.yaml itself. Say so rather than pretend (plan-20261010-021).
-        return {
-          rows: [],
-          wrote,
-          persisted: false,
-          note: "attach is not implemented: no `pb` command writes a task's docs: field yet",
-        };
+        // The prompt box holds the document's path, playbook-root-relative — that is what
+        // `pb attach --task <id> --path <path>` takes, and the engine refuses a path that is
+        // absolute or missing. One card per selection, as with a comment (plan-20261010-021).
+        const path = prompt.trim();
+        if (!path) {
+          return {
+            rows: [],
+            wrote,
+            persisted: false,
+            note: "attach needs a document path in the prompt box, relative to the playbook root",
+          };
+        }
+        try {
+          const results = await Promise.all(tasks.map((task) => attach(task, path, undefined, apiBase)));
+          const failed = results.filter((r) => !r.ok);
+          return {
+            rows: results.map((r) => ({ task: r.task, action: "attach" as const, text: `docs: + ${path}` })),
+            wrote,
+            applied: results.some((r) => r.ok),
+            persisted: failed.length === 0 && results.length > 0 && results.length === tasks.length,
+            note:
+              failed.length > 0
+                ? `pb attach refused ${failed.length} of ${tasks.length} card(s)`
+                : `attached ${path} to ${results.length} card(s)`,
+          };
+        } catch (err) {
+          return { rows: [], wrote, persisted: false, note: err instanceof Error ? err.message : String(err) };
+        }
       }
 
       try {
         const res = await steer(tasks, prompt, mode === "steer" ? prompt : undefined, apiBase);
         const ok = res.rows.filter((row) => row.ok);
         const failed = res.rows.filter((row) => !row.ok);
+        // The SERVER says whether a goal was requested. Deriving it from the mode invented a
+        // refusal for a whitespace goal: nothing was asked, and the room reported that the engine
+        // refused the edit. A steer has two halves, and they can land independently.
+        const goalRequested = res.goal_requested === true;
+        const goalOk = !goalRequested || res.goal_applied === true;
+        const cards = tasks.length === 1 ? "1 card" : `${tasks.length} cards`;
+        const goalDiff =
+          goalRequested && res.goal_applied === true
+            ? {
+                old: res.goal?.from ? `Stop: ${res.goal.from}` : "Stop: (not recorded in the brief's front matter)",
+                new: `Stop: ${res.goal?.to ?? prompt}`,
+                when: `applied just now · from steering on ${cards}`,
+                from: `pb comment on ${cards} + 1 cycle-brief edit`,
+              }
+            : undefined;
+        const note =
+          failed.length > 0
+            ? `pb refused ${failed.length} of ${tasks.length}: ${failed
+                .map((row) => `${row.task} — ${row.detail ?? "refused"}`)
+                .join("; ")}`
+            : !goalOk
+              ? `the journal rows were written but the GOAL half was not applied: ${res.goal_note ?? "the engine refused the edit"}`
+              : goalRequested
+                ? "written: the journal rows and the open brief's stop condition"
+                : res.goal_note;
         return {
           rows: ok.map((row) => ({ task: row.task, action: "comment" as const, text: prompt })),
+          goal_diff: goalDiff,
           wrote,
-          persisted: failed.length === 0 && ok.length === tasks.length,
-          note:
-            failed.length > 0
-              ? `pb refused ${failed.length} of ${tasks.length}: ${failed
-                  .map((row) => `${row.task} — ${row.detail ?? "refused"}`)
-                  .join("; ")}`
-              : res.goal_note,
+          // `persisted` = everything that was asked for landed; `applied` = something did. Folding
+          // the goal half into `persisted` made a partial steer render as "nothing written yet"
+          // while the journal rows were already on disk.
+          applied: ok.length > 0 || (goalRequested && res.goal_applied === true),
+          persisted: failed.length === 0 && ok.length === tasks.length && goalOk,
+          note,
         };
       } catch (err) {
         return {
@@ -160,8 +214,11 @@ export const steer = (tasks: string[], text: string, goal?: string, apiBase = ""
   post<{
     ok: boolean;
     rows: { task: string; ok: boolean; detail?: string }[];
+    goal_requested: boolean;
     goal_applied: boolean;
     goal_note?: string;
+    /** The brief's stop condition before and after, when the goal half was applied. */
+    goal?: { from: string; to: string };
   }>("/api/steer", { tasks, text, goal }, apiBase);
 
 /** A new task, linked at birth with `pb plan --dep` so the graph shows the relation. */
@@ -230,3 +287,17 @@ export async function askHarness(
   }
   return { recorded: true, dispatched: true, note: "answered" };
 }
+/**
+ * Attach a document to one card: `pb attach --task <id> --path <root-relative file>`.
+ * The path must be playbook-root-relative and must exist — the engine refuses otherwise, and the
+ * room must pass that refusal through rather than soften it into a write.
+ */
+export const attach = (task: string, path: string, label?: string, apiBase = "") =>
+  post<{ ok: boolean; task: string; path: string; count: number | null; wrote: string }>(
+    "/api/attach",
+    { task, path, label },
+    apiBase
+);
+
+export const decide = (task: string, option: string, reason: string, apiBase = "") =>
+  post<{ ok: boolean; row: DecisionRow; output: string }>("/api/decide", { task, option, reason }, apiBase);

@@ -36,20 +36,30 @@ import { FLOW_SCHEMA } from "./flow-types";
 import { steeringPlan, type SteeringPlan } from "./flow-derive";
 import { FLOW_LIVE_GRAPH } from "@/mocks/flow-graph-live";
 import { FLOW_SAMPLE_LAYERED } from "@/mocks/flow-sample-layered";
+import type { DecisionRow } from "./flow-decisions";
 
 /** The four dock actions (frame 3). Only `steer` edits the cycle brief. */
 export type FlowSteeringMode = "steer" | "comment" | "fork" | "attach";
 
 /** What a steering action wrote: journal rows, and at most one cycle-brief edit. */
 export interface FlowSteeringResult {
-  /** Append-only journal rows, one per selected card (`pb comment --task`). */
-  rows: { task: string; action: "comment"; text: string }[];
+  /**
+   * Append-only journal rows, one per selected card: `pb comment --task` for a comment or steer,
+   * `pb attach --task --path` (which also writes the card's `docs:`) for an attach.
+   */
+  rows: { task: string; action: "comment" | "attach"; text: string }[];
   /** The cycle-brief `stop` edit, as a diff for the end-goal card (frame 3). */
   goal_diff?: FlowGoalDiff;
   /** The dock's "steering will write" summary. */
   wrote: SteeringPlan;
   /** False while the adapter cannot write (the fixture says so out loud). */
   persisted: boolean;
+  /**
+   * True when SOMETHING was actually written, even if not everything asked for landed — a steer
+   * whose journal rows landed while the goal edit was refused has applied, and must not render as
+   * "nothing written yet".
+   */
+  applied?: boolean;
   /**
    * Why it did not persist, in the adapter's own words — a fixture admitting it is a
    * fixture, or a live engine's refusal. The toast shows this verbatim rather than
@@ -93,6 +103,7 @@ export interface FlowAdapter {
   /** v2 P4b: the harness CLIs on this machine, and a question streamed to one of them. */
   listHarnesses?(): Promise<{ id: string; label: string }[]>;
   ask?(task: string, text: string, harness: string | null, onEvent: (ev: { type: string; text?: string; message?: string; seq?: number | null }) => void): Promise<{ recorded: boolean; dispatched: boolean; note: string }>;
+  decide?(task: string, option: string, reason: string): Promise<{ ok: boolean; note: string; row?: DecisionRow }>;
 }
 
 /**
@@ -474,6 +485,21 @@ export const SAMPLE_LAYERED_ADAPTER: FlowAdapter = {
 
 /** What the room opens with. Anything implementing FlowAdapter is accepted. */
 export const DEFAULT_FLOW_ADAPTER: FlowAdapter = LIVE_SNAPSHOT_ADAPTER;
+
+/**
+ * The chipbar's source chip. It answers "what am I looking at?" from the ADAPTER, which knows:
+ * the room used to print `snapshot · pb graph --json` for every non-sample adapter, so the live
+ * projection read from the running engine was labelled a snapshot while the adapter's own label —
+ * the one field that distinguishes them — was demoted to a tooltip.
+ *
+ * The sample keeps stronger wording than its label: a painted frame's detail cannot be proven
+ * against anything, and saying so is the point of the chip.
+ */
+export function sourceChipText(adapter: FlowAdapter): string {
+  if (adapter.kind === "sample") return "sample · unprovable detail";
+  // The parenthetical is provenance for the tooltip; the chip itself stays one glance wide.
+  return adapter.label.split(" (")[0];
+}
 
 /**
  * P3: the live adapter. `read` is a thunk around `pb graph --json` (the Rust

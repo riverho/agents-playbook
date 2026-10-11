@@ -46,6 +46,7 @@ import {
 import {
   DEFAULT_FLOW_ADAPTER,
   SAMPLE_LAYERED_ADAPTER,
+  sourceChipText,
   type FlowAdapter,
   type FlowSteeringMode,
 } from "@/lib/flow-adapter";
@@ -84,6 +85,8 @@ import {
   FlowEdge as FlowEdgeComponent,
 } from "./FlowEdges";
 import { FlowInspector } from "./FlowInspector";
+import { FlowDecisions } from "./FlowDecisions";
+import { decisionItems, type DecisionRow } from "@/lib/flow-decisions";
 import { FlowBandCard, FlowDraftCard, FlowLayerGateCard, FlowStackCard } from "./FlowLayerView";
 import { layoutLayers, nextBandId, type BandDraft } from "@/lib/flow-bands";
 import { FlowJumpContext, type FlowJump } from "@/lib/flow-jump";
@@ -169,7 +172,14 @@ function FlowCanvas({
   // this repo's live snapshot and the labelled three-layer sample.
   const [showSample, setShowSample] = useState(false);
   const active = adapter ?? (showSample ? SAMPLE_LAYERED_ADAPTER : DEFAULT_FLOW_ADAPTER);
-  const graph = useMemo(() => active.load(), [active]);
+  const sourceGraph = useMemo(() => active.load(), [active]);
+  const [recorded, setRecorded] = useState<Record<string, DecisionRow>>({});
+  const graph = useMemo(() => ({ ...sourceGraph, nodes: sourceGraph.nodes.map(n => recorded[n.id] ? {
+    ...n, human: { ...n.human, decided: { option: recorded[n.id].option, reason: recorded[n.id].reason, by: recorded[n.id].agent, ts: recorded[n.id].ts, seq: recorded[n.id].seq } },
+  } : n) }), [sourceGraph, recorded]);
+  useEffect(() => { setRecorded({}); }, [active]);
+  const inbox = useMemo(() => decisionItems(graph), [graph]);
+  const [showDecisions, setShowDecisions] = useState(false);
   const filtered = useMemo(() => filterGraph(graph, view, query), [graph, view, query]);
   // v2 layer view (D21): bands from the plan's layers; done stacked unless expanded;
   // drafts are view state until Create (J3).
@@ -315,6 +325,7 @@ function FlowCanvas({
       setOpenPlus(null);
       return true;
     }
+    if (showDecisions) { setShowDecisions(false); return true; }
     if (openNode) {
       closeCard();
       return true;
@@ -325,7 +336,7 @@ function FlowCanvas({
       return true;
     }
     return false;
-  }, [selectedIds.length, openNode, setNodes, closeCard, openPlus]));
+  }, [showDecisions, selectedIds.length, openNode, setNodes, closeCard, openPlus]));
 
   const runSteering = useCallback(
     async (mode: FlowSteeringMode) => {
@@ -345,6 +356,11 @@ function FlowCanvas({
         plan: result.wrote,
         goalEdited: mode === "steer" && !!result.goal_diff,
         persisted: result.persisted,
+        applied: result.applied,
+        // The verb the toast reports must be the verb that ran: attach writes a card's docs:,
+        // it does not comment, and saying "commented on" for it would be the same lie the
+        // orchestrator used to tell about writing nothing.
+        verb: mode === "attach" ? "attach" : "comment",
         note: result.note,
       });
     },
@@ -375,7 +391,7 @@ function FlowCanvas({
   }, [active]);
 
   const counts = {
-    hil: graph.human.batch.length,
+    hil: inbox.length,
     forks: graph.nodes.filter(node => node.kind === "fork").length,
   };
 
@@ -395,6 +411,7 @@ function FlowCanvas({
         onNodesChange={onNodesChange}
         onNodeClick={(_event, node) => {
           if (node.id === STEERING_NODE_ID) return;
+          if (node.type === "flowBatch") { setOpenId(null); setShowDecisions(true); return; }
           // bands, gate posts, stacks and drafts are places and view state, not cards to open
           if (node.type === "flowBand" || node.type === "flowLayerGate" || node.type === "flowStack" || node.type === "flowDraft") return;
           setOpenId(node.id);
@@ -480,9 +497,9 @@ function FlowCanvas({
           right: FLOW_MARGIN,
         }}
       >
-        <span className={`flow-chip${counts.hil > 0 ? " flow-chip--hil" : ""}`}>
-          🧑 HIL {counts.hil}
-        </span>
+        <button type="button" className={`flow-chip${counts.hil > 0 ? " flow-chip--hil" : ""}`} onClick={() => { setOpenId(null); setShowDecisions(true); }} aria-label={`Waiting on you: ${counts.hil}`}>
+          🧑 Waiting on you {counts.hil}
+        </button>
         {graph.nodes.find(node => node.kind === "start")?.cron && (
           <span className="flow-chip">
             ⏱ {graph.nodes.find(node => node.kind === "start")?.cron?.every}
@@ -490,13 +507,15 @@ function FlowCanvas({
         )}
         <span className="flow-chip">{view === "all" ? "all layers" : `layer ${view}`}</span>
         {query && <span className="flow-chip flow-chip--on">filter: {query}</span>}
-        {/* Truth about the source: a payload with no declared layers gets ONE
-            column, and the room says so instead of implying strata. */}
+        {/* Truth about the source, FROM THE ADAPTER rather than a hardcoded string: a payload with
+            no declared layers gets ONE column, and the room says so instead of implying strata.
+            The label is the only field that distinguishes the live projection read from the
+            running engine from the bundled snapshot of this repo, so the chip renders it. */}
         <span
           className={`flow-chip${active.kind === "sample" ? " flow-chip--on" : ""}`}
           title={active.label}
         >
-          {active.kind === "sample" ? "sample · unprovable detail" : "snapshot · pb graph --json"}
+          {sourceChipText(active)}
         </span>
         {!hasDeclaredLayers(graph) && (
           <span className="flow-chip flow-chip--ghost">no layers declared — flat view</span>
@@ -526,7 +545,9 @@ function FlowCanvas({
 
       {toast && <FlowSteeringToast toast={toast} onDismiss={() => setToast(null)} />}
 
-      {openNode && openNode.kind !== "gatepost" && (
+      {showDecisions && <FlowDecisions items={inbox} onClose={() => setShowDecisions(false)} onDecide={active.decide} onRecorded={(task, row) => setRecorded(previous => ({ ...previous, [task]: row }))} />}
+
+      {!showDecisions && openNode && openNode.kind !== "gatepost" && (
         <FlowInspector
           node={openNode}
           onClose={closeCard}
