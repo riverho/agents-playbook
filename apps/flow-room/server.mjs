@@ -257,29 +257,50 @@ async function serveApi(req, res, url) {
     if (!tasks.length || typeof body?.text !== 'string' || !body.text.trim()) {
       return json(res, 400, { error: 'expected { tasks: [ids], text: non-empty string, goal?: {stop} }' });
     }
+    // Input LENGTH is not an input value. On Windows an over-long argv makes execFile throw
+    // synchronously, the handler's catch turns it into a 500 ("spawn ENAMETOOLONG"), and the
+    // contract said 400/422/200 — so the limit is stated here instead.
+    const MAX_FIELD = 8000;
+    for (const [field, value] of [['text', body.text], ['goal', body?.goal]]) {
+      if (value !== undefined && value !== null && String(value).length > MAX_FIELD) {
+        return json(res, 400, { error: `${field} is longer than ${MAX_FIELD} characters` });
+      }
+    }
     const rows = [];
     for (const task of tasks) {
       const r = await runPb(ROOT, ['comment', '--task', String(task), '--text', body.text, '--intent', 'steer']);
       rows.push({ task, ok: r.code === 0, detail: r.code === 0 ? undefined : r.stderr.trim() });
     }
-    // The goal half of a steer edits the OPEN cycle brief's stop condition. That used to be
-    // impossible — `pb cycle --new` opens a phase and nothing edited the current one — so this
-    // hardcoded false and said so. `pb cycle --edit` is that primitive now, and a refusal from it
-    // is reported verbatim rather than as a silent no-op.
+    // The goal half of a steer edits the OPEN cycle brief's stop condition. `pb cycle --edit` is
+    // that primitive; a refusal from it is reported verbatim rather than as a silent no-op.
+    // `goal_requested` is reported explicitly, because a whitespace goal is NOT a request: without
+    // this the room turned "nothing was asked" into "the engine refused the edit".
+    const goalText = body?.goal === undefined || body?.goal === null ? '' : String(body.goal).trim();
+    const goalRequested = goalText.length > 0;
     let goalApplied = false;
     let goalNote;
-    if (body?.goal !== undefined && body?.goal !== null && String(body.goal).trim()) {
-      const stop = String(body.goal).trim();
-      if (stop.startsWith('-')) return json(res, 400, { error: 'a goal may not start with "-"' });
-      const g = await runPb(ROOT, ['cycle', '--edit', '--stop', stop]);
+    let goalDiff;
+    if (goalRequested) {
+      if (goalText.startsWith('-')) return json(res, 400, { error: 'a goal may not start with "-"' });
+      const g = await runPb(ROOT, ['cycle', '--edit', '--stop', goalText, '--json']);
       goalApplied = g.code === 0;
-      if (!goalApplied) goalNote = g.stderr.trim() || g.stdout.trim();
+      if (goalApplied) {
+        try {
+          const parsed = JSON.parse(g.stdout);
+          const beforeStop = String(parsed?.cycle_edit?.before?.stop ?? '');
+          goalDiff = { from: beforeStop, to: String(parsed?.cycle_edit?.after?.stop ?? goalText) };
+        } catch { goalDiff = { from: '', to: goalText }; }
+      } else {
+        goalNote = g.stderr.trim() || g.stdout.trim();
+      }
     }
     return json(res, 200, {
-      ok: rows.every((r) => r.ok) && (body?.goal ? goalApplied : true),
+      ok: rows.every((r) => r.ok) && (!goalRequested || goalApplied),
       rows,
+      goal_requested: goalRequested,
       goal_applied: goalApplied,
       goal_note: goalApplied ? undefined : goalNote,
+      goal: goalDiff,
     });
   }
 
@@ -341,6 +362,7 @@ async function serveApi(req, res, url) {
     }
     const attachPath = body.path.trim();
     if (attachPath.startsWith('-')) return json(res, 400, { error: 'a path may not start with "-"' });
+    if (attachPath.length > 400) return json(res, 400, { error: 'path is longer than 400 characters' });
     const argv = ['attach', '--task', body.task, '--path', attachPath];
     const label = body.label === undefined || body.label === null ? '' : String(body.label).trim();
     if (label) {

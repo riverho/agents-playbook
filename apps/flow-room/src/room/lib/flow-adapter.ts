@@ -54,6 +54,12 @@ export interface FlowSteeringResult {
   /** False while the adapter cannot write (the fixture says so out loud). */
   persisted: boolean;
   /**
+   * True when SOMETHING was actually written, even if not everything asked for landed — a steer
+   * whose journal rows landed while the goal edit was refused has applied, and must not render as
+   * "nothing written yet".
+   */
+  applied?: boolean;
+  /**
    * Why it did not persist, in the adapter's own words — a fixture admitting it is a
    * fixture, or a live engine's refusal. The toast shows this verbatim rather than
    * assuming a cause.

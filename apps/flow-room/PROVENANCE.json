@@ -125,9 +125,9 @@
   },
   "local_edits": {
     "lib/flow-adapter.ts": {
-      "sha256": "5bdb124080c4aa51cf7a0222a1b25a04c886db6cffa40f7679be1c1b7bc270b3",
-      "reason": "plan-20261010-021: FlowSteeringResult rows action widened from comment to comment|attach, because attach writes a card's docs: via pb attach rather than a journal comment.",
-      "recorded": "2026-10-11T10:29:26.764Z",
+      "sha256": "44394bda41e997c94397c47068184b6729defc378e0f971983fa73c049ca0ae7",
+      "reason": "plan-20261010-021 fix round (checker BLOCK): the room reports what actually happened - a three-state toast (applied in part), the verb that ran, and the goal diff the live adapter never returned.",
+      "recorded": "2026-10-11T12:12:05.494Z",
       "superseded": [
         {
           "sha256": "0828537b950b2c3b4e60aea5d655f8ddc6ab5dc142979d1661efd1630c573c77",
@@ -140,13 +140,17 @@
         {
           "sha256": "0a5195844046492d67b2ee3510aa00e4ed965d17fdb92afb770947bdef26f726",
           "reason": "plan-20261010-031/034 (v2): optional createTask / forkTask / sendMessage on the adapter interface; a snapshot has none and says it cannot write"
+        },
+        {
+          "sha256": "5bdb124080c4aa51cf7a0222a1b25a04c886db6cffa40f7679be1c1b7bc270b3",
+          "reason": "plan-20261010-021: FlowSteeringResult rows action widened from comment to comment|attach, because attach writes a card's docs: via pb attach rather than a journal comment."
         }
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "b36f2391e386f7c32c5ecf375eac1ae0cb9274b0fac4ac5fed3de5f45c27fa16",
-      "reason": "plan-20261010-021: the steering toast now reports the verb that actually ran (attach vs comment), so an attach cannot be described as a comment.",
-      "recorded": "2026-10-11T10:29:26.619Z",
+      "sha256": "0b4330bd723d68ad646f152de032b32a422645ed386dd8885b2825fa77a74381",
+      "reason": "plan-20261010-021 fix round (checker BLOCK): the room reports what actually happened - a three-state toast (applied in part), the verb that ran, and the goal diff the live adapter never returned.",
+      "recorded": "2026-10-11T12:12:04.888Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -179,13 +183,17 @@
         {
           "sha256": "b8ba8bf1ce12a816c98dacb25d682516bcbb9f24dab08b17857685f3bf7d8dfb",
           "reason": "plan-20261010-030/031/034 (v2): zoom tiers, layer view, jump-in, open card via adapter.sendMessage, presence strip; Escape closes the open card first and focus returns to the card (A1)"
+        },
+        {
+          "sha256": "b36f2391e386f7c32c5ecf375eac1ae0cb9274b0fac4ac5fed3de5f45c27fa16",
+          "reason": "plan-20261010-021: the steering toast now reports the verb that actually ran (attach vs comment), so an attach cannot be described as a comment."
         }
       ]
     },
     "components/stage/FlowSteeringDock.tsx": {
-      "sha256": "661a05af246a4f80ef54f97817ff0e043d071817081d0ecb8f588af9f7a479da",
-      "reason": "plan-20261010-021: SteeringToast gains an optional verb (comment|attach); headline 1 says 'attached a document to' when that is what ran.",
-      "recorded": "2026-10-11T10:29:26.699Z",
+      "sha256": "c81a0153686acf6c082b87798b2e7e8098e1b27f1c0bafe907af9287aa51705e",
+      "reason": "plan-20261010-021 fix round (checker BLOCK): the room reports what actually happened - a three-state toast (applied in part), the verb that ran, and the goal diff the live adapter never returned.",
+      "recorded": "2026-10-11T12:12:05.190Z",
       "superseded": [
         {
           "sha256": "5bd55bde1dde74b05893b38caa7919a0e3f3ff110a80942f0257b42c4cda9f50",
@@ -194,6 +202,10 @@
         {
           "sha256": "fa9e79c9134ffe2989661d0794a43a44491c6498b867077fef047ef95d8295d8",
           "reason": "plan-20261010-023 (toast headline branches on persisted) + plan-20261010-028 (v2 contract, D12/D13/D19/D20): 10px badge moved to 12px (T2)"
+        },
+        {
+          "sha256": "661a05af246a4f80ef54f97817ff0e043d071817081d0ecb8f588af9f7a479da",
+          "reason": "plan-20261010-021: SteeringToast gains an optional verb (comment|attach); headline 1 says 'attached a document to' when that is what ran."
         }
       ]
     },

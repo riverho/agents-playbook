@@ -23,10 +23,10 @@
 //  Only dependency: js-yaml.
 // ============================================================================
 
-import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, copyFileSync, cpSync, openSync, closeSync, statSync, lstatSync, unlinkSync, rmdirSync, readlinkSync, rmSync, readdirSync, mkdtempSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync, copyFileSync, cpSync, openSync, closeSync, statSync, lstatSync, unlinkSync, rmdirSync, readlinkSync, realpathSync, rmSync, readdirSync, mkdtempSync, renameSync } from 'node:fs';
 import { execSync, execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { resolve, dirname, join, isAbsolute, basename } from 'node:path';
+import { resolve, dirname, join, isAbsolute, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import yaml from 'js-yaml';
@@ -4315,19 +4315,37 @@ function backlogAttachDoc(taskId, rel) {
   // The master may point `backlog:` at a JSON file (writeBacklog supports it), and a textual
   // YAML insertion would corrupt one. JSON gets the structural write it can take.
   if (BACKLOG.endsWith('.json')) {
-    const doc = readData(BACKLOG);
-    if (!doc) return { ok: false, reason: `no ${BACKLOG}` };
-    const task = (doc.tasks || []).find((t) => t.id === taskId);
+    const parsed = readData(BACKLOG);
+    if (!parsed) return { ok: false, reason: `no ${BACKLOG}` };
+    const tasks = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.tasks) ? parsed.tasks : null);
+    if (!tasks) return { ok: false, reason: `${BACKLOG} has no task list this command can address` };
+    const task = tasks.find((t) => t.id === taskId);
     if (!task) return { ok: false, reason: `task ${taskId} has no block in ${BACKLOG}` };
-    const listed = Array.isArray(task.docs) ? task.docs.slice() : [];
+    if (task.docs !== undefined && !Array.isArray(task.docs)) {
+      return { ok: false, reason: `task ${taskId} has a docs: value that is not a list (${JSON.stringify(task.docs)}) — fix it by hand rather than have this command replace it` };
+    }
+    const listed = (task.docs || []).map((d) => String(d));
     if (listed.includes(rel)) return { ok: true, already: true };
     listed.push(rel);
     task.docs = listed;
-    atomicReplace(p(BACKLOG), JSON.stringify(doc, null, 2) + '\n');
+    // Keep the file's own indent width rather than re-formatting a hand-written document.
+    const prior = readText(BACKLOG).match(/^[ \t]+"/m)?.[0].length ?? 2;
+    atomicReplace(p(BACKLOG), `${JSON.stringify(parsed, null, Math.max(2, prior))}\n`);
     return { ok: true, already: false };
   }
   const text = readText(BACKLOG);
   if (!text) return { ok: false, reason: `no ${BACKLOG}` };
+  // The PARSED backlog is authoritative for what the task already lists: it sees block lists,
+  // flow lists and quoted items alike, which is exactly what a textual scan got wrong.
+  const parsed = readData(BACKLOG);
+  const task = parsed && Array.isArray(parsed.tasks) ? parsed.tasks.find((t) => t.id === taskId) : null;
+  if (!task) return { ok: false, reason: `task ${taskId} has no block in ${BACKLOG}` };
+  if (task.docs !== undefined && !Array.isArray(task.docs)) {
+    return { ok: false, reason: `task ${taskId} has a docs: value that is not a list (${JSON.stringify(task.docs)}) — fix it by hand rather than have this command replace it` };
+  }
+  const listed = (task.docs || []).map((d) => String(d));
+  if (listed.includes(rel)) return { ok: true, already: true };
+
   const lines = text.split('\n');
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const openRe = new RegExp(`^(\\s*)-\\s*id:\\s*${escapeRe(taskId)}\\s*$`);
@@ -4339,17 +4357,34 @@ function backlogAttachDoc(taskId, rel) {
     const m = lines[i].match(/^(\s*)-\s/);
     if (m && m[1].length <= dashIndent.length) { end = i; break; }
   }
-  const docsIdx = lines.findIndex((l, i) => i > idIdx && i < end && /^\s*docs:\s*$/.test(l));
+  const keyIndent = `${dashIndent}  `;
+  const docsIdx = lines.findIndex((l, i) => i > idIdx && i < end && /^\s*docs\s*:/.test(l));
+  // Items are QUOTED. A legal filename may begin with a YAML indicator (`[WIP].md`, `#notes.md`,
+  // `- dash.md`, `%pct.md`, `@at.md`) or contain ` #` — written bare, any of those corrupts the
+  // file, and every later `pb validate` / `pb graph` / `pb status` then crashes on it. A JSON
+  // double-quoted scalar is valid YAML, so the path is recorded exactly and the file still parses.
+  // Rewriting the whole entry also folds an existing flow list (`docs: [a.md]`) into block style,
+  // instead of appending a SECOND `docs:` key and making the file unparseable.
+  const body = [rel, ...listed].map((d) => `${keyIndent}  - ${JSON.stringify(d)}`);
   if (docsIdx !== -1) {
     let last = docsIdx + 1;
-    const items = [];
-    while (last < end && /^\s*-\s/.test(lines[last])) { items.push(lines[last].trim().replace(/^-\s*/, '')); last += 1; }
-    if (items.includes(rel)) return { ok: true, already: true };
-    lines.splice(last, 0, `${dashIndent}    - ${rel}`);
+    while (last < end && (/^\s*-\s/.test(lines[last]) || /^\s*$/.test(lines[last]) || /^\s{2,}\S/.test(lines[last]))) last += 1;
+    lines.splice(docsIdx, last - docsIdx, `${keyIndent}docs:`, ...body);
   } else {
-    lines.splice(end, 0, `${dashIndent}  docs:`, `${dashIndent}    - ${rel}`);
+    lines.splice(end, 0, `${keyIndent}docs:`, ...body);
   }
-  writeFileSync(p(BACKLOG), lines.join('\n'), 'utf8');
+  const next = lines.join('\n');
+  // Never leave a file the engine cannot read back: read the result BEFORE replacing the file.
+  try {
+    const reread = yaml.load(next);
+    const t = reread && Array.isArray(reread.tasks) ? reread.tasks.find((x) => x.id === taskId) : null;
+    if (!t || !Array.isArray(t.docs) || !t.docs.map(String).includes(rel)) {
+      return { ok: false, reason: 'the rewritten backlog did not read back with the new document — nothing was written' };
+    }
+  } catch (err) {
+    return { ok: false, reason: `the rewritten backlog would not parse (${String(err?.message ?? err).split('\n')[0]}) — nothing was written` };
+  }
+  writeFileSync(p(BACKLOG), next, 'utf8');
   return { ok: true, already: false };
 }
 // `pb attach` — the WRITER for a card's `docs:` association (design D6). Both readers already
@@ -4373,9 +4408,28 @@ function cmdAttach(args) {
     process.exit(1);
   }
   const rel = given.replace(/\\/g, '/');
-  if (!existsSync(resolve(ROOT, rel))) {
+  const abs = resolve(ROOT, rel);
+  if (!existsSync(abs)) {
     console.error(`Refusing: ${rel} does not exist under the playbook root.`);
     console.error('A recorded path that is not there is a claim, not a document — pb validate would fail on it.');
+    process.exit(1);
+  }
+  // The path must resolve to a FILE INSIDE this playbook. Two wrongful acceptances lived here:
+  // `../outside.txt` was recorded and handed to the room through pb graph, and `docs` (a
+  // directory) was accepted as a document. realpath resolves `..` and links, so the check is on
+  // what the path really is rather than on how it was spelled.
+  let real = null;
+  try { real = realpathSync(abs); } catch { real = null; }
+  const rootReal = (() => { try { return realpathSync(ROOT); } catch { return ROOT; } })();
+  if (!real || !(real === rootReal || real.startsWith(rootReal + sep))) {
+    console.error(`Refusing: ${rel} resolves outside the playbook root (${real ?? 'unresolvable'}).`);
+    console.error('A document is attached by a path inside this playbook, or the room is handed a path it cannot open.');
+    process.exit(1);
+  }
+  let stats = null;
+  try { stats = statSync(real); } catch { stats = null; }
+  if (!stats || !stats.isFile()) {
+    console.error(`Refusing: ${rel} is a ${stats?.isDirectory() ? 'directory' : 'non-file'}, not a document.`);
     process.exit(1);
   }
   const written = backlogAttachDoc(taskId, rel);
@@ -4387,6 +4441,7 @@ function cmdAttach(args) {
   const label = typeof args.label === 'string' && args.label.trim() ? args.label.trim() : null;
   const row = appendJournal({
     action: 'attach',
+    ts: nowISO(),
     status: 'in_progress',
     task: taskId,
     notes: `docs: + ${rel}${label ? ` (${label})` : ''}`,
@@ -5718,16 +5773,35 @@ the folder as truth — do not silently follow memory.)`}
 // disagreeing with itself — and the front matter is the half that wins.
 function rewriteCycleBrief(text, wanted) {
   const SECTION = { goal: /^##\s*1\./, stop: /^##\s*4\./ };
-  let out = text;
-  const fm = out.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  // Structure injection and truncation, refused up front. A value carrying a heading would ADD a
+  // section: the brief would keep its real `## 4.`, gain an injected one, and both flags would
+  // still report success while the file contradicted itself. A value with a newline cannot be a
+  // front-matter scalar at all.
+  for (const [key, value] of Object.entries(wanted)) {
+    if (/[\r\n]/.test(value)) {
+      throw new Error(`the ${key} is more than one line — the brief's front matter holds a single-line scalar, so a multi-line value cannot be recorded faithfully`);
+    }
+    if (/^\s*#{1,6}\s/.test(value)) {
+      throw new Error(`the ${key} starts with a markdown heading, which would inject a section into the brief`);
+    }
+  }
+  const crlf = /\r\n/.test(text);
+  const lf = text.replace(/\r\n/g, '\n');
+  const fm = lf.match(/^---\n([\s\S]*?)\n---/);
   if (!fm) throw new Error('the cycle brief has no YAML front matter to edit');
-  let block = fm[1];
+  const headLines = fm[1].split('\n');
   for (const [key, value] of Object.entries(wanted)) {
     const line = `${key}: ${JSON.stringify(value)}`;
-    const re = new RegExp(`^${key}:.*$`, 'm');
-    block = re.test(block) ? block.replace(re, line) : `${block}\n${line}`;
+    const idx = headLines.findIndex((l) => new RegExp(`^${key}\\s*:`).test(l));
+    if (idx === -1) { headLines.push(line); continue; }
+    // A hand-written block scalar (`stop: >-` plus indented continuation lines) is ONE value
+    // spread over several lines. Replacing only the first orphans the continuation and leaves the
+    // front matter unparseable, which is exactly what the first version of this did.
+    let last = idx + 1;
+    while (last < headLines.length && (/^\s+\S/.test(headLines[last]) || /^\s*$/.test(headLines[last]))) last += 1;
+    headLines.splice(idx, last - idx, line);
   }
-  out = `---\n${block}\n---${out.slice(fm[0].length)}`;
+  let out = `---\n${headLines.join('\n')}\n---${lf.slice(fm[0].length)}`;
   for (const [key, value] of Object.entries(wanted)) {
     const lines = out.split('\n');
     const start = lines.findIndex((l) => SECTION[key].test(l));
@@ -5736,7 +5810,19 @@ function rewriteCycleBrief(text, wanted) {
     for (let i = start + 1; i < lines.length; i += 1) if (/^##\s/.test(lines[i])) { end = i; break; }
     out = [...lines.slice(0, start + 1), value, '', ...lines.slice(end)].join('\n');
   }
-  return out;
+  // Writing back the file's own line endings rather than mixing CRLF and LF in one brief.
+  return crlf ? out.replace(/\n/g, '\r\n') : out;
+}
+// The section body of a question, for when the front matter is missing the key: the journal's
+// `before` should carry what the brief actually said, including the half a human reads.
+function cycleSectionText(text, key) {
+  const lines = String(text ?? '').replace(/\r\n/g, '\n').split('\n');
+  const re = key === 'goal' ? /^##\s*1\./ : /^##\s*4\./;
+  const start = lines.findIndex((l) => re.test(l));
+  if (start === -1) return '';
+  const body = [];
+  for (let i = start + 1; i < lines.length && !/^##\s/.test(lines[i]); i += 1) body.push(lines[i]);
+  return body.join(' ').trim();
 }
 function cmdCycle(args) {
   const cur = readCycle();
@@ -5765,17 +5851,51 @@ function cmdCycle(args) {
       console.log('No change — the brief already says that.');
       return;
     }
+    // READ BACK WHAT WE ARE ABOUT TO WRITE. The front matter must parse and say exactly what was
+    // asked, and no question may have been added or lost. This is the check that makes the
+    // corruption and injection classes impossible rather than unlikely: if it fails, nothing is
+    // written and the command says why, instead of reporting success over a broken brief.
+    const fmAfter = after.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    let reread = null;
+    try { reread = fmAfter ? yaml.load(fmAfter[1]) : null; } catch { reread = null; }
+    const asked = Object.entries(wanted);
+    const mismatched = asked.find(([k, v]) => !reread || String(reread[k] ?? '') !== v);
+    const sectionsBefore = (before.replace(/\r\n/g, '\n').match(/^##\s/gm) || []).length;
+    const sectionsAfter = (after.replace(/\r\n/g, '\n').match(/^##\s/gm) || []).length;
+    if (!reread || mismatched || sectionsAfter !== sectionsBefore) {
+      console.error('Refusing to edit: the rewritten brief did not read back correctly — nothing was written.');
+      if (mismatched) console.error(`  the front matter would read ${JSON.stringify(reread?.[mismatched[0]] ?? null)} for "${mismatched[0]}", not ${JSON.stringify(mismatched[1])}`);
+      if (sectionsAfter !== sectionsBefore) console.error(`  the number of questions would change from ${sectionsBefore} to ${sectionsAfter} (a value is injecting structure)`);
+      process.exit(1);
+    }
     writeFileSync(p(CYCLE), after, 'utf8');
     const loop = activeLoop();
     const row = appendJournal({
       action: 'cycle-edit',
+      ts: nowISO(),
       status: 'in_progress',
       task: null,
       loop: loop?.id || null,
       fields: Object.keys(wanted),
-      before: Object.fromEntries(Object.entries(wanted).map(([k]) => [k, String(cur[k] ?? '')])),
+      // What the brief SAID before, from the front matter or — when the key is missing there —
+      // from the question a human reads, so the row never claims an empty prior value.
+      before: Object.fromEntries(asked.map(([k]) => [k, String(cur[k] ?? '') || cycleSectionText(before, k)])),
       notes: Object.entries(wanted).map(([k, v]) => `${k} -> ${v}`).join(' | '),
     });
+    if (args.json) {
+      // Machine-readable, because the room needs the BEFORE value to render the end-goal diff:
+      // a steer that really rewrote the brief used to leave the live adapter with nothing to show.
+      console.log(JSON.stringify({
+        cycle_edit: {
+          file: CYCLE,
+          fields: Object.keys(wanted),
+          before: row.before,
+          after: { ...wanted },
+          seq: row.seq,
+        },
+      }, null, 2));
+      return;
+    }
     for (const [key, value] of Object.entries(wanted)) {
       console.log(`  ${key}: ${String(cur[key] || '(unset)').slice(0, 90)}`);
       console.log(`  ${' '.repeat(key.length)}  -> ${value.slice(0, 90)}`);

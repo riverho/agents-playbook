@@ -117,6 +117,7 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
           return {
             rows: results.map((r) => ({ task: r.task, action: "attach" as const, text: `docs: + ${path}` })),
             wrote,
+            applied: results.some((r) => r.ok),
             persisted: failed.length === 0 && results.length > 0 && results.length === tasks.length,
             note:
               failed.length > 0
@@ -132,11 +133,21 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
         const res = await steer(tasks, prompt, mode === "steer" ? prompt : undefined, apiBase);
         const ok = res.rows.filter((row) => row.ok);
         const failed = res.rows.filter((row) => !row.ok);
-        // A steer has TWO halves now: the journal rows and the brief's stop condition. The goal
-        // half used to be impossible, so `persisted` could ignore it; now a written comment with a
-        // refused goal edit must not report itself as fully persisted.
-        const goalRequested = mode === "steer";
+        // The SERVER says whether a goal was requested. Deriving it from the mode invented a
+        // refusal for a whitespace goal: nothing was asked, and the room reported that the engine
+        // refused the edit. A steer has two halves, and they can land independently.
+        const goalRequested = res.goal_requested === true;
         const goalOk = !goalRequested || res.goal_applied === true;
+        const cards = tasks.length === 1 ? "1 card" : `${tasks.length} cards`;
+        const goalDiff =
+          goalRequested && res.goal_applied === true
+            ? {
+                old: res.goal?.from ? `Stop: ${res.goal.from}` : "Stop: (not recorded in the brief's front matter)",
+                new: `Stop: ${res.goal?.to ?? prompt}`,
+                when: `applied just now · from steering on ${cards}`,
+                from: `pb comment on ${cards} + 1 cycle-brief edit`,
+              }
+            : undefined;
         const note =
           failed.length > 0
             ? `pb refused ${failed.length} of ${tasks.length}: ${failed
@@ -144,12 +155,17 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
                 .join("; ")}`
             : !goalOk
               ? `the journal rows were written but the GOAL half was not applied: ${res.goal_note ?? "the engine refused the edit"}`
-              : res.goal_applied
+              : goalRequested
                 ? "written: the journal rows and the open brief's stop condition"
                 : res.goal_note;
         return {
           rows: ok.map((row) => ({ task: row.task, action: "comment" as const, text: prompt })),
+          goal_diff: goalDiff,
           wrote,
+          // `persisted` = everything that was asked for landed; `applied` = something did. Folding
+          // the goal half into `persisted` made a partial steer render as "nothing written yet"
+          // while the journal rows were already on disk.
+          applied: ok.length > 0 || (goalRequested && res.goal_applied === true),
           persisted: failed.length === 0 && ok.length === tasks.length && goalOk,
           note,
         };
@@ -187,8 +203,11 @@ export const steer = (tasks: string[], text: string, goal?: string, apiBase = ""
   post<{
     ok: boolean;
     rows: { task: string; ok: boolean; detail?: string }[];
+    goal_requested: boolean;
     goal_applied: boolean;
     goal_note?: string;
+    /** The brief's stop condition before and after, when the goal half was applied. */
+    goal?: { from: string; to: string };
   }>("/api/steer", { tasks, text, goal }, apiBase);
 
 /** A new task, linked at birth with `pb plan --dep` so the graph shows the relation. */
