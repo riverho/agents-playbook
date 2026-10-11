@@ -70,6 +70,14 @@ export async function liveAdapter(apiBase = ""): Promise<FlowAdapter> {
   const base = createPbGraphAdapter(() => graph);
   return {
     ...base,
+    sendMessage: async (task, text, intent) => {
+      try {
+        const r = await comment(task, text, apiBase, intent);
+        return { ok: r.ok, note: `Saved to the project journal${r.seq !== null ? ` (row ${r.seq})` : ""} as a ${intent === "steer" ? "change of direction" : intent}.` };
+      } catch (err) {
+        return { ok: false, note: err instanceof Error ? err.message : String(err) };
+      }
+    },
     createTask: async ({ goal, from, layer }) => {
       try {
         const r = await fork(goal, from, undefined, apiBase, layer);
@@ -142,8 +150,8 @@ async function post<T>(route: string, payload: unknown, apiBase = ""): Promise<T
 }
 
 /** One journal row, written by `pb comment --task … --text …`. */
-export const comment = (task: string, text: string, apiBase = "") =>
-  post<{ ok: boolean; task: string; wrote: string }>("/api/comment", { task, text }, apiBase);
+export const comment = (task: string, text: string, apiBase = "", intent: "comment" | "steer" | "question" = "comment") =>
+  post<{ ok: boolean; task: string; wrote: string; seq: number | null }>("/api/comment", { task, text, intent }, apiBase);
 
 /** Comment on every selected card; the goal half is reported, never faked. */
 export const steer = (tasks: string[], text: string, goal?: string, apiBase = "") =>

@@ -131,6 +131,11 @@ export interface FlowHumanAsk {
   recommended_by?: string | null;
   /** Tasks that cannot move until this is answered. */
   waiting_on?: string[];
+  question_source?: "task" | "fallback" | string;
+  options_source?: string;
+  waiting_on_source?: string;
+  /** The last decision recorded with pb decide, or null. */
+  decided?: { option: string | null; reason: string | null; by: string | null; ts: string | null; seq: number | null } | null;
 }
 
 /**
@@ -282,6 +287,10 @@ export interface FlowNode {
   live_detail?: { live: boolean; why: string; last_row_age_s: number | null; window_s: number };
   /** v2 (D17): the question a person is asked, when the task declares one. */
   human?: FlowHumanAsk | null;
+  /** v2 (D16): a human name per acceptance check, index for index; fallback is the script name. */
+  check_names?: string[];
+  headline_source?: string;
+  now_source?: string;
 }
 
 /**

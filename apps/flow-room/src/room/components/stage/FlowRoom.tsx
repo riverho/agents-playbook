@@ -67,7 +67,8 @@ import {
   FlowTaskCard,
 } from "./FlowCards";
 import { FlowViewContext } from "@/lib/flow-view";
-import { zoomTier } from "@/lib/flow-face";
+import { ageLabel, zoomTier } from "@/lib/flow-face";
+import { presence } from "@/lib/flow-open";
 import { usePrefersReducedMotion } from "@/lib/use-prefers-reduced-motion";
 import {
   STEERING_NODE_ID,
@@ -331,22 +332,6 @@ function FlowCanvas({
     [active, prompt, selection]
   );
 
-  /** A single card's inspector actions steer just that card. */
-  const runForOne = useCallback(
-    async (node: FlowNode, mode: FlowSteeringMode) => {
-      const result = await active.applySteering([node], prompt.trim() || node.title, mode);
-      if (mode === "steer") setGoalDiff(result.goal_diff);
-      setSteeredIds([node.id]);
-      setToast({
-        plan: result.wrote,
-        goalEdited: mode === "steer" && !!result.goal_diff,
-        persisted: result.persisted,
-        note: result.note,
-      });
-    },
-    [active, prompt]
-  );
-
   // The browser gate's seam (scripts/check-room-browser.mjs): drive the zoom from outside
   // and read it back. Read-only apart from the viewport, which is view state anyway.
   useEffect(() => {
@@ -360,6 +345,8 @@ function FlowCanvas({
   // T3: the zoom tier decides what text exists at all, so nothing renders under 9px.
   const zoom = useStore(state => state.transform[2]);
   const tier = zoomTier(zoom);
+
+  const present = useMemo(() => presence(graph), [graph]);
 
   const counts = {
     hil: graph.human.batch.length,
@@ -442,6 +429,22 @@ function FlowCanvas({
       </FlowViewContext.Provider>
       </FlowJumpContext.Provider>
 
+      {/* M1: who is in the room — each active agent, what it is on, when it last spoke */}
+      <div className="flow-presence" role="group" aria-label="Who is working">
+        {present.length === 0 ? (
+          <span className="flow-presence__none">No agent holds a card right now</span>
+        ) : (
+          present.map(p => (
+            <button key={`${p.agent}:${p.task}`} type="button" className="flow-presence__pp" data-live={p.live ? "true" : "false"} onClick={() => setOpenId(p.task)} title={p.taskTitle}>
+              <span className="flow-face__av" aria-hidden>{p.name.charAt(0).toUpperCase()}</span>
+              <b>{p.name}</b>
+              <span className="flow-presence__on">on {p.taskTitle}</span>
+              <span className="flow-presence__m">{p.lastSpoke ? `spoke ${ageLabel(p.lastSpoke) ?? ""} ago` : "has not spoken"}</span>
+            </button>
+          ))
+        )}
+      </div>
+
       {/* the room's own status chips — the shared top strip has no slot for them.
           They live in the chipbar rect the layout reserves. */}
       <div
@@ -501,12 +504,13 @@ function FlowCanvas({
         <FlowInspector
           node={openNode}
           onClose={() => setOpenId(null)}
-          onComment={text => {
-            setPrompt(text);
-            runForOne(openNode, "comment");
+          readOnly={!active.sendMessage}
+          onSend={async (text, intent) => {
+            if (!active.sendMessage) return { ok: false, note: "This view is a snapshot — nothing was written." };
+            const r = await active.sendMessage(openNode.id, text, intent === "steer" || intent === "question" ? intent : "comment");
+            if (r.ok) setSteeredIds([openNode.id]);
+            return r;
           }}
-          onSteer={() => runForOne(openNode, "steer")}
-          onFork={() => runForOne(openNode, "fork")}
         />
       )}
     </div>

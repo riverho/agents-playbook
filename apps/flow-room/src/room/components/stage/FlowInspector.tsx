@@ -1,412 +1,216 @@
-// ─── Flow room — the card inspector (frame 2) ───
+// ─── Flow room v2 — the open card (D15, D16; contract M2, M3, K4, C2, C4) ───
 //
-// One card opened without leaving the room: the derived cycle, the acceptance
-// checks WITH their exit codes, provenance, the worktree/checker gate, the
-// attached documents and the orchestrator thread. The panel is 380 px wide and
-// uses the frame's section headings (①…⑥); it borrows Pill/Dot/StageAction from
-// StageParts so it still reads as the stage layer, not a second design language.
+// One card opened without leaving the room, in the approved order:
 //
-// Nothing here is invented: every row is a field of the selected node's
-// projection. The thread is the node's `journal` rows whose action is `comment`
-// (D5: steering is journal-native), and the actions append rows through the
-// adapter — they never write a UI database.
+//   title first (headline, owner, how long held) → what this is (the full brief one
+//   click away) → where it stands (plain step names, and one sentence on what happens
+//   next and who does it) → proof (each check by name, its command underneath, "not
+//   run" never looking like a pass) → the conversation (one-line summaries, intent
+//   tags, long notes folded) → engine details (folded) → a composer that says what it
+//   means (comment, change direction, ask).
+//
+// Every field is the projection's (lib/flow-types.ts) or a documented fallback
+// (lib/flow-open.ts). Sending writes ONE journal row through the adapter —
+// `pb comment --intent …` behind the room's server — and shows the row's seq or the
+// engine's refusal verbatim. The file keeps its old name: it is a pinned copy
+// (PROVENANCE.json), so the history of the inspector stays one history.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X } from "lucide-react";
-import { TONE_COLOR, TONE_WASH } from "@/lib/stage-tokens";
-import {
-  checksCount,
-  checksOutcome,
-  checksOutcomeLabel,
-  checksUnproven,
-  flowRail,
-  flowStepLabel,
-  hasRedCheck,
-  isHollow,
-  journalTime,
-  needsHuman,
-  railAttrs,
-} from "@/lib/flow-derive";
-import { FLOW_CYCLE_STEPS, type FlowNode } from "@/lib/flow-types";
+import { checksOutcome, flowRail, isHollow, journalTime, railAttrs } from "@/lib/flow-derive";
+import { FlowStateChip } from "./FlowCards";
+import { agentDisplayName, ageLabel, faceOwner, faceState, isLive, lastMoved } from "@/lib/flow-face";
+import { brief, conversation, nextLine, PLAIN_STEPS, proofRows, type MessageIntent } from "@/lib/flow-open";
+import type { FlowNode } from "@/lib/flow-types";
 
-/** "12m ago" from an ISO timestamp — display only, never a state source. */
-function relativeTime(at?: string): string {
-  if (!at) return "";
-  const then = Date.parse(at);
-  if (Number.isNaN(then)) return "";
-  const minutes = Math.max(0, Math.round((Date.now() - then) / 60000));
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+export interface SendOutcome {
+  ok: boolean;
+  note: string;
 }
 
-/** The document icon is chosen from the path's extension, as the frame does. */
-function docIcon(path: string): string {
-  if (path.endsWith(".yaml") || path.endsWith(".yml")) return "📐";
-  if (path.endsWith(".png") || path.endsWith(".jpg")) return "🖼";
-  return "📄";
-}
+const INTENTS: { id: MessageIntent; label: string; hint: string }[] = [
+  { id: "comment", label: "Comment", hint: "A remark. The agent reads it before its next step." },
+  { id: "steer", label: "Change direction", hint: "An instruction. The agent changes course." },
+  { id: "question", label: "Ask the agent", hint: "A question. The agent answers in the conversation." },
+];
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section className="flow-sec">
-      <div className="flow-sec__h">{title}</div>
-      {children}
-    </section>
-  );
-}
-
-function Kv({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flow-kv">
-      <b>{label}</b>
-      <span>{children}</span>
-    </div>
-  );
+function when(at?: string): string {
+  const t = Date.parse(at ?? "");
+  if (!Number.isFinite(t)) return "";
+  return new Date(t).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
 export function FlowInspector({
   node,
   onClose,
-  onComment,
-  onSteer,
-  onFork,
+  onSend,
+  readOnly,
 }: {
   node: FlowNode;
   onClose: () => void;
-  onComment: (text: string) => void;
-  onSteer: () => void;
-  onFork: () => void;
+  onSend: (text: string, intent: MessageIntent) => Promise<SendOutcome>;
+  readOnly: boolean;
 }) {
-  const [draft, setDraft] = useState("");
+  const state = faceState(node);
+  const live = isLive(node);
+  const owner = faceOwner(node);
   const rail = flowRail(node);
-  const stepLabel = flowStepLabel(node);
-  const comments = (node.journal ?? []).filter(row => row.action === "comment");
-  const human = needsHuman(node);
+  const b = brief(node);
+  const next = nextLine(node);
+  const proof = proofRows(node);
+  const messages = conversation(node);
+  const [intent, setIntent] = useState<MessageIntent>("comment");
+  const [text, setText] = useState("");
+  const [pending, setPending] = useState(false);
+  const [outcome, setOutcome] = useState<SendOutcome | null>(null);
+  useEffect(() => { setOutcome(null); setText(""); setIntent("comment"); }, [node.id]);
+
+  const send = async () => {
+    setPending(true);
+    const r = await onSend(text.trim(), intent);
+    setPending(false);
+    setOutcome(r);
+    if (r.ok) setText("");
+  };
+  const held = owner ? `${owner.name} picked this up ${ageLabel(lastMoved(node)) ?? ""} ago` : null;
+  const passing = proof.filter(p => p.result === "passed").length;
 
   return (
-    <aside className="flow-inspector">
-      {/* ① the card, opened */}
-      <div className="flow-insp__head">
-        <div className="flow-row">
-          <span className="flow-mono flow-code" style={{ fontSize: 12 }}>
-            {node.id}
-          </span>
+    <aside className="flow-inspector flow-oc" aria-label={`Open card: ${node.headline ?? node.title}`}>
+      <div className="flow-oc__head">
+        <div className="flow-oc__row">
+          <FlowStateChip state={state} live={live} />
+          {node.priority !== undefined && <span className="flow-oc__muted">Priority {node.priority}</span>}
           <span className="flex-1" />
-          <span
-            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[12px] font-medium"
-            style={{
-              // a human is needed: the HIL colour, never the failure red (C3)
-              background: human ? "var(--you-tint)" : TONE_WASH[node.status === "done" ? "muted" : "ok"],
-              color: human ? "var(--you)" : TONE_COLOR[node.status === "done" ? "muted" : "ok"],
-            }}
-          >
-            {node.status === "in_progress" && (
-              <span
-                className="inline-block w-1.5 h-1.5 rounded-full animate-pulse"
-                style={{ background: TONE_COLOR.ok }}
-              />
-            )}
-            {human ? "needs a human" : node.status.replace("_", " ")}
-          </span>
-          <button
-            onClick={onClose}
-            className="shrink-0 flex items-center justify-center w-[18px] h-[18px] rounded"
-            style={{ color: "var(--text-tertiary)" }}
-            title="Close inspector (Esc)"
-          >
-            <X size={12} />
+          <button type="button" className="flow-oc__close" onClick={onClose} aria-label="Close the card (Esc)">
+            <X size={16} aria-hidden />
           </button>
         </div>
-        <div className="flow-insp__title">{node.title}</div>
-        <div className="flow-micro" style={{ marginTop: 5 }}>
-          {node.skill && <b>{node.skill}</b>}
-          {node.layer.startsWith("L") && <span>· {node.layer}</span>}
-          {node.provenance?.spawned_by && (
-            <span
-              className="inline-flex px-1.5 py-0.5 rounded text-[12px] font-medium"
-              style={{ background: TONE_WASH.note, color: TONE_COLOR.note }}
-            >
-              spawned
-            </span>
-          )}
-          {isHollow(node) && (
-            <span
-              className="inline-flex px-1.5 py-0.5 rounded text-[12px] font-medium"
-              style={{ background: TONE_WASH.risk, color: TONE_COLOR.risk }}
-            >
-              ⚠ hollow
-            </span>
-          )}
+        <h2 className="flow-oc__title">{node.headline ?? node.title}</h2>
+        <div className="flow-oc__muted">
+          {[held, node.declared_layer ?? node.layer].filter(Boolean).join(" · ")}
         </div>
       </div>
 
-      <div className="flow-insp__body">
-        <Section title="① CYCLE · PB LOOP STEPS">
-          <div
-            className="flow-cycle flow-cycle--big"
-            {...railAttrs(node)}
-          >
-            {[0, 1, 2, 3, 4, 5].map(segment => {
-              const filled = segment < rail.filled;
-              const active = filled && rail.pulsing && segment === rail.current - 1;
-              return (
-                <i
-                  key={segment}
-                  className={
-                    active ? "flow-cycle__on flow-cycle__act" : filled ? "flow-cycle__on" : ""
-                  }
-                />
-              );
-            })}
-          </div>
-          <div className="flow-steplist">
-            {FLOW_CYCLE_STEPS.map((step, index) => (
-              <span
-                key={step}
-                style={
-                  index === rail.current - 1
-                    ? { color: TONE_COLOR.ok, fontWeight: 600 }
-                    : undefined
-                }
-              >
-                {step}
-              </span>
-            ))}
-          </div>
-          <div style={{ marginTop: 6 }}>
-            <Kv label="elapsed">
-              {node.elapsed ?? "—"} {stepLabel ? `· ${stepLabel}` : ""}
-              {node.claim ? ` · claim held by ${node.claim.by}` : ""}
-            </Kv>
-            <Kv label="derived from">
-              {rail.derived
-                ? `journal rows (seq ${node.claim?.seq ?? "—"}), never hand-set`
-                : "the projection's cycle hint (this node has no journal rows)"}
-            </Kv>
-          </div>
-        </Section>
-
-        <Section title="② ACCEPTANCE CHECKS — pb record --status done RUNS THESE">
-          {/* The engine sends the declared commands plus ONE aggregate outcome, so
-              that is what this renders. Per-check exit codes appear only when a
-              payload can prove each one (`checks_detail`); the live projection
-              cannot, and inventing them would be a lie. */}
-          {(node.acceptance_checks ??
-            node.checks_detail?.map(check => check.command) ??
-            []
-          ).map(command => {
-            const detail = node.checks_detail?.find(check => check.command === command);
-            const outcome = checksOutcome(node);
-            const tone = detail
-              ? detail.passed
-                ? TONE_COLOR.ok
-                : TONE_COLOR.block
-              : outcome === "passed"
-                ? TONE_COLOR.ok
-                : outcome === "failed"
-                  ? TONE_COLOR.block
-                  : TONE_COLOR.muted;
-            return (
-              <div className="flow-checkrow" key={command}>
-                <span className="flow-checkrow__code">{command}</span>
-                <span
-                  className="flow-checkrow__verdict"
-                  style={{ color: tone }}
-                  title={
-                    detail
-                      ? "per-check exit code, from a payload that proves it"
-                      : "the projection reports one aggregate outcome; it carries no per-check exit codes"
-                  }
-                >
-                  {detail
-                    ? detail.passed
-                      ? "✓ exit 0"
-                      : `✗ exit ${detail.exit_code} · RED`
-                    : outcome === "passed"
-                      ? "✓ passed"
-                      : outcome === "failed"
-                        ? "✗ failed"
-                        : "— not run"}
-                </span>
-              </div>
-            );
-          })}
-          {checksCount(node) === 0 && (
-            <div className="flow-mono">this card declares no executable check</div>
+      <div className="flow-oc__body">
+        <section className="flow-oc__sec">
+          <h3>What this is</h3>
+          <p>{b.short}</p>
+          {b.more && (
+            <details>
+              <summary>Show the full brief</summary>
+              <p>{node.title}</p>
+              {(node.docs ?? []).length > 0 && (
+                <ul className="flow-oc__docs">
+                  {(node.docs ?? []).map(d => <li key={d}><code>{d}</code></li>)}
+                </ul>
+              )}
+            </details>
           )}
-          <div style={{ marginTop: 5 }}>
-            <Kv label="aggregate">
-              <span
-                style={{
-                  color: hasRedCheck(node)
-                    ? TONE_COLOR.block
-                    : checksUnproven(node)
-                      ? TONE_COLOR.muted
-                      : TONE_COLOR.ok,
-                }}
-              >
-                {checksOutcomeLabel(node)}
-              </span>
-            </Kv>
-            <Kv label="declared">{checksCount(node)} acceptance checks</Kv>
-          </div>
-          <div className="flow-mono flow-note">
-            a card may look red and still be honest — “done” is refused until every
-            check exits 0, and an unrecorded run is not a pass
-          </div>
-        </Section>
+        </section>
 
-        <Section title="③ PROVENANCE · WHY THIS CARD EXISTS">
-          {node.provenance ? (
-            <>
-              {node.provenance.spawned_by && (
-                <Kv label="spawned by">{node.provenance.spawned_by}</Kv>
-              )}
-              {node.provenance.origin && <Kv label="origin">{node.provenance.origin}</Kv>}
-              {node.provenance.correction && (
-                <Kv label="correction">{node.provenance.correction}</Kv>
-              )}
-              {node.provenance.recorded_by && (
-                <Kv label="recorded by">{node.provenance.recorded_by}</Kv>
-              )}
-            </>
-          ) : (
-            <div className="flow-mono flow-note">
-              no provenance rows — this task was scaffolded directly into the backlog
-            </div>
-          )}
-        </Section>
-
-        <Section title="④ WORKTREE · CHECKER GATE">
-          <Kv label="branch">
-            <span className="flow-mono flow-code" style={{ fontSize: 12 }}>
-              {node.worker?.branch ?? "no worktree"}
-              {node.worker?.status ? ` · ${node.worker.status}` : ""}
-              {node.worker?.ahead !== undefined ? ` · ahead ${node.worker.ahead}` : ""}
-              {node.worker?.uncommitted !== undefined
-                ? ` · uncommitted ${node.worker.uncommitted}`
-                : ""}
-            </span>
-          </Kv>
-          <Kv label="merge-ready">
-            <span
-              className="inline-flex px-1.5 py-0.5 rounded text-[12px] font-medium"
-              style={{
-                background: TONE_WASH[
-                  node.worker?.merge_ready || node.merge_ready ? "ok" : "block"
-                ],
-                color: TONE_COLOR[node.worker?.merge_ready || node.merge_ready ? "ok" : "block"],
-              }}
-            >
-              {node.worker?.merge_ready || node.merge_ready
-                ? "✓ checker: pass"
-                : `✗ checker: ${node.checker?.verdict ?? "none"}`}
-            </span>
-          </Kv>
-          {(node.merge_reasons ?? []).map(reason => (
-            <div className="flow-mono flow-note" key={reason}>
-              merge_reason: {reason}
-            </div>
-          ))}
-          {(node.merge_warnings ?? []).length > 0 && (
-            <div className="flow-note" style={{ color: TONE_COLOR.risk }}>
-              {node.merge_warnings?.map(warning => (
-                <div key={warning} className="flow-mono" style={{ color: TONE_COLOR.risk }}>
-                  ⚠ {warning}
-                </div>
+        {node.human && state.kind === "you" && (
+          <section className="flow-oc__sec flow-oc__decision" data-hil="asking">
+            <h3>Needs your decision</h3>
+            <p className="flow-oc__q">{node.human.question}</p>
+            <ul>
+              {(node.human.options ?? []).map(o => (
+                <li key={o.id}>
+                  <b>{o.label}</b>{node.human?.recommended === o.id ? ` · recommended by ${agentDisplayName(node.human?.recommended_by ?? "")}` : ""}
+                  <span>{o.effect}</span>
+                </li>
               ))}
-            </div>
-          )}
-          <div className="flow-row" style={{ marginTop: 6, gap: 6 }}>
-            <span className="flow-btn">Record verdict</span>
-            <span className="flow-btn flow-btn--ghost">Merge-back…</span>
-          </div>
-        </Section>
+            </ul>
+          </section>
+        )}
 
-        <Section title="⑤ DOCUMENTS · ATTACHED TO THIS CARD">
-          {(node.docs ?? []).map(path => (
-            <div className="flow-doc" key={path}>
-              <span aria-hidden>{docIcon(path)}</span>
-              <span className="flow-doc__path">{path}</span>
-              <span className="flow-mono">vault</span>
-            </div>
-          ))}
-          {(node.docs ?? []).length === 0 && (
-            <div className="flow-mono flow-note">no documents attached</div>
-          )}
-          <div className="flow-row" style={{ marginTop: 6, gap: 6 }}>
-            <span className="flow-btn flow-btn--ghost">+ attach from vault</span>
-            <span className="flow-mono">paths travel with the playbook</span>
-          </div>
-        </Section>
-
-        <Section title="⑥ ORCHESTRATOR THREAD · STEERING">
-          <div className="flow-thread">
-            {comments.map(row => (
-              <div className="flow-msg" key={`${row.seq ?? row.ts ?? row.notes.slice(0, 12)}`}>
-                <div className="flow-msg__who">
-                  <span
-                    className="inline-flex px-1.5 py-0.5 rounded text-[12px] font-medium"
-                    style={{
-                      background: TONE_WASH[row.agent === "you" ? "muted" : "note"],
-                      color: TONE_COLOR[row.agent === "you" ? "muted" : "note"],
-                    }}
-                  >
-                    {row.agent}
-                  </span>
-                  {relativeTime(journalTime(row))}
-                  {row.action === "steer" ? " · steer" : ""}
-                </div>
-                <div className="flow-msg__text">{row.notes}</div>
-              </div>
+        <section className="flow-oc__sec">
+          <h3>Where it stands <span className="flow-oc__muted">{rail.filled ? `step ${rail.current} of 6` : "not started"}</span></h3>
+          <ol className="flow-oc__steps flow-cycle" {...railAttrs(node)}>
+            {PLAIN_STEPS.map((s, i) => (
+              <li key={s.engine} title={`engine step: ${s.engine}`} data-current={i === rail.current - 1 ? "" : undefined}>
+                <i className={i < rail.filled ? "flow-cycle__on" : ""} />
+                <span>{s.plain}</span>
+              </li>
             ))}
-            {comments.length === 0 && (
-              <div className="flow-mono flow-note">
-                no steering rows yet — this thread is append-only
-              </div>
-            )}
-          </div>
-        </Section>
+          </ol>
+          <p className={`flow-oc__next${next.you ? " flow-oc__next--hil" : ""}`}>{next.text}</p>
+        </section>
+
+        <section className="flow-oc__sec">
+          <h3>Proof <span className="flow-oc__muted">{proof.length ? `${passing} of ${proof.length} passing` : "no checks declared"}</span></h3>
+          <ul className="flow-oc__proof">
+            {proof.map(p => (
+              <li key={p.command} data-result={p.result}>
+                <div><b>{p.name}</b><span className="flow-oc__res">{p.word}</span></div>
+                <code>{p.command}</code>
+              </li>
+            ))}
+          </ul>
+          <p className="flow-oc__muted">The engine refuses "done" until every check exits 0. An agent cannot mark it done by saying so.</p>
+        </section>
+
+        <section className="flow-oc__sec">
+          <h3>Conversation <span className="flow-oc__muted">{messages.length} message{messages.length === 1 ? "" : "s"}</span></h3>
+          {messages.length === 0 && <p className="flow-oc__muted">No messages yet.</p>}
+          <ol className="flow-oc__msgs">
+            {messages.map(m => (
+              <li key={`${m.seq ?? ""}-${m.ts ?? ""}-${m.summary.slice(0, 20)}`}>
+                <div className="flow-oc__mh">
+                  <span className="flow-face__av" aria-hidden>{m.author.charAt(0).toUpperCase()}</span>
+                  <b>{m.author}</b>
+                  <span className="flow-oc__muted">{when(m.ts)}</span>
+                  <span className="flex-1" />
+                  <span className={`flow-oc__tag flow-oc__tag--${m.intent}`}>{m.intent}</span>
+                </div>
+                <p>{m.summary}</p>
+                {m.full && (
+                  <details>
+                    <summary>Read full note</summary>
+                    <p className="flow-oc__full">{m.full}</p>
+                  </details>
+                )}
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        <details className="flow-oc__sec flow-oc__engine">
+          <summary>Engine details</summary>
+          <dl>
+            <dt>Task ID</dt><dd><code>{node.id}</code></dd>
+            <dt>Skill · mode</dt><dd>{[node.skill, node.mode].filter(Boolean).join(" · ") || "—"}</dd>
+            <dt>Layer</dt><dd>{node.declared_layer ? `${node.declared_layer}, declared` : `${node.layer}, derived from dependencies`}</dd>
+            <dt>Check quality</dt><dd>{isHollow(node) ? "hollow: the check cannot fail" : "verified: the check can fail"}</dd>
+            <dt>Claim</dt><dd>{node.claim?.by ? `${node.claim.by} (seq ${node.claim.seq ?? "?"})` : "none recorded"}</dd>
+            <dt>Worktree</dt><dd>{node.worker?.branch ? <code>{node.worker.branch}</code> : "none"} · checker verdict: {node.checker?.verdict ?? "none"}</dd>
+            <dt>Last check run</dt><dd>{checksOutcome(node) ?? "not run"}</dd>
+            <dt>Journal</dt><dd>{(node.journal ?? []).length} rows{node.claim?.loop_id ? ` · ${node.claim.loop_id}` : ""}{(node.journal ?? []).length ? ` · last ${journalTime((node.journal ?? [])[(node.journal ?? []).length - 1]) ?? ""}` : ""}</dd>
+            {(node.merge_reasons ?? []).length > 0 && (<><dt>Merge</dt><dd>{(node.merge_reasons ?? []).join("; ")}</dd></>)}
+          </dl>
+        </details>
       </div>
 
-      <div className="flow-insp__foot">
-        <div className="flow-composer">
-          <input
-            className="flow-input"
-            value={draft}
-            placeholder="Ask the orchestrator…"
-            onChange={event => setDraft(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === "Enter" && draft.trim()) {
-                onComment(draft.trim());
-                setDraft("");
-              }
-            }}
-          />
-          <button
-            className="flow-btn flow-btn--primary"
-            onClick={() => {
-              if (!draft.trim()) return;
-              onComment(draft.trim());
-              setDraft("");
-            }}
-          >
-            Comment
-          </button>
+      <form className="flow-oc__composer" onSubmit={e => { e.preventDefault(); if (text.trim() && !pending && !readOnly) void send(); }}>
+        <div className="flow-oc__intents" role="radiogroup" aria-label="What kind of message">
+          {INTENTS.map(i => (
+            <button key={i.id} type="button" role="radio" aria-checked={intent === i.id} className="flow-oc__intent" onClick={() => setIntent(i.id)}>
+              {i.label}
+            </button>
+          ))}
         </div>
-        <div className="flow-row" style={{ marginTop: 7, gap: 6 }}>
-          <button className="flow-btn" onClick={onSteer}>
-            Steer direction
-          </button>
-          <button className="flow-btn" onClick={onFork}>
-            Fork to experiment
-          </button>
+        <label className="flow-oc__muted" htmlFor="flow-oc-text">{INTENTS.find(i => i.id === intent)?.hint}</label>
+        <textarea id="flow-oc-text" rows={3} value={text} onChange={e => setText(e.target.value)} placeholder={intent === "question" ? "What do you want to ask?" : "Write to the agent"} />
+        <div className="flow-oc__row">
+          <span className={`flow-oc__muted${outcome && !outcome.ok ? " is-refused" : ""}`} role="status">
+            {readOnly ? "Snapshot: nothing will be written." : outcome ? outcome.note : "Sending writes one row to the project journal."}
+          </span>
           <span className="flex-1" />
-          <span className="flow-mono">append-only · pb comment</span>
+          <button type="submit" className="flow-btn flow-btn--primary" disabled={!text.trim() || pending || readOnly}>
+            {pending ? "Sending…" : "Send"}
+          </button>
         </div>
-      </div>
+      </form>
     </aside>
   );
 }

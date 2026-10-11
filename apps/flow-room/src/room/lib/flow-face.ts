@@ -220,12 +220,19 @@ export interface FaceNow {
 }
 
 /** A row's human summary: the engine's `summary`, else the first sentence of its notes. */
+const KEEP_CAPS = new Set(["POSIX", "ASCII", "HTTPS", "JSONL", "NDJSON", "OAUTH", "WSL2"]);
+
 export function rowSummary(row: FlowJournalRow): string {
   const s = (row.summary ?? "").trim();
   if (s) return s;
   const notes = (row.notes ?? "").replace(/\s+/g, " ").trim();
   const m = /^(.{12,}?[.!?])(\s|$)/.exec(notes);
-  return m ? m[1] : notes;
+  const first = m ? m[1] : notes;
+  // the same fallback as the engine: a shouted word reads as a word (proposal §8)
+  // …but an acronym is not shouting: words of four letters or fewer (YAML, JSON, CSRF,
+  // WCAG) and a few longer ones keep their capitals
+  const calm = first.replace(/\b([A-Z][A-Z'-]{4,})\b/g, w => (KEEP_CAPS.has(w) ? w : w.toLowerCase()));
+  return calm.charAt(0).toUpperCase() + calm.slice(1);
 }
 
 /** The one line under the bar: what is happening, or what this waits on, or what is next. */

@@ -238,11 +238,17 @@ async function serveApi(req, res, url) {
     if (!body || typeof body.task !== 'string' || typeof body.text !== 'string' || !body.text.trim()) {
       return json(res, 400, { error: 'expected { task: string, text: non-empty string }' });
     }
-    const r = await runPb(ROOT, ['comment', '--task', body.task, '--text', body.text]);
+    // M3: a person's message says why it was written; the engine stamps the intent
+    const intent = body.intent === undefined ? 'comment' : String(body.intent);
+    if (!['comment', 'steer', 'question'].includes(intent)) {
+      return json(res, 400, { error: 'intent must be comment, steer or question' });
+    }
+    const r = await runPb(ROOT, ['comment', '--task', body.task, '--text', body.text, '--intent', intent]);
     if (r.code !== 0) {
       return json(res, 422, { error: 'pb comment refused', task: body.task, detail: r.stderr.trim() || r.stdout.trim() });
     }
-    return json(res, 200, { ok: true, task: body.task, wrote: 'journal row (action: comment)' });
+    const seq = /\(seq (\d+)/.exec(r.stdout);
+    return json(res, 200, { ok: true, task: body.task, intent, seq: seq ? Number(seq[1]) : null, wrote: `journal row (action: comment, intent: ${intent})` });
   }
 
   if (path === '/api/steer' && req.method === 'POST') {
@@ -253,7 +259,7 @@ async function serveApi(req, res, url) {
     }
     const rows = [];
     for (const task of tasks) {
-      const r = await runPb(ROOT, ['comment', '--task', String(task), '--text', body.text]);
+      const r = await runPb(ROOT, ['comment', '--task', String(task), '--text', body.text, '--intent', 'steer']);
       rows.push({ task, ok: r.code === 0, detail: r.code === 0 ? undefined : r.stderr.trim() });
     }
     // HONEST GAP: editing an OPEN cycle brief is not a pb primitive today

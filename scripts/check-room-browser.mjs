@@ -17,7 +17,7 @@
 // ============================================================================
 import { openRoom, sleep } from './lib-room-browser.mjs';
 import { makeFixture } from './test-fixture-playbook.mjs';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // By default the gate draws a FIXTURE playbook it builds itself, so what it watches does not
@@ -114,6 +114,7 @@ try {
     const m = await evaluate(`(() => {
       const zoom = window.__flowRoom.getZoom();
       const room = document.querySelector('.flow-room');
+      const realScale = (el) => { let s = 1; for (let a = el; a && a !== document.documentElement; a = a.parentElement) { const t = getComputedStyle(a).transform; if (t && t !== 'none') s *= new DOMMatrixReadOnly(t).a; } return s; };
       const inCanvas = (el) => !!el.closest('.react-flow__viewport, .react-flow__edgelabel-renderer, .react-flow__viewport-portal');
       const vw = innerWidth, vh = innerHeight;
       let smallest = Infinity, where = '', counted = 0;
@@ -123,12 +124,9 @@ try {
         if (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
         const r = el.getBoundingClientRect();
         if (r.width === 0 || r.height === 0 || r.right < 0 || r.bottom < 0 || r.left > vw || r.top > vh) continue;
-        // the REAL on-screen scale: rendered height over layout height, so the canvas zoom AND any
-        // counter-scale (fixed-size labels use scale(var(--inv))) are both counted
-        const scale = el.offsetHeight > 0 ? r.height / el.offsetHeight : (inCanvas(el) ? zoom : 1);
-        // offset sizes are whole pixels, so the ratio carries up to ~3% rounding: 12px at
-        // exactly 75% measures 8.8 while the browser draws it at 9. Allow that much, no more.
-        const px = parseFloat(getComputedStyle(el).fontSize) * scale * 1.03;
+        // the EXACT on-screen scale: the product of every transform scale from the element up
+        // (the canvas zoom, and the counter-scale fixed-size labels use) — no rounding, no padding
+        const px = parseFloat(getComputedStyle(el).fontSize) * realScale(el);
         counted++;
         if (px < smallest) { smallest = px; where = (el.className && String(el.className).slice(0, 60)) + ' "' + el.textContent.trim().slice(0, 30) + '"'; }
       }
@@ -189,15 +187,15 @@ try {
     for (const z of [0.75, 0.74, 0.4, 0.39]) {
       { const d = window.__flowRoom.getNodes().find((n) => String(n.id).startsWith("draft:")); if (d) window.__flowRoom.setCenter(d.position.x + 144, d.position.y + 98, { zoom: z }); else window.__flowRoom.setViewport({ x: 20, y: 20, zoom: z }); } await wait(400);
       const draftShown = !!document.querySelector(".flow-face--draft");
-      const zoomNow = window.__flowRoom.getZoom();
+      const zoomNow = window.__flowRoom.getZoom(); void zoomNow;
+      const realScale = (el) => { let s = 1; for (let a = el; a && a !== document.documentElement; a = a.parentElement) { const t = getComputedStyle(a).transform; if (t && t !== 'none') s *= new DOMMatrixReadOnly(t).a; } return s; };
       let smallest = Infinity, where = '';
       for (const el of document.querySelectorAll('.flow-room *')) {
         const own = [...el.childNodes].some((n) => (n.nodeType === 3 && n.textContent.trim()) || el.tagName === 'TEXTAREA');
         if (!own || (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true }))) continue;
         const r = el.getBoundingClientRect();
         if (!r.width || !r.height || r.right < 0 || r.bottom < 0 || r.left > innerWidth || r.top > innerHeight) continue;
-        const scale = el.offsetHeight > 0 ? r.height / el.offsetHeight : zoomNow;
-        const px = parseFloat(getComputedStyle(el).fontSize) * scale * 1.03;
+        const px = parseFloat(getComputedStyle(el).fontSize) * realScale(el);
         if (px < smallest) { smallest = px; where = String(el.className).slice(0, 40) + ' "' + (el.textContent || el.value || '').trim().slice(0, 24) + '"'; }
       }
       sizes.push({ z, draftShown, smallest: Math.round(smallest * 10) / 10, where });
@@ -219,6 +217,45 @@ try {
     for (const sz of jump.sizes ?? []) if (!sz.draftShown) problems.push(`T3 ${sz.z}: the draft was not on screen to measure`);
     for (const sz of jump.sizes ?? []) if (sz.smallest < MIN_PX) problems.push(`T3 ${sz.z} with a draft open: text at ${sz.smallest}px (< ${MIN_PX}px): ${sz.where}`);
     if (jump.writes !== 0) problems.push(`J3: the room sent ${jump.writes} write request(s) before anything was created`);
+  }
+
+  // ── the open card (D15) and M3: a message with an intent lands as ONE row ──
+  // Only against the fixture: it is this gate's own temp playbook, so sending writes nothing real.
+  if (fixture) {
+    const journalFile = resolve(fixture, 'memory/journal.ndjson');
+    const rowsBefore = readFileSync(journalFile, 'utf8').split('\n').filter((l) => l.trim()).length;
+    const oc = await evaluate(`(async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const card = document.querySelector('.flow-face[data-live="true"]');
+      if (!card) return { error: 'no live card to open' };
+      card.click(); await wait(400);
+      const panel = document.querySelector('.flow-oc');
+      if (!panel) return { error: 'clicking a card did not open it' };
+      const heads = [...panel.querySelectorAll('h3, summary')].map((h) => h.textContent.trim().split(/\\s{2,}| step| \\d| no checks/)[0]);
+      const idBeforeEngine = (panel.querySelector('.flow-oc__head')?.textContent ?? '').includes('live-claim');
+      [...panel.querySelectorAll('[role=radio]')].find((b) => /Change direction/.test(b.textContent))?.click(); await wait(100);
+      const ta = panel.querySelector('textarea');
+      const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      set.call(ta, 'Write the POSIX path conservatively.'); ta.dispatchEvent(new Event('input', { bubbles: true })); await wait(150);
+      panel.querySelector('button[type=submit]').click();
+      for (let i = 0; i < 40 && !/Saved to|refused|error|failed/i.test(panel.querySelector('[role=status]')?.textContent ?? ''); i++) await wait(150);
+      return { heads, idBeforeEngine, status: panel.querySelector('[role=status]')?.textContent ?? '' };
+    })()`);
+    console.log(`  open card: ${JSON.stringify(oc)}`);
+    const rows = readFileSync(journalFile, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l));
+    const last = rows[rows.length - 1];
+    if (oc.error) problems.push(`D15: ${oc.error}`);
+    else {
+      const want = ['What this is', 'Where it stands', 'Proof', 'Conversation', 'Engine details'];
+      const got = oc.heads.filter((h) => want.includes(h));
+      if (got.join('|') !== want.join('|')) problems.push(`D15: the open card's sections are [${oc.heads.join(' | ')}], expected ${want.join(' → ')}`);
+      if (oc.idBeforeEngine) problems.push('K4: the open card shows the task ID in its title block (it belongs in engine details)');
+      if (!/Saved to the project journal/.test(oc.status)) problems.push(`M3: sending did not report the saved row: "${oc.status}"`);
+      if (rows.length !== rowsBefore + 1) problems.push(`M3: sending wrote ${rows.length - rowsBefore} journal row(s), expected exactly 1`);
+      else if (last.action !== 'comment' || last.intent !== 'steer' || last.task !== 'live-claim' || last.notes !== 'Write the POSIX path conservatively.') {
+        problems.push(`M3: the row written is ${JSON.stringify({ action: last.action, intent: last.intent, task: last.task, notes: last.notes })}`);
+      }
+    }
   }
 
   // ── F4: reduced motion, on an injected probe card ─────────────────────────

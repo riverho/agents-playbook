@@ -88,6 +88,8 @@ export interface FlowAdapter {
    */
   createTask?(req: { goal: string; from?: string; layer?: string }): Promise<{ ok: boolean; task?: string | null; note: string }>;
   forkTask?(task: string): Promise<{ ok: boolean; note: string }>;
+  /** v2 (M3): one message on one card, with its intent — `pb comment --intent`. */
+  sendMessage?(task: string, text: string, intent: "comment" | "steer" | "question"): Promise<{ ok: boolean; note: string }>;
 }
 
 /**

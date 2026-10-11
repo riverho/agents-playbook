@@ -182,6 +182,20 @@ try {
     'the comment is not visible to `pb runcard show --json` — it did not land as a journal row');
   check(/comment/i.test(runcard.stdout), 'the journal row does not carry action: comment');
 
+  // 7b. M3: the message's intent reaches the journal row; an unknown intent is refused
+  const asked = await fetch(`${base}/api/comment`, {
+    method: 'POST', headers: { ...CSRF, cookie },
+    body: JSON.stringify({ task: taskId, text: 'what does the launcher cost?', intent: 'question' }),
+  });
+  check(asked.status === 200, `a question returned ${asked.status}`);
+  const lastRow = readFileSync(journalFile, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).pop();
+  check(lastRow.intent === 'question' && lastRow.notes === 'what does the launcher cost?', `the question's row carries intent ${lastRow.intent}`);
+  const shout = await fetch(`${base}/api/comment`, {
+    method: 'POST', headers: { ...CSRF, cookie },
+    body: JSON.stringify({ task: taskId, text: 'x', intent: 'shout' }),
+  });
+  check(shout.status === 400, `an unknown intent returned ${shout.status}, expected 400`);
+
   // 8. the engine still owns state: backlog.yaml is untouched by the whole run
   check(readFileSync(backlogFile).equals(backlogBefore),
     'memory/backlog.yaml changed during the run — the app must never edit state directly');
