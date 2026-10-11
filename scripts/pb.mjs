@@ -2589,6 +2589,10 @@ function graphNodeFor(task, planned, dependents = []) {
     cycle: cycleForJournal(card.journal),
     ...graphHeadline(task),
     ...graphNow(task, card.status, card.journal),
+    version: task.version || null,
+    task_kind: task.kind || null,
+    carried_from: task.carried_from || null,
+    disposition: task.disposition || null,
     human: graphHuman(task, graphHeadline(task).headline, card.journal, dependents),
     check_names: card.checks.map((c, i) => checkName(c.command, declaredNames[i])),
     live: live.live,
@@ -2758,8 +2762,45 @@ function graphLayers(plan, nodes) {
     };
   });
 }
-function graphPayload() {
-  const tasks = backlogTasks();
+// D23 / S6: one graph per version. In a playbook that uses versions the graph draws ONE
+// version — the one asked for, else the open one, else the newest — opening with its start
+// goal and ending with its end goal (its stop checks and their last real result). Tasks of
+// other versions are not drawn. A playbook without versions draws exactly what it always did.
+function selectGraphVersion(name) {
+  if (!versionMode()) {
+    if (name) { console.error('This playbook has no versions; drop --version.'); process.exit(1); }
+    return null;
+  }
+  const state = readLoops();
+  if (name) {
+    const v = findVersion(String(name), state);
+    if (!v) { console.error(`No version named ${name}. Versions: ${state.loops.filter((l) => l.version).map((l) => l.version).join(', ') || '(none)'}`); process.exit(1); }
+    return v;
+  }
+  const versions = state.loops.filter((l) => l.version);
+  return openVersion(state) || versions.find((v) => v.state === 'draft') || versions[versions.length - 1] || null;
+}
+function versionSummary(v) {
+  if (!v) return null;
+  return {
+    id: v.id, version: v.version, title: v.title || v.version, state: v.state, goal: v.goal || null,
+    stop_checks: Array.isArray(v.stop_checks) ? v.stop_checks : [],
+    stop_result: v.stop_result || null,
+    opened_at: v.started_at || null, closed_at: v.closed_at || null,
+    // V7 / S7: a closed version is history — comments and forks into the open version only
+    read_only: v.state === 'closed',
+  };
+}
+function graphPayload(opts = {}) {
+  const selected = selectGraphVersion(opts.version);
+  const allTasks = backlogTasks();
+  let tasks = allTasks;
+  if (selected) {
+    const own = allTasks.filter((t) => t.version === selected.version);
+    const snapshot = selected.state === 'closed' && Array.isArray(selected.task_snapshot) ? selected.task_snapshot : [];
+    const ids = new Set(own.map((t) => t.id));
+    tasks = [...own, ...snapshot.filter((t) => !ids.has(t.id)).map((t) => allTasks.find((x) => x.id === t.id) ? { ...allTasks.find((x) => x.id === t.id), ...t } : t)];
+  }
   const plan = computeLayerPlan({ checkGates: false, allTasks: tasks });
   const plannedById = new Map(plan.tasks.map((t) => [t.id, t]));
   // who waits on whom: the open tasks that depend on each task (human.waiting_on's fallback)
@@ -2771,11 +2812,21 @@ function graphPayload() {
   }
   const nodes = tasks.map((t) => graphNodeFor(t, plannedById.get(t.id), dependentsOf.get(t.id) || []));
   const human = graphHumanBatch(nodes, plan);
-  const start = graphStart(activeLoop());
+  const start = selected ? { ...graphStart(selected), loop: selected.id, version: selected.version, goal: selected.goal || null, stop: selected.stop || selected.goal || null } : graphStart(activeLoop());
+  const goal = graphGoal(start);
+  if (selected) {
+    // the version's end goal is executable (V5): its stop checks ARE the conditions, each with
+    // the last real result — passed at close, else not run (the graph never runs them)
+    const passed = selected.stop_result?.outcome === 'passed';
+    goal.conditions = (selected.stop_checks || []).map((cmd) => ({ text: cmd, command: cmd, met: passed ? true : null }));
+    goal.conditions_evaluated = passed;
+    goal.stop_checked_at = selected.stop_result?.at || null;
+  }
   return {
     schema: GRAPH_SCHEMA,
+    version: versionSummary(selected),
     start,
-    goal: graphGoal(start),
+    goal,
     layers: graphLayers(plan, nodes),
     nodes,
     edges: graphEdges(nodes, plan),
@@ -2788,8 +2839,91 @@ function graphPayload() {
     },
   };
 }
+// D25: the state bar's projection — small, read-only, and cheap. The journal's newest seq
+// is its change token: a room that already saw it has nothing new to fetch (S4).
+const STATE_SCHEMA = 'agent-playbook.state.v1';
+const STALE_CLAIM_MINUTES_DEFAULT = 30;
+function orchestratorConfig() {
+  const o = master?.orchestrator && typeof master.orchestrator === 'object' ? master.orchestrator : null;
+  if (!o) return null;
+  const num = (v, d) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : d);
+  return {
+    every_minutes: num(o.every_minutes, 15),
+    // approval condition 3 (D27): spending is undecided, so the default only PROPOSES work
+    max_workers: num(o.max_workers, 0),
+    stale_claim_minutes: num(o.stale_claim_minutes, STALE_CLAIM_MINUTES_DEFAULT),
+    reprompt_minutes: Array.isArray(o.reprompt_minutes) && o.reprompt_minutes.length ? o.reprompt_minutes.map(Number).filter((n) => n > 0) : [60, 240, 1440],
+    paused: o.paused === true,
+  };
+}
+function latestJournalSeq(rows = readJournal()) {
+  return rows.reduce((m, r) => (typeof r.seq === 'number' && r.seq > m ? r.seq : m), 0);
+}
+function statePayload() {
+  const rows = readJournal().filter((r) => !r.__malformed);
+  const loops = readLoops();
+  const v = versionMode() ? (openVersion(loops) || null) : null;
+  const loop = activeLoop();
+  const cyc = readCycle();
+  const all = backlogTasks();
+  const tasks = v ? all.filter((t) => t.version === v.version) : all;
+  const cfg = orchestratorConfig();
+  const staleMin = cfg?.stale_claim_minutes ?? STALE_CLAIM_MINUTES_DEFAULT;
+  const now = Date.now();
+  const lastRowAt = (id) => {
+    const own = rows.filter((r) => r.task === id && r.ts);
+    return own.length ? Date.parse(own[own.length - 1].ts) : NaN;
+  };
+  const counts = { todo: 0, in_progress: 0, blocked: 0, done: 0, needs_you: 0, stale: 0 };
+  for (const t of tasks) {
+    if (t.disposition === 'dropped') continue;
+    if (counts[t.status] !== undefined) counts[t.status]++;
+    const decided = rows.some((r) => r.task === t.id && r.action === 'decide');
+    if (t.status !== 'done' && (t.manual || t.human) && !decided) counts.needs_you++;
+    if (t.status === 'in_progress') {
+      const at = lastRowAt(t.id);
+      if (!Number.isFinite(at) || now - at > staleMin * 60000) counts.stale++;
+    }
+  }
+  const ticks = rows.filter((r) => r.action === 'tick');
+  const last = ticks.length ? ticks[ticks.length - 1] : null;
+  let orchestrator;
+  if (!cfg) orchestrator = { configured: false, state: 'not-scheduled', note: 'No orchestrator scheduled (no orchestrator block in playbook.yaml)' };
+  else if (cfg.paused) orchestrator = { configured: true, state: 'paused', every_minutes: cfg.every_minutes };
+  else {
+    const waiting = last?.tick?.stop_reason === 'waiting-on-you';
+    orchestrator = {
+      configured: true, every_minutes: cfg.every_minutes, max_workers: cfg.max_workers,
+      state: !last ? 'idle' : waiting ? 'waiting-on-you' : (last.tick?.stop_reason ? 'stopped' : 'working'),
+      reason: last?.tick?.stop_reason || null,
+      // the host owns the schedule (D7): pb knows when the last tick ran, not when the next will
+      next_tick_due: last?.ts ? new Date(Date.parse(last.ts) + cfg.every_minutes * 60000).toISOString() : null,
+    };
+  }
+  return {
+    schema: STATE_SCHEMA,
+    journal_seq: latestJournalSeq(rows),
+    // the change token a room polls with: rows AND the highest seq, so an unnumbered row
+    // (written when the state lock was busy) still counts as a change
+    change_token: `${rows.length}:${latestJournalSeq(rows)}`,
+    version: v ? versionSummary(v) : (loop ? { id: loop.id, version: null, title: loop.goal || loop.id, state: 'open', goal: loop.goal || null, stop_checks: [], unnamed: true } : null),
+    phase: cyc.exists ? { phase: cyc.phase ?? null, goal: cyc.goal || null } : null,
+    orchestrator: { ...orchestrator, last_tick: last ? { seq: last.seq ?? null, ts: last.ts, summary: last.notes || '' } : null },
+    counts,
+    stale_after_minutes: staleMin,
+  };
+}
+function cmdState(args) {
+  const payload = statePayload();
+  if (args.json) return printJson(payload);
+  const v = payload.version;
+  console.log(`${v ? (v.version ? `${v.version} · ${v.title}` : `loop ${v.id} (unnamed version)`) : 'no open version'} · phase ${payload.phase?.phase ?? '—'} · journal seq ${payload.journal_seq}`);
+  console.log(`orchestrator: ${payload.orchestrator.state}${payload.orchestrator.last_tick ? ` · last tick ${payload.orchestrator.last_tick.ts}: ${payload.orchestrator.last_tick.summary}` : ''}`);
+  const c = payload.counts;
+  console.log(`tasks: ${c.todo} todo · ${c.in_progress} in progress (${c.stale} stale) · ${c.blocked} blocked · ${c.done} done · ${c.needs_you} need you`);
+}
 function cmdGraph(args) {
-  const payload = graphPayload();
+  const payload = graphPayload({ version: typeof args.version === 'string' ? args.version : undefined });
   if (args.json) return printJson(payload);
   const byStatus = {};
   for (const n of payload.nodes) byStatus[n.status] = (byStatus[n.status] || 0) + 1;
@@ -5196,7 +5330,13 @@ function cmdVersion(args) {
     const versions = readLoops().loops.filter(l => l.version).map(l => ({
       ...l, task_counts: backlogTasks().filter(t => t.version === l.version).reduce((a, t) => { a[t.disposition === 'dropped' ? 'dropped' : t.status] = (a[t.disposition === 'dropped' ? 'dropped' : t.status] || 0) + 1; return a; }, {}),
     }));
-    if (args.json) return printJson({ schema: 'agent-playbook.versions.v1', versions });
+    // loops opened before versions existed are part of the record: History lists them as
+    // legacy rows (they become versions only through an explicit migration — D28)
+    const legacy = readLoops().loops.filter((l) => !l.version).map((l) => ({
+      id: l.id, version: null, title: l.goal || l.id, state: l.status === 'active' ? 'open' : (l.status === 'done' || l.status === 'closed' ? 'closed' : l.status || 'unknown'),
+      goal: l.goal || null, stop: l.stop || null, stop_checks: [], opened_at: l.started_at || null, closed_at: l.closed_at || l.ended_at || null, legacy: true,
+    }));
+    if (args.json) return printJson({ schema: 'agent-playbook.versions.v1', versions, legacy_loops: legacy });
     for (const v of versions) console.log(`${v.version} · ${v.title || v.goal} · ${v.state} · ${v.id}`);
     return;
   }
@@ -6680,7 +6820,11 @@ function cmdHelp() {
     runcard list|show <id> [--json]
                            Portable RunCard projection for UI/runtime integrations, including
                            the task's ordered journal rows (its steering thread and history)
-    graph [--json]         Read-only projection for a graph UI (schema agent-playbook.graph.v1):
+    state [--json]         The state bar's projection (agent-playbook.state.v1): open version,
+                           phase, orchestrator state and last tick, counts (needs you, stale),
+                           and journal_seq — the change token a room polls with. Read-only.
+    graph [--json] [--version <name>]
+                           Read-only projection for a graph UI (schema agent-playbook.graph.v1):
                            start/goal bookends, task nodes with cycle+provenance+worker truth,
                            proven edges (dependencies inverted; a spawn comes from the row's
                            origin_task, i.e. the task that was in flight when it was planned),
@@ -6955,6 +7099,7 @@ if (isMainModule) {
   case 'task': cmdTask(args); break;
   case 'runcard': cmdRunCard(args); break;
   case 'graph': cmdGraph(args); break;
+  case 'state': cmdState(args); break;
   case 'worker': cmdWorker(args); break;
   case 'record': cmdRecord(args); break;
   case 'comment': cmdComment(args); break;
