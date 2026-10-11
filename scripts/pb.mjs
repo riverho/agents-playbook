@@ -1522,7 +1522,9 @@ const CHECK_LAUNCHER_SRC = [
   "const child = win ? spawn('cmd.exe', ['/d', '/c', file, ...argv], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })",
   "  : spawn(file, argv, { stdio: 'inherit', detached: true });",
   'let done = false;',
-  "const taskkill = process.env.PB_TASKKILL || require('path').join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');",
+  // PB_TASKKILL may only name a taskkill.exe (where it lives), never another program
+  "const tkOverride = process.env.PB_TASKKILL || '';",
+  "const taskkill = /(^|[\\\\/])taskkill[.]exe$/i.test(tkOverride) ? tkOverride : require('path').join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');",
   "const killTree = () => { try { if (win) execFileSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); else process.kill(-child.pid, 'SIGKILL'); } catch (e) { const why = String((e && e.message) || e).split(String.fromCharCode(10))[0]; process.stderr.write('pb: could not kill the check process tree (pid ' + child.pid + '): ' + why + String.fromCharCode(10)); try { fs.appendFileSync(statusFile, String.fromCharCode(10) + 'kill-failed: pid ' + child.pid + ': ' + why); } catch (e2) {} } };",
   'const stop = (why, code) => { if (done) return; done = true; try { fs.writeFileSync(statusFile, why); } catch (e) {} killTree(); process.exit(code); };',
   "child.on('error', (e) => { process.stderr.write(String((e && e.message) || e) + String.fromCharCode(10)); process.exit(127); });",
@@ -1586,6 +1588,9 @@ function noVerdictDetail(results, kind, outcome) {
       elapsed_ms: r.elapsed_ms,
       limit_source: r.limit_source,
       ...(outcome === 'output-limit' ? { limit_bytes: r.max_output_bytes } : {}),
+      // a failed tree kill goes into the journal row, not only to the console: an
+      // autonomous run moves on, and this is the trace that something may still run
+      ...(r.kill_failed ? { kill_failed: r.kill_failed } : {}),
     }));
 }
 function timeoutDetail(results, kind = 'check') {
@@ -1716,11 +1721,13 @@ function printModeCheckResults(results) {
       console.log(`  TIMEOUT  [${r.id}] ${r.cmd}`);
       console.log(`        timed out after ${r.elapsed_ms}ms (limit ${r.limit_ms}ms from ${r.limit_source}) — this is NOT a failing mode check.`);
       console.log("        raise it with 'check_timeout_ms' on the principle, or PB_MODE_CHECK_TIMEOUT_MS=<ms>.");
+      printKillFailure(r);
       continue;
     }
     if (r.overflow) {
       console.log(`  OUTPUT-LIMIT  [${r.id}] ${r.cmd}`);
       console.log(`        produced more output than the runner accepts (limit ${r.max_output_bytes} bytes, override with PB_CHECK_MAX_OUTPUT_BYTES) — the exit code was never read, so this is NOT a failing mode check.`);
+      printKillFailure(r);
       continue;
     }
     console.log(`  FAIL  [${r.id}] ${r.cmd} (${r.elapsed_ms}ms)`);

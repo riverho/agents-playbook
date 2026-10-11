@@ -13,7 +13,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeFixture, makeSuite, runPb } from './test-fixture-playbook.mjs';
+import { makeFixture, makeSuite, readJournal, runPb } from './test-fixture-playbook.mjs';
 
 const t = makeSuite('test-kill-failure-reported');
 const { ok } = t;
@@ -35,6 +35,14 @@ if (process.platform === 'win32') {
   ok('the forced case still reports TIMEOUT', /TIMEOUT\s+node -e/.test(r.out), r.combined);
   ok('a failed kill is reported next to the verdict', /WARNING: the check's process tree could NOT be killed \(pid \d+: /.test(r.out), r.out);
   ok('the warning says processes may still be running', /may still be running/.test(r.out));
+  // PB_TASKKILL may only name a taskkill.exe: any other program is ignored (the real one runs)
+  const other = runPb(root, ['validate', '--task', 'slow'], { env: { ...env, PB_TASKKILL: process.execPath } });
+  ok('a PB_TASKKILL that is not taskkill.exe is ignored', other.out.includes('TIMEOUT  node -e') && !/could NOT be killed/.test(other.out), other.out);
+  // an autonomous run moves on — the failed kill must be in its journal row
+  const auto = runPb(root, ['loop', 'run', '--auto', '--max-tasks', '1', '--retry', '0'], { agent: 'auto', env: { ...env, PB_TASKKILL: join(nowhere, 'taskkill.exe') } });
+  const rows = readJournal(root).filter((x) => x.task === 'slow' && x.action === 'auto-execute');
+  const last = rows[rows.length - 1];
+  ok('an autonomous run journals the failed kill', !!last && Array.isArray(last.check_timeouts) && String(last.check_timeouts[0]?.kill_failed ?? '').startsWith('pid ') && String(last.check_timeouts[0]?.kill_failed).includes('ENOENT'), auto.combined.slice(-600) + JSON.stringify(last));
   // the leaked child sleeps 4s and exits on its own; give it the time so the temp root can go
   await new Promise((res) => setTimeout(res, 4200));
 } else {
