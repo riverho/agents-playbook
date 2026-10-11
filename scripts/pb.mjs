@@ -1023,7 +1023,7 @@ function evalLayerGate(gate) {
       runCommandSync(file, argv, { cwd: ROOT, stdio: 'pipe', timeout: 120000 });
       result = { ok: true, output: '' };
     } catch (e) {
-      result = { ok: false, output: [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim().split(/\r?\n/).slice(-8).join('\n') };
+      result = { ok: false, output: boundedTail([e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim()) };
     }
   }
   layerGateCache.set(gate, result);
@@ -1522,8 +1522,10 @@ const CHECK_LAUNCHER_SRC = [
   "const child = win ? spawn('cmd.exe', ['/d', '/c', file, ...argv], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })",
   "  : spawn(file, argv, { stdio: 'inherit', detached: true });",
   'let done = false;',
-  "const taskkill = require('path').join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');",
-  "const killTree = () => { try { if (win) execFileSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); else process.kill(-child.pid, 'SIGKILL'); } catch (e) { process.stderr.write('pb: could not kill the check process tree (pid ' + child.pid + '): ' + String((e && e.message) || e).split(String.fromCharCode(10))[0] + String.fromCharCode(10)); } };",
+  // PB_TASKKILL may only name a taskkill.exe (where it lives), never another program
+  "const tkOverride = process.env.PB_TASKKILL || '';",
+  "const taskkill = /(^|[\\\\/])taskkill[.]exe$/i.test(tkOverride) ? tkOverride : require('path').join(process.env.SystemRoot || 'C:/Windows', 'System32', 'taskkill.exe');",
+  "const killTree = () => { try { if (win) execFileSync(taskkill, ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); else process.kill(-child.pid, 'SIGKILL'); } catch (e) { const why = String((e && e.message) || e).split(String.fromCharCode(10))[0]; process.stderr.write('pb: could not kill the check process tree (pid ' + child.pid + '): ' + why + String.fromCharCode(10)); try { fs.appendFileSync(statusFile, String.fromCharCode(10) + 'kill-failed: pid ' + child.pid + ': ' + why); } catch (e2) {} } };",
   'const stop = (why, code) => { if (done) return; done = true; try { fs.writeFileSync(statusFile, why); } catch (e) {} killTree(); process.exit(code); };',
   "child.on('error', (e) => { process.stderr.write(String((e && e.message) || e) + String.fromCharCode(10)); process.exit(127); });",
   "const timer = setTimeout(() => stop('timeout', 124), limit);",
@@ -1555,14 +1557,21 @@ function runOneCheck(cmd, cwd, limit) {
     return { cmd, ok: true, elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput };
   } catch (e) {
     let status = '';
-    try { status = readFileSync(statusFile, 'utf8').trim(); } catch { /* no status: a plain exit */ }
+    let killFailed = null;
+    try {
+      // line 1 is the outcome; a later 'kill-failed:' line means the tree may still be running
+      const lines = readFileSync(statusFile, 'utf8').split(/\r?\n/);
+      status = (lines[0] || '').trim();
+      killFailed = (lines.find((l) => l.startsWith('kill-failed:')) || '').replace(/^kill-failed:\s*/, '') || null;
+    } catch { /* no status: a plain exit */ }
     const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
     return {
       cmd, ok: false,
       timedOut: status === 'timeout' || isCheckTimeout(e),
       overflow: status === 'output-limit' || isOutputOverflow(e),
+      kill_failed: killFailed,
       elapsed_ms: Date.now() - started, limit_ms: limit.ms, limit_source: limit.source, max_output_bytes: maxOutput,
-      output: out ? out.split(/\r?\n/).slice(-8).join('\n') : '',
+      output: out ? boundedTail(out) : '',
     };
   } finally {
     try { rmSync(statusFile, { force: true }); } catch { /* best effort */ }
@@ -1579,6 +1588,9 @@ function noVerdictDetail(results, kind, outcome) {
       elapsed_ms: r.elapsed_ms,
       limit_source: r.limit_source,
       ...(outcome === 'output-limit' ? { limit_bytes: r.max_output_bytes } : {}),
+      // a failed tree kill goes into the journal row, not only to the console: an
+      // autonomous run moves on, and this is the trace that something may still run
+      ...(r.kill_failed ? { kill_failed: r.kill_failed } : {}),
     }));
 }
 function timeoutDetail(results, kind = 'check') {
@@ -1590,16 +1602,48 @@ function overflowDetail(results, kind = 'check') {
 function warnCheckLimit(limit) {
   for (const w of limit.warnings || []) console.error(`  ⚠ ${w} — using ${limit.ms}ms from ${limit.source}.`);
 }
+// A kill that FAILED is not a detail: the engine has stopped waiting, but the check's
+// processes may still be running and writing. Say so next to the verdict, never only in
+// the check's own stderr (checker note on plan-20261010-026, seq 147).
+// The tail of a check's output that a report echoes: the last lines, AND at most this many
+// bytes — a red check that prints one 20 MiB line must not dump 20 MiB to the console.
+const ECHO_TAIL_LINES = 8;
+const ECHO_TAIL_BYTES = 4096;
+function boundedTail(text) {
+  const tail = String(text || '').split(/\r?\n/).slice(-ECHO_TAIL_LINES).join('\n');
+  if (Buffer.byteLength(tail) <= ECHO_TAIL_BYTES) return tail;
+  const cut = Buffer.from(tail).subarray(-ECHO_TAIL_BYTES).toString('utf8').replace(/^\uFFFD+/, '');
+  return `… [${Buffer.byteLength(tail) - Buffer.byteLength(cut)} earlier bytes not shown]${cut}`;
+}
+function printKillFailure(r) {
+  if (!r.kill_failed) return;
+  console.log(`        WARNING: the check's process tree could NOT be killed (${r.kill_failed}) — some of its processes may still be running. Find and stop them before trusting the next run.`);
+}
+// Each no-verdict outcome gets ITS remedy, and only its own: a pure output overflow must
+// not be told to raise a time limit. An overflow also says when it was cut — a check that
+// printed fast and then hung would only reveal its hang if the output bound were raised.
+function printLimitRemedies(timeouts, overflows) {
+  if (timeouts.length) {
+    console.error(`  TIMED OUT: limit ${timeouts[0].limit_ms}ms from ${timeouts[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
+  }
+  if (overflows.length) {
+    const o = overflows[0];
+    console.error(`  OUTPUT-LIMIT: bound ${o.max_output_bytes} bytes; make the check quieter (send its output to a file), or raise it with PB_CHECK_MAX_OUTPUT_BYTES=<bytes>.`);
+    console.error(`  It was cut after ${o.elapsed_ms}ms of a ${o.limit_ms}ms time limit: with a bigger bound it may still run on — and time out — if it is hanging.`);
+  }
+}
 function printResultOutcome(r, { okLabel, noun }) {
   if (r.ok) { console.log(`  ${okLabel}  ${r.cmd}`); return; }
   if (r.timedOut) {
     console.log(`  TIMEOUT  ${r.cmd}`);
     console.log(`        timed out after ${r.elapsed_ms}ms (limit ${r.limit_ms}ms from ${r.limit_source}, override with check_timeout_ms on the task or PB_CHECK_TIMEOUT_MS) — this is NOT a failing ${noun}.`);
+    printKillFailure(r);
     return;
   }
   if (r.overflow) {
     console.log(`  OUTPUT-LIMIT  ${r.cmd}`);
     console.log(`        the ${noun} produced more output than the runner accepts (limit ${r.max_output_bytes} bytes, override with PB_CHECK_MAX_OUTPUT_BYTES) — the exit code was never read, so this is NOT a failing ${noun}.`);
+    printKillFailure(r);
     return;
   }
   console.log(`  FAIL  ${r.cmd}`);
@@ -1677,11 +1721,13 @@ function printModeCheckResults(results) {
       console.log(`  TIMEOUT  [${r.id}] ${r.cmd}`);
       console.log(`        timed out after ${r.elapsed_ms}ms (limit ${r.limit_ms}ms from ${r.limit_source}) — this is NOT a failing mode check.`);
       console.log("        raise it with 'check_timeout_ms' on the principle, or PB_MODE_CHECK_TIMEOUT_MS=<ms>.");
+      printKillFailure(r);
       continue;
     }
     if (r.overflow) {
       console.log(`  OUTPUT-LIMIT  [${r.id}] ${r.cmd}`);
       console.log(`        produced more output than the runner accepts (limit ${r.max_output_bytes} bytes, override with PB_CHECK_MAX_OUTPUT_BYTES) — the exit code was never read, so this is NOT a failing mode check.`);
+      printKillFailure(r);
       continue;
     }
     console.log(`  FAIL  [${r.id}] ${r.cmd} (${r.elapsed_ms}ms)`);
@@ -4109,8 +4155,7 @@ function cmdRecord(args) {
           const what = timeouts.length ? 'TIMED OUT' : 'exceeded the output limit';
           console.error(`\nRefusing to record [${task.id}] as done — ${noVerdict.length} acceptance check(s) ${what}.`);
           console.error('No verdict was reached; this is NOT a failed check.');
-          console.error(`  limit ${noVerdict[0].limit_ms}ms from ${noVerdict[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
-          if (overflows.length) console.error(`  output bound ${overflows[0].max_output_bytes} bytes; raise it with PB_CHECK_MAX_OUTPUT_BYTES=<bytes>.`);
+          printLimitRemedies(timeouts, overflows);
         } else if (!noVerdict.length) {
           console.error(`\nRefusing to record [${task.id}] as done — acceptance checks failed.`);
         } else {
@@ -4118,7 +4163,7 @@ function cmdRecord(args) {
           // one sentence call the whole refusal "not a failed check".
           console.error(`\nRefusing to record [${task.id}] as done — ${reds.length} check(s) FAILED and ${noVerdict.length} reached no verdict${timeouts.length ? ` (${timeouts.length} TIMED OUT)` : ''}${overflows.length ? ` (${overflows.length} output-limit)` : ''}.`);
           console.error('The FAILED check(s) above are failures; the TIMED OUT / OUTPUT-LIMIT check(s) are NOT — no verdict was reached for them.');
-          console.error(`  limit ${noVerdict[0].limit_ms}ms from ${noVerdict[0].limit_source}; raise it with 'check_timeout_ms: <ms>' on the task, or PB_CHECK_TIMEOUT_MS=<ms>.`);
+          printLimitRemedies(timeouts, overflows);
         }
         console.error('Fix the work, or record --status blocked with notes. (--skip-checks overrides, and is stamped on the entry.)');
         process.exit(1);
@@ -4214,8 +4259,16 @@ function cmdDecide(args) {
   // cannot see a person, but it can refuse the two writers that are certainly not one:
   // the agent that holds this task, and any writer carrying a claim token (an agent
   // mid-task — a token is minted by `pb next --claim`, and people do not hold one).
-  if (claim.status === 'in_progress' && claim.claimed_by && claim.claimed_by === agent) {
+  const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.trim().toLowerCase() === b.trim().toLowerCase();
+  if (claim.status === 'in_progress' && (same(claim.claimed_by, agent) || same(claim.agent_id, agent))) {
     console.error(`[${taskId}] is held by "${agent}", the writer of this decision. An agent cannot answer its own human gate. Nothing was written.`);
+    process.exit(1);
+  }
+  // a harness stamps these on every agent shell (adapters/opencode, the DSH plugin); a
+  // person deciding at a terminal or through the room has none of them
+  const agentShell = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID'].filter((k) => process.env[k]);
+  if (agentShell.length) {
+    console.error(`pb decide refuses an agent shell (${agentShell.join(', ')} set): decisions come from a person. Nothing was written.`);
     process.exit(1);
   }
   if (process.env.PB_CLAIM_TOKEN || args.token) {
@@ -4424,7 +4477,12 @@ function cmdLoopRunAuto(args) {
     process.exit(1);
   }
   const maxTasks = Number(args['max-tasks']) || Infinity;
-  const retry = Number(args.retry) || 3;
+  // an explicit 0 means "no retries"; `Number(x) || 3` once turned it into 3
+  const retry = args.retry === undefined ? 3 : Number(args.retry);
+  if (!Number.isInteger(retry) || retry < 0) {
+    console.error(`--retry must be a whole number of retries, 0 or more (got ${JSON.stringify(args.retry)}).`);
+    process.exit(1);
+  }
   const dryRun = args['dry-run'];
   // --defer-blocked: keep going past a faulted task instead of stopping the whole
   // run. A blocked task drops out of the `todo` filter, so the run naturally ends

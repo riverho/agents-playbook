@@ -108,6 +108,14 @@ bad(['human:', '      question: "Publish?"', '      options:', '        - { id: 
   before = rows3();
   r = runPb(r3, ['decide', '--task', 'gate', '--option', 'approve', '--reason', 'x'], { agent: 'sub', env: { PB_CLAIM_TOKEN: 'tok-123' } });
   ok('a writer holding a claim token is refused', r.code !== 0 && /holds a claim token/.test(r.combined) && rows3() === before, r.combined);
+  before = rows3();
+  r = runPb(r3, ['decide', '--task', 'gate', '--option', 'approve', '--reason', 'x'], { agent: 'LEAD' });
+  ok('the claimant is refused whatever the case of its name', r.code !== 0 && /cannot answer its own human gate/.test(r.combined) && rows3() === before, r.combined);
+  for (const k of ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID']) {
+    before = rows3();
+    r = runPb(r3, ['decide', '--task', 'gate', '--option', 'approve', '--reason', 'x'], { agent: 'other', env: { [k]: 'opencode' } });
+    ok('an agent shell (' + k + ') is refused', r.code !== 0 && /refuses an agent shell/.test(r.combined) && rows3() === before, r.combined);
+  }
   r = runPb(r3, ['decide', '--task', 'gate', '--option', 'approve', '--reason', 'looks right'], { agent: 'alice' });
   ok('a person who does not hold the task can decide', r.code === 0, r.combined);
   const first = readJournal(r3).pop();
