@@ -233,6 +233,13 @@ function appendJournal(entry) {
   ensureDir(MEMORY_DIR);
   const agent = entry.agent || resolveAgentId({});
   const stamped = stampOrigin(entry, agent);
+  if (versionWorkerTxn) {
+    const ctx = versionWorkerTxn;
+    ctx.seq = Math.max(ctx.seq, (ctx.lastJournalSeq ?? ctx.seq - 1) + 1);
+    ctx.lastJournalSeq = ctx.seq;
+    ctx.draft.__seq = ctx.seq;
+    stamped.seq = ctx.seq;
+  }
   if (typeof stamped.seq === 'number') {
     appendFileSync(p(JOURNAL), JSON.stringify(stamped) + '\n', 'utf8');
     return stamped;
@@ -270,15 +277,25 @@ function applyTaskMutation(taskId, mutator, ctx, agent) {
 // before this existed).
 //   journalEntry: row WITHOUT `seq` (the transaction allocates it)
 //   mutator: (existing, ctx) => patch   — must NOT call appendJournal (same lock)
-function commitIteration(taskId, journalEntry, mutator, { agent = 'agent', timeoutMs = 30000 } = {}) {
+function commitIteration(taskId, journalEntry, mutator, { agent = 'agent', timeoutMs = 30000, versionAction = null } = {}) {
   ensureDir(MEMORY_DIR);
   try {
-    return withStateTxn((draft, ctx) => {
+    const perform = (draft, ctx) => {
       ctx.draft = draft;
+      const task = backlogTasks().find(t => t.id === taskId);
+      const prior = versionInTxn;
+      versionInTxn = true;
+      try {
+        versionWriteGuard(task, versionAction || journalEntry.action);
+        if (task?.version && journalEntry.loop_id !== task.loop_id) versionRefusal('V4', 'The card moved versions while this writer waited; reload it and retry');
+      } finally { versionInTxn = prior; }
       appendJournal({ ...journalEntry, seq: ctx.seq });
       return applyTaskMutation(taskId, mutator, ctx, agent);
-    }, { agent, timeoutMs });
+    };
+    if (versionWorkerTxn) return perform(versionWorkerTxn.draft, versionWorkerTxn);
+    return withStateTxn(perform, { agent, timeoutMs });
   } catch (e) {
+    if (e instanceof VersionRefused) return null;
     if (!(e instanceof StateTxnBusy)) throw e;
     console.error('ERROR: could not acquire the state lock (another agent is writing). Nothing was recorded — re-run.');
     return null;
@@ -485,7 +502,7 @@ function withStateTxn(mutator, { agent = 'agent', timeoutMs = 5 * 60_000 } = {})
       // writer queued behind a slow transaction can never claim an earlier position.
       const seq = touchSeqOf(draft) + 1;
       const result = mutator(draft, { seq, agent });
-      draft.__seq = seq;
+      draft.__seq = Math.max(seq, touchSeqOf(draft));
       draft.__written_at = nowISO();
       draft.__written_by = agent;
       writeBacklogState(draft);
@@ -502,6 +519,7 @@ function withStateTxn(mutator, { agent = 'agent', timeoutMs = 5 * 60_000 } = {})
 // writer can never claim an earlier position), and `updated_by` is the writer.
 function updateBacklogState(taskId, mutator, { agent } = {}) {
   const who = agent || resolveAgentId({});
+  if (versionWorkerTxn) return applyTaskMutation(taskId, mutator, versionWorkerTxn, who);
   try {
     return withStateTxn((draft, ctx) => {
       ctx.draft = draft;
@@ -682,6 +700,11 @@ function backlogTasks() {
       agent_id: s.agent_id ?? t.agent_id,
       mode: s.mode ?? t.mode,
       updated_at: s.updated_at ?? t.updated_at,
+      version: s.version ?? t.version,
+      kind: s.kind ?? t.kind,
+      carried_from: s.carried_from ?? t.carried_from,
+      disposition: s.disposition ?? t.disposition,
+      drop_reason: s.drop_reason ?? t.drop_reason,
     };
   });
 }
@@ -789,22 +812,86 @@ function readLoops() {
   let data = null;
   try { data = readData(LOOPS); }
   catch { data = null; }
-  return {
+  const state = {
     active: typeof data?.active === 'string' ? data.active : null,
     loops: Array.isArray(data?.loops) ? data.loops : [],
   };
+  // Version lifecycle rows are durable; loops.yaml is their convenient projection.
+  for (const row of readJournal()) {
+    if (row.action !== 'version' || !row.version_record?.id) continue;
+    const i = state.loops.findIndex(l => l.id === row.version_record.id);
+    if (i < 0) state.loops.push(row.version_record);
+    else state.loops[i] = { ...state.loops[i], ...row.version_record };
+    if (Object.hasOwn(row, 'active_loop')) state.active = row.active_loop;
+  }
+  return state;
 }
 function writeLoops(state) {
   ensureDir(dirname(LOOPS));
-  writeFileSync(p(LOOPS), yaml.dump({
+  atomicReplace(p(LOOPS), yaml.dump({
     active: state.active || null,
     loops: Array.isArray(state.loops) ? state.loops : [],
-  }, { lineWidth: 100 }), 'utf8');
+  }, { lineWidth: 100 }));
 }
 function activeLoop() {
   const state = readLoops();
   const loop = state.active ? state.loops.find((l) => l.id === state.active) : null;
   return loop && loop.status === 'active' ? loop : null;
+}
+
+const VERSION_KINDS = ['feature', 'fix', 'chore', 'experiment'];
+const VERSION_STATES = ['draft', 'open', 'frozen', 'closing', 'closed'];
+function versionMode() { return readLoops().loops.some(l => typeof l.version === 'string'); }
+function findVersion(name, state = readLoops()) { return state.loops.find(l => l.version && (l.version === name || l.id === name)); }
+function openVersion(state = readLoops()) { return state.loops.find(l => l.version && ['open', 'frozen', 'closing'].includes(l.state)); }
+class VersionRefused extends Error {}
+let versionInTxn = false;
+let versionCycleTxn = null;
+let versionWorkerTxn = null;
+let versionWorkerOperation = null;
+class WorkerExit extends Error { constructor(code) { super('worker exit'); this.code = code; } }
+function workerExit(code) { if (versionWorkerTxn || versionWorkerOperation) throw new WorkerExit(code); process.exit(code); }
+function versionRefusal(rule, message) {
+  console.error(`${rule}: ${message}. Nothing was written.`);
+  if (versionInTxn) throw new VersionRefused(message);
+  process.exit(1);
+}
+function versionWriteGuard(task, action, args = {}) {
+  if (!task?.version) return;
+  if (args.loop !== undefined && args.loop !== task.loop_id) versionRefusal('V4', `Card ${task.id} belongs to loop ${task.loop_id}; drop --loop`);
+  if (args.version !== undefined && args.version !== task.version && args.version !== task.loop_id) {
+    versionRefusal('V4', `Card ${task.id} belongs to ${task.version}; drop --version to inherit it`);
+  }
+  const v = findVersion(task.version);
+  if (['draft', 'closing'].includes(v?.state) && !['comment', 'reflect'].includes(action)) versionRefusal('V7', `${task.version} is ${v.state}; open it before working its cards`);
+  if (v?.state === 'closed' && !['comment', 'reflect'].includes(action)) {
+    versionRefusal('V7', `${task.version} is closed and read-only; fork a follow-up into the open version`);
+  }
+  if (task.disposition === 'dropped' && action !== 'comment') versionRefusal('V7', `Card ${task.id} was dropped: ${task.drop_reason || 'see journal'}`);
+}
+function taskInOpenVersion(task) {
+  if (task.disposition === 'dropped') return false;
+  if (!versionMode()) return true;
+  const v = openVersion();
+  return !!v && v.state !== 'closing' && task.version === v.version;
+}
+function versionPlanStamp(args, deps) {
+  if (!versionMode()) return {};
+  const v = openVersion();
+  if (!v || !['open', 'frozen'].includes(v.state)) versionRefusal('V2', 'Open a version with pb version new before planning');
+  const kind = args.kind ?? (deps.length ? 'fix' : 'feature');
+  if (!VERSION_KINDS.includes(kind)) versionRefusal('V3', `--kind must be ${VERSION_KINDS.join('|')}`);
+  const parents = deps.map(id => backlogTasks().find(t => t.id === id));
+  for (const parent of parents) {
+    if (!parent?.version) versionRefusal('V4', `Parent ${parent?.id} has no version; migrate it explicitly first`);
+    const pv = findVersion(parent.version);
+    if (parent.version !== v.version && !(pv?.state === 'closed' && kind === 'experiment')) {
+      versionRefusal('V4', `Follow-up inherits ${parent.version}; only an experiment fork of a closed card enters ${v.version}`);
+    }
+  }
+  if (args.version !== undefined && args.version !== v.version && args.version !== v.id) versionRefusal('V4', `Task belongs to ${v.version}; drop --version`);
+  if (v.state === 'frozen' && kind === 'feature') versionRefusal('V3', `${v.version} is frozen; use a fix/chore/experiment or open the next version`);
+  return { version: v.version, kind, loop_id: v.id };
 }
 function latestLoop() {
   const loops = readLoops().loops;
@@ -1848,6 +1935,8 @@ function runValidate() {
     if (t.manual !== undefined) {
       ok(typeof t.manual === 'boolean', `Task ${t.id} manual must be a boolean`);
     }
+    if (t.version !== undefined) ok(typeof t.version === 'string' && !!findVersion(t.version), `Task ${t.id} names an unknown version: ${t.version}`);
+    if (t.kind !== undefined) ok(VERSION_KINDS.includes(t.kind), `Task ${t.id} kind must be ${VERSION_KINDS.join('|')}`);
     // `docs:` is the card's document association (design D6): the paths a human needs
     // to read to judge this task. It earns its place because the CLI EXECUTES it here —
     // every entry must be a playbook-root-relative file that exists. A missing document
@@ -1871,6 +1960,16 @@ function runValidate() {
     for (const e of humanBlockProblems(t).errors) ok(false, e);
   }
 
+  const versions = readLoops().loops.filter(l => l.version);
+  ok(versions.filter(l => ['open', 'frozen', 'closing'].includes(l.state)).length <= 1, 'V1: more than one version is open/frozen/closing');
+  const versionNames = new Set();
+  for (const v of versions) {
+    ok(typeof v.version === 'string' && v.version.trim() && !versionNames.has(v.version), `V1: duplicate or invalid version name: ${v.version}`);
+    versionNames.add(v.version);
+    ok(VERSION_STATES.includes(v.state), `Version ${v.version} has invalid state: ${v.state}`);
+    ok(Array.isArray(v.stop_checks) && v.stop_checks.length > 0 && v.stop_checks.every(c => typeof c === 'string' && c.trim()), `V5: ${v.version} needs executable stop_checks`);
+    if (v.state === 'closed') ok(v.stop_result?.outcome === 'passed', `V6: closed version ${v.version} lacks passing stop checks`);
+  }
   // 6. structural guardrails for the layer/dependency graph. `pb validate` is the
   // structural gate, so a cycle or a task declared in an earlier layer than its
   // dependencies must FAIL here — a plan that cannot be ordered is not a plan, and
@@ -2038,7 +2137,7 @@ function statusPayload() {
   const journal = readJournal();
   const loop = activeLoop();
   const failures = runValidate();
-  const next = tasks.filter((t) => t.status === 'todo').sort((a, b) => prio(a) - prio(b))[0] || null;
+  const next = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t)).sort((a, b) => prio(a) - prio(b))[0] || null;
   return {
     schema: 'agent-playbook.status.v1',
     name: master?.name || 'playbook',
@@ -2687,7 +2786,7 @@ function gitToplevel() {
     return execSync('git rev-parse --show-toplevel', { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch {
     console.error('Not inside a git repository — `pb worker` needs git worktrees. Run `git init` first.');
-    process.exit(1);
+    workerExit(1);
   }
 }
 // Worker git calls send their chatter to stderr, never stdout: `--json` consumers
@@ -2900,11 +2999,59 @@ function workerRemovePayload(taskId, agent, worker, { execute, force, deleteBran
 }
 function cmdWorker(args) {
   const sub = args._[0];
+  const writes = ['exec', 'verify', 'checker', 'provider-rate-limit'].includes(sub) || (args.execute && ['create', 'remove', 'merge'].includes(sub));
+  if (writes && versionMode() && !versionWorkerTxn && !versionWorkerOperation) {
+    const task = backlogTasks().find(t => t.id === args._[1]);
+    if (task && !task.version) versionRefusal('V2', 'Migrate the card into a version before operating its worker');
+    // exec may run for hours; verify may use a raised check budget. Track an operation
+    // lease instead of holding an age-breakable state lock for the whole command.
+    if (['exec', 'verify'].includes(sub)) {
+      let operation, output, failure;
+      let exitCode = null;
+      try {
+        withStateTxn(() => {
+          const fresh = backlogTasks().find(t => t.id === args._[1]);
+          if (!fresh) throw new VersionRefused('Unknown worker task');
+          const prior = versionInTxn; versionInTxn = true;
+          try { versionWriteGuard(fresh, `worker ${sub}`, args); } finally { versionInTxn = prior; }
+          operation = { ts: nowISO(), loop_id: fresh?.loop_id, pid: process.pid, task: fresh?.id, status: 'running', lifecycle_lease: true, command: `worker ${sub}` };
+          appendNdjson(PROCESSES, operation);
+        }, { agent: resolveAgentId(args) });
+        versionWorkerOperation = operation;
+        output = cmdWorker(args);
+      } catch (err) {
+        if (err instanceof WorkerExit) exitCode = err.code;
+        else if (err instanceof VersionRefused) exitCode = 1;
+        else failure = err;
+      } finally {
+        versionWorkerOperation = null;
+        if (operation) withStateTxn(() => appendNdjson(PROCESSES, { ...operation, ts: nowISO(), status: 'stopped', stopped_at: nowISO() }), { agent: resolveAgentId(args) });
+      }
+      if (failure) throw failure;
+      if (exitCode !== null) workerExit(exitCode);
+      return output;
+    }
+    try {
+      return withStateTxn((draft, ctx) => {
+        ctx.draft = draft;
+        const prior = versionInTxn; versionInTxn = true; versionWorkerTxn = ctx;
+        try { return cmdWorker(args); } finally { versionInTxn = prior; versionWorkerTxn = null; }
+      }, { agent: resolveAgentId(args) });
+    } catch (err) {
+      if (err instanceof VersionRefused) workerExit(1);
+      if (err instanceof WorkerExit) workerExit(err.code);
+      if (!(err instanceof StateTxnBusy)) throw err;
+      console.error('Worker lifecycle state is busy; nothing was executed. Retry after the current writer finishes.'); workerExit(1);
+    }
+  }
+  if (!['status', 'merge-ready'].includes(sub) && args._[1]) {
+    versionWriteGuard(backlogTasks().find(t => t.id === args._[1]), `worker ${sub}`, args);
+  }
   if (sub === 'create') {
     const taskId = args._[1];
-    if (!taskId) { console.error('Usage: pb worker create <task-id> --agent <agent> [--base <ref>] [--worktree <path>] [--execute] [--json]'); process.exit(1); }
+    if (!taskId) { console.error('Usage: pb worker create <task-id> --agent <agent> [--base <ref>] [--worktree <path>] [--execute] [--json]'); workerExit(1); }
     const task = backlogTasks().find((t) => t.id === taskId);
-    if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!task) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const agent = args.agent || resolveAgentId(args);
     const opts = { base: typeof args.base === 'string' ? args.base : undefined, worktreeOverride: typeof args.worktree === 'string' ? args.worktree : undefined };
     const payload = workerCreatePayload(taskId, agent, !!args.execute, opts);
@@ -2920,24 +3067,24 @@ function cmdWorker(args) {
     if (!acquireLock(WORKER_LOCK, { staleMs: WORKER_LOCK_STALE_MS })) {
       console.error(`Could not acquire the worker slot for [${taskId}] (another agent is opening a worker). Re-run.`);
       console.error('If no worker create is actually running, clear the leaked lock with: pb unlock');
-      process.exit(1);
+      workerExit(1);
     }
     try {
       // Refuse before mutating: a half-made worktree is worse than a clean error.
       if (gitBranchExists(payload.branch)) {
         console.error(`Branch already exists: ${payload.branch}`);
         console.error(`A worker for [${taskId}] is already open. Reuse it, or clean up with:\n  pb worker remove ${taskId} --agent ${agent} --delete-branch --execute`);
-        process.exit(1);
+        workerExit(1);
       }
       if (existsSync(payload.worktree)) {
         console.error(`Worktree path already exists: ${payload.worktree}`);
         console.error('Remove or rename it, then retry.');
-        process.exit(1);
+        workerExit(1);
       }
       const baseCommit = gitIn(ROOT, ['rev-parse', args.base && typeof args.base === 'string' ? args.base : 'HEAD']);
       if (!baseCommit) {
         console.error(`Could not resolve base ref "${payload.base}" — the worker would fork from nothing.`);
-        process.exit(1);
+        workerExit(1);
       }
       // ONE live worker per task. The branch name embeds the agent, so two agents
       // racing for the same task would otherwise both pass the branch/path checks
@@ -2949,13 +3096,13 @@ function cmdWorker(args) {
           console.error(`[${taskId}] already has a live worker slot held by "${live.agent}" (${live.status}, since ${live.created_at || 'unknown'}).`);
           console.error(`  Reuse it, tear it down with \`pb worker remove ${taskId} --agent ${live.agent} --execute\`,`);
           console.error('  or pass --force to open a second slot (two workers editing one task will collide).');
-          process.exit(1);
+          workerExit(1);
         }
         const clash = liveWorkerAt(payload.worktree);
         if (clash) {
           console.error(`Worktree path is already held by [${clash.taskId}] (agent ${clash.rec.agent}): ${payload.worktree}`);
           console.error(`Pick another path with --worktree, or tear that slot down first.`);
-          process.exit(1);
+          workerExit(1);
         }
       }
       try {
@@ -2965,7 +3112,7 @@ function cmdWorker(args) {
         runGit(['worktree', 'add', '--quiet', '-b', payload.branch, payload.worktree, payload.base]);
       } catch {
         console.error(`\nFailed to create the worker worktree for [${taskId}] (see git output above). No state was recorded.`);
-        process.exit(1);
+        workerExit(1);
       }
       const branchHead = gitIn(payload.worktree, ['rev-parse', 'HEAD']);
       updateBacklogState(taskId, () => ({
@@ -2992,9 +3139,9 @@ function cmdWorker(args) {
   }
   if (sub === 'status') {
     const taskId = args._[1];
-    if (!taskId) { console.error('Usage: pb worker status <task-id> [--json]'); process.exit(1); }
+    if (!taskId) { console.error('Usage: pb worker status <task-id> [--json]'); workerExit(1); }
     const task = backlogTasks().find((t) => t.id === taskId);
-    if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!task) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const worker = taskState(taskId).worker || null;
     const payload = workerStatusPayload(taskId, worker);
     if (args.json) return printJson(payload);
@@ -3012,10 +3159,10 @@ function cmdWorker(args) {
   if (sub === 'exec') {
     const taskId = args._[1];
     const argv = Array.isArray(args['--']) ? args['--'] : [];
-    if (!taskId || !argv.length) { console.error('Usage: pb worker exec <task-id> -- <command> [args...]'); process.exit(1); }
+    if (!taskId || !argv.length) { console.error('Usage: pb worker exec <task-id> -- <command> [args...]'); workerExit(1); }
     const worker = taskState(taskId).worker || null;
-    if (!worker?.worktree_path) { console.error(`[${taskId}] has no worker worktree — run \`pb worker create ${taskId} --execute\` first.`); process.exit(1); }
-    if (!existsSync(worker.worktree_path)) { console.error(`The worker worktree is missing on disk: ${worker.worktree_path}`); process.exit(1); }
+    if (!worker?.worktree_path) { console.error(`[${taskId}] has no worker worktree — run \`pb worker create ${taskId} --execute\` first.`); workerExit(1); }
+    if (!existsSync(worker.worktree_path)) { console.error(`The worker worktree is missing on disk: ${worker.worktree_path}`); workerExit(1); }
     const [file, ...rest] = argv;
     // Commands run with cwd = the WORKER's tree, so "the work" is exercised in the
     // isolated checkout that will actually be merged.
@@ -3026,17 +3173,17 @@ function cmdWorker(args) {
     } catch (err) {
       if (err?.stdout?.length) process.stderr.write(err.stdout.toString());
       console.error(`\nworker exec failed for [${taskId}] (exit ${err?.status ?? 'unknown'}).`);
-      process.exit(err?.status || 1);
+      workerExit(err?.status || 1);
     }
   }
   if (sub === 'verify') {
     const taskId = args._[1];
-    if (!taskId) { console.error('Usage: pb worker verify <task-id> [--json]'); process.exit(1); }
+    if (!taskId) { console.error('Usage: pb worker verify <task-id> [--json]'); workerExit(1); }
     const task = backlogTasks().find((t) => t.id === taskId);
-    if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!task) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const worker = taskState(taskId).worker || null;
-    if (!worker?.worktree_path) { console.error(`[${taskId}] has no worker worktree — run \`pb worker create ${taskId} --execute\` first.`); process.exit(1); }
-    if (!existsSync(worker.worktree_path)) { console.error(`The worker worktree is missing on disk: ${worker.worktree_path}`); process.exit(1); }
+    if (!worker?.worktree_path) { console.error(`[${taskId}] has no worker worktree — run \`pb worker create ${taskId} --execute\` first.`); workerExit(1); }
+    if (!existsSync(worker.worktree_path)) { console.error(`The worker worktree is missing on disk: ${worker.worktree_path}`); workerExit(1); }
     const checks = taskChecks(task);
     const commands = taskCommands(task);
     const checkResults = checks.length ? runChecks(task, worker.worktree_path) : [];
@@ -3069,13 +3216,13 @@ function cmdWorker(args) {
     if (checks.length || commands.length) printCheckResults([...commandResults, ...checkResults]);
     if (!checks.length && !commands.length) console.log(`[${taskId}] has no acceptance_checks — verification is honor-only.`);
     console.log(passed ? `[${taskId}] worker verify PASSED at ${head || '(unknown commit)'}` : `[${taskId}] worker verify FAILED at ${head || '(unknown commit)'}`);
-    if (!passed) process.exit(1);
+    if (!passed) workerExit(1);
     return;
   }
   if (sub === 'remove') {
     const taskId = args._[1];
-    if (!taskId) { console.error('Usage: pb worker remove <task-id> [--agent <agent>] [--delete-branch] [--force] [--execute] [--json]'); process.exit(1); }
-    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!taskId) { console.error('Usage: pb worker remove <task-id> [--agent <agent>] [--delete-branch] [--force] [--execute] [--json]'); workerExit(1); }
+    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const worker = taskState(taskId).worker || null;
     const agent = args.agent || worker?.agent || resolveAgentId(args);
     const payload = workerRemovePayload(taskId, agent, worker, {
@@ -3093,14 +3240,14 @@ function cmdWorker(args) {
           console.error(`  ! ${payload.worktree}`);
           console.error('    Deleting it would either destroy its target or leave git\'s worktree bookkeeping inconsistent.');
           console.error('    Unlink it by hand (Windows: `cmd /c rmdir "<path>"`), then re-run.');
-          process.exit(1);
+          workerExit(1);
         }
         const { removed, failed } = unlinkTreeLinks(payload.worktree);
         if (failed.length) {
           console.error(`\nRefusing to remove the worker worktree for [${taskId}]: ${failed.length} link(s) inside it could not be unlinked.`);
           for (const f of failed) console.error(`  ! ${f.path} (${f.error}) — a recursive delete would follow it into its target.`);
           console.error('Nothing was deleted. Remove those links by hand (Windows: `cmd /c rmdir "<path>"`), then re-run.');
-          process.exit(1);
+          workerExit(1);
         }
         if (removed.length) {
           console.log(`Unlinked ${removed.length} link(s) without following them: ${removed.map((r) => r.path).join(', ')}`);
@@ -3112,7 +3259,7 @@ function cmdWorker(args) {
       } catch {
         console.error(`\nFailed to remove the worker worktree for [${taskId}] (see git output above).`);
         console.error('Uncommitted work in the worktree? Re-run with --force to discard it.');
-        process.exit(1);
+        workerExit(1);
       }
       updateBacklogState(taskId, () => ({
         worker: { ...(worker || {}), agent, branch: payload.branch, worktree_path: payload.worktree, status: 'removed', removed_at: nowISO() },
@@ -3128,9 +3275,9 @@ function cmdWorker(args) {
     const verdict = args.verdict;
     if (!taskId || !['pass', 'risk', 'block'].includes(verdict)) {
       console.error('Usage: pb worker checker <task-id> --verdict pass|risk|block [--notes "..."]');
-      process.exit(1);
+      workerExit(1);
     }
-    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const checker = { verdict, notes: args.notes || null, recorded_at: nowISO(), agent: resolveAgentId(args) };
     const checkerCommit = commitIteration(
       taskId,
@@ -3138,15 +3285,15 @@ function cmdWorker(args) {
       () => ({ checker, updated_at: checker.recorded_at }),
       { agent: checker.agent },
     );
-    if (!checkerCommit) process.exit(1);
+    if (!checkerCommit) workerExit(1);
     console.log(`Checker [${taskId}] → ${verdict} (seq ${checkerCommit.seq})`);
     return;
   }
   if (sub === 'merge') {
     const taskId = args._[1];
-    if (!taskId) { console.error('Usage: pb worker merge <task-id> [--agent <agent>] [--execute] [--json]'); process.exit(1); }
+    if (!taskId) { console.error('Usage: pb worker merge <task-id> [--agent <agent>] [--execute] [--json]'); workerExit(1); }
     const task = backlogTasks().find((t) => t.id === taskId);
-    if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!task) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const worker = taskState(taskId).worker || null;
     const agent = args.agent || worker?.agent || resolveAgentId(args);
     const derived = workerNames(taskId, agent);
@@ -3173,7 +3320,7 @@ function cmdWorker(args) {
         for (const r of gate.reasons) console.error(`  ! ${r}`);
         for (const w of gate.warnings) console.error(`  ⚠ ${w}`);
       }
-      process.exit(1);
+      workerExit(1);
     }
     if (!args.execute) {
       if (args.json) printJson(payload);
@@ -3187,7 +3334,7 @@ function cmdWorker(args) {
     } catch {
       console.error(`\nMerge of "${branch}" failed (see git output above). The checkout may be mid-conflict.`);
       console.error('Resolve it, or abort with: git merge --abort');
-      process.exit(1);
+      workerExit(1);
     }
     const head = gitIn(ROOT, ['rev-parse', 'HEAD']);
     const mergedAt = nowISO();
@@ -3221,7 +3368,7 @@ function cmdWorker(args) {
       notes: `merged ${branch} into the root checkout at ${head}`,
       worker: workerRecord,
     }, () => ({ worker: workerRecord, updated_at: mergedAt }), { agent });
-    if (!mergeCommit) process.exit(1);
+    if (!mergeCommit) workerExit(1);
     if (args.json) {
       printJson({ ...payload, merge_commit: head, journal_seq: mergeCommit.seq });
       return;
@@ -3233,7 +3380,7 @@ function cmdWorker(args) {
   if (sub === 'merge-ready') {
     const taskId = args._[1];
     const task = backlogTasks().find((t) => t.id === taskId);
-    if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!task) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const payload = mergeReadyPayload(task);
     if (args.json) {
       printJson(payload);
@@ -3242,13 +3389,13 @@ function cmdWorker(args) {
       for (const w of payload.warnings) console.log(`  ⚠ ${w}`);
     }
     // Exit code is the gate: `pb worker merge-ready <id> && git merge ...`
-    if (!payload.ready) process.exit(1);
+    if (!payload.ready) workerExit(1);
     return;
   }
   if (sub === 'provider-rate-limit') {
     const taskId = args._[1];
-    if (!taskId || !args.provider) { console.error('Usage: pb worker provider-rate-limit <task-id> --provider <name> [--retry-after 5h]'); process.exit(1); }
-    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+    if (!taskId || !args.provider) { console.error('Usage: pb worker provider-rate-limit <task-id> --provider <name> [--retry-after 5h]'); workerExit(1); }
+    if (!backlogTasks().some((t) => t.id === taskId)) { console.error(`Task not found: ${taskId}`); workerExit(1); }
     const provider = { name: args.provider, status: 'rate_limited', retry_after: args['retry-after'] || '5h', recorded_at: nowISO() };
     const providerAgent = resolveAgentId(args);
     const providerCommit = commitIteration(
@@ -3257,12 +3404,12 @@ function cmdWorker(args) {
       () => ({ provider, updated_at: provider.recorded_at }),
       { agent: providerAgent },
     );
-    if (!providerCommit) process.exit(1);
+    if (!providerCommit) workerExit(1);
     console.log(`Provider ${provider.name} for [${taskId}] rate_limited; retry_after=${provider.retry_after}`);
     return;
   }
   console.error('Usage: pb worker create|status|exec|verify|remove|checker|merge-ready|merge|provider-rate-limit ...');
-  process.exit(1);
+  workerExit(1);
 }
 
 // ============================================================================
@@ -3283,7 +3430,7 @@ function cmdStatus(args = {}) {
   const highLessons = openLessons().filter((l) => l.severity === 'high').length;
   console.log(`  Loop:    ${loop ? `${loop.id} active` : '(none active)'}  •  ${highLessons} high-severity lesson(s) open`);
 
-  const next = tasks.filter((t) => t.status === 'todo').sort((a, b) => prio(a) - prio(b))[0];
+  const next = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t)).sort((a, b) => prio(a) - prio(b))[0];
   if (next) console.log(`  Next up: [${next.id}] ${next.title}  → skill: ${next.skill || '(none)'}`);
   const wip = tasks.filter((t) => t.status === 'in_progress');
   if (wip.length) console.log(`  In progress: ${wip.map((t) => `[${t.id}] ${t.title}`).join('; ')}`);
@@ -3319,7 +3466,7 @@ function cmdNext(args) {
     const tm = (t.mode && String(t.mode).trim()) || null;
     return !tm || !agentMode || tm === agentMode;
   };
-  const todo = tasks.filter((t) => t.status === 'todo');
+  const todo = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t));
   // Layered planning gates the CLAIM, on the same path `dependencies` already gates:
   // a task whose layer sits above a failing (or unverified) gate is not claimable.
   // The playbook's declared layer order is the plan, so honoring it by default is the
@@ -3404,6 +3551,7 @@ function cmdNext(args) {
     // deadlocked: the inner acquisition burned its whole timeout, the outer write
     // happened anyway, and the command stalled ~30s while reporting success.
     let claimed = false;
+    let versionChanged = false;
     const claimToken = newClaimToken();
     const claimRow = {
       ts: nowISO(),
@@ -3424,7 +3572,8 @@ function cmdNext(args) {
       withStateTxn((draft, ctx) => {
         ctx.draft = draft;
         const fresh = backlogTasks().find((t) => t.id === candidate.id);
-        if (!fresh || fresh.status !== 'todo') return;
+        if (fresh?.version && (fresh.version !== candidate.version || fresh.loop_id !== loop.id)) { versionChanged = true; return; }
+        if (!fresh || fresh.status !== 'todo' || !taskInOpenVersion(fresh)) return;
         applyTaskMutation(candidate.id, () => ({
           status: 'in_progress',
           claimed_at: claimRow.ts,
@@ -3444,6 +3593,7 @@ function cmdNext(args) {
       process.exit(1);
     }
     if (!claimed) {
+      if (versionChanged) { console.error('V4: the card changed versions while the claim waited. Nothing was claimed; re-run pb next --claim.'); process.exit(1); }
       console.error(`\n  [${candidate.id}] was claimed by another agent while you were selecting. Re-run \`pb next --claim\` for the next task.`);
       process.exit(1);
     }
@@ -3492,7 +3642,7 @@ function cmdRelease(args) {
 
   if (staleMinutes) {
     const cutoff = Date.now() - staleMinutes * 60_000;
-    const stale = backlogTasks().filter((t) => t.status === 'in_progress' && (t.claimed_at ? Date.parse(t.claimed_at) < cutoff : true));
+    const stale = backlogTasks().filter((t) => taskInOpenVersion(t) && t.status === 'in_progress' && (t.claimed_at ? Date.parse(t.claimed_at) < cutoff : true));
     if (!stale.length) { console.log(`No in_progress claims older than ${staleMinutes} minute(s).`); return; }
     if (args['dry-run']) {
       for (const t of stale) console.log(`[dry-run] would release [${t.id}] (held by ${taskHolder(t)} since ${t.claimed_at || 'unknown'})`);
@@ -3513,6 +3663,7 @@ function cmdRelease(args) {
 
   const task = backlogTasks().find((t) => t.id === taskId);
   if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
+  versionWriteGuard(task, 'release', args);
   if (task.status !== 'in_progress') {
     console.log(`[${taskId}] is "${task.status}", not in_progress — nothing to release.`);
     return;
@@ -3620,6 +3771,14 @@ function reconstructStateFromJournal({ strict = false, ids = null } = {}) {
     // strict rebuild would still drop it as "projection-only" — a fact recorded but
     // not replayable, which is the same as not recorded.
     if (row.worker && typeof row.worker === 'object') entry.worker = { ...(entry.worker || {}), ...row.worker };
+    if (row.version) entry.version = row.version;
+    if (row.kind) entry.kind = row.kind;
+    if (row.action === 'carry' && row.carry_side === 'destination') {
+      entry.version = row.to_version;
+      entry.carried_from = row.from_version;
+      delete entry.disposition;
+    }
+    if (row.action === 'drop') { entry.disposition = 'dropped'; entry.drop_reason = row.reason; }
     if (row.action === 'claim') {
       entry.status = 'in_progress';
       entry.claimed_at = ts;
@@ -3953,6 +4112,7 @@ function cmdPlan(args) {
   }
   const loop = activeLoop();
   if (!loop) {
+    if (versionMode()) versionRefusal('V2', 'Open a version with pb version new before planning');
     console.error('No active loop. Start one with `pb loop new` before planning.');
     process.exit(1);
   }
@@ -4013,6 +4173,7 @@ function cmdPlan(args) {
     mode,
     priority,
     acceptance_checks: checks,
+    ...versionPlanStamp(args, depIds),
   };
   if (depIds.length) task.dependencies = depIds;
   if (args.manual) task.manual = true;
@@ -4044,7 +4205,25 @@ function cmdPlan(args) {
       process.exit(1);
     }
   }
-  appendBacklogTask(task);
+  // A close holds this same lock through its stop checks. Planning must re-read the
+  // active version after waiting, or a feature can arrive in an already closed version.
+  try {
+    withStateTxn(() => {
+      const prior = versionInTxn;
+      versionInTxn = true;
+      try {
+        const stamp = versionPlanStamp(args, depIds);
+        if (task.version !== stamp.version) versionRefusal('V4', 'The active version changed while planning; retry against its current goal');
+        Object.assign(task, stamp);
+        task.id = nextPlanId();
+        appendBacklogTask(task);
+      } finally { versionInTxn = prior; }
+    }, { agent: resolveAgentId(args) });
+  } catch (err) {
+    if (err instanceof VersionRefused) process.exit(1);
+    if (!(err instanceof StateTxnBusy)) throw err;
+    console.error('Planning state is busy; nothing was written. Retry after the current writer finishes.'); process.exit(1);
+  }
   console.log(`Planned [${task.id}] ${task.title}`);
   console.log(`  skill: ${skill}`);
   console.log(`  priority: ${priority}`);
@@ -4112,11 +4291,12 @@ function cmdRecord(args) {
   }
 
   const task = backlogTasks().find((t) => t.id === args.task);
+  versionWriteGuard(task, 'record', args);
   if (['done', 'blocked'].includes(args.status) && !task) {
     console.error(`Task not found in backlog: ${args.task}. Cannot record ${args.status} for an unknown task.`);
     process.exit(1);
   }
-  const loop = args.loop ? loopById(args.loop) : activeLoop();
+  const loop = task?.version ? loopById(task.loop_id) : args.loop ? loopById(args.loop) : activeLoop();
   if (args['require-loop'] && !loop) {
     console.error('No active loop. Start one with `pb loop new`, or pass --loop <id>.');
     process.exit(1);
@@ -4212,7 +4392,7 @@ function cmdRecord(args) {
       updated_at: entry.ts,
       loop_id: existing.loop_id || (loop ? loop.id : undefined),
     };
-  }, { agent: agentId });
+  }, { agent: agentId, versionAction: 'record' });
   if (!commit) process.exit(1);
   console.log(`Recorded [${entry.task}] ${entry.action} → ${entry.status}${checksOutcome !== 'none' ? ` (checks: ${checksOutcome})` : ''} (seq ${commit.seq})`);
   if (endsIteration) console.log(`Backlog [${task.id}] → ${args.status}.`);
@@ -4242,6 +4422,7 @@ function cmdDecide(args) {
   }
   const task = backlogTasks().find((t) => t.id === taskId);
   if (!task) { console.error(`Task not found in backlog: ${taskId}. Nothing was written.`); process.exit(1); }
+  versionWriteGuard(task, 'decide', args);
   if (!task.manual && !task.human) {
     console.error(`[${taskId}] does not ask a person anything (no manual: true, no human:). Use pb comment to leave a note. Nothing was written.`);
     process.exit(1);
@@ -4278,7 +4459,7 @@ function cmdDecide(args) {
   const prior = readJournal().filter((e) => !e.__malformed && e.task === taskId && e.action === 'decide').pop() || null;
   const entry = {
     ts: nowISO(),
-    loop_id: activeLoop()?.id || 'legacy',
+    loop_id: task.version ? task.loop_id : activeLoop()?.id || 'legacy',
     task: taskId,
     agent,
     agent_id: agent,
@@ -4403,6 +4584,7 @@ function cmdAttach(args) {
   }
   const task = backlogTasks().find((t) => t.id === taskId);
   if (!task) { console.error(`Task not found in backlog: ${taskId}`); process.exit(1); }
+  versionWriteGuard(task, 'attach', args);
   if (/^([A-Za-z]:[\\/]|[\\/])/.test(given)) {
     console.error(`Refusing: "${given}" is absolute. A docs: entry is relative to the playbook root, and pb validate enforces that.`);
     process.exit(1);
@@ -4432,20 +4614,26 @@ function cmdAttach(args) {
     console.error(`Refusing: ${rel} is a ${stats?.isDirectory() ? 'directory' : 'non-file'}, not a document.`);
     process.exit(1);
   }
-  const written = backlogAttachDoc(taskId, rel);
-  if (!written.ok) { console.error(`Refusing: ${written.reason}`); process.exit(1); }
-  if (written.already) {
-    console.log(`[${taskId}] already lists ${rel}; nothing written.`);
-    return;
-  }
   const label = typeof args.label === 'string' && args.label.trim() ? args.label.trim() : null;
-  const row = appendJournal({
-    action: 'attach',
-    ts: nowISO(),
-    status: 'in_progress',
-    task: taskId,
-    notes: `docs: + ${rel}${label ? ` (${label})` : ''}`,
-  });
+  const agent = resolveAgentId(args);
+  let written, row;
+  try {
+    withStateTxn((draft, ctx) => {
+      const fresh = backlogTasks().find(t => t.id === taskId);
+      const prior = versionInTxn; versionInTxn = true;
+      try { versionWriteGuard(fresh, 'attach', args); } finally { versionInTxn = prior; }
+      written = backlogAttachDoc(taskId, rel);
+      if (!written.ok || written.already) return;
+      row = appendJournal({ seq: ctx.seq, ts: nowISO(), loop_id: fresh?.version ? fresh.loop_id : activeLoop()?.id || 'legacy', agent,
+        action: 'attach', status: fresh.status, task: taskId, notes: `docs: + ${rel}${label ? ` (${label})` : ''}` });
+    }, { agent });
+  } catch (err) {
+    if (err instanceof VersionRefused) process.exit(1);
+    if (!(err instanceof StateTxnBusy)) throw err;
+    console.error('Attachment state is busy; nothing was written. Retry after the current writer finishes.'); process.exit(1);
+  }
+  if (!written.ok) { console.error(`Refusing: ${written.reason}`); process.exit(1); }
+  if (written.already) { console.log(`[${taskId}] already lists ${rel}; nothing written.`); return; }
   const listed = backlogTasks().find((t) => t.id === taskId)?.docs ?? [];
   console.log(`[${taskId}] documents (${listed.length}): ${listed.join(', ')}`);
   console.log(`Journalled as seq ${row.seq}${label ? `, label "${label}"` : ''}. The room sees this through pb graph's per-node docs.`);
@@ -4463,6 +4651,7 @@ function cmdComment(args) {
     process.exit(1);
   }
   const task = backlogTasks().find((t) => t.id === taskId);
+  versionWriteGuard(task, 'comment', args);
   if (!task) { console.error(`Task not found in backlog: ${taskId}`); process.exit(1); }
   const agent = resolveAgentId(args);
   const claim = readBacklogState()[taskId] || {};
@@ -4473,7 +4662,7 @@ function cmdComment(args) {
   }
   const entry = {
     ts: nowISO(),
-    loop_id: activeLoop()?.id || 'legacy',
+    loop_id: task.version ? task.loop_id : activeLoop()?.id || 'legacy',
     task: taskId,
     agent,
     agent_id: agent,
@@ -4607,6 +4796,7 @@ function seedCycleFromLoop(loop, args) {
   }), 'utf8');
 }
 function cmdLoopRunAuto(args) {
+  if (versionMode() && !['open', 'frozen'].includes(openVersion()?.state)) versionRefusal('V8', 'An open version is required; run pb version new');
   const loop = activeLoop();
   if (!loop) {
     console.error('No active loop. Start one with `pb loop new` before running auto.');
@@ -4638,7 +4828,7 @@ function cmdLoopRunAuto(args) {
   console.log(`\nStarting autonomous run for [${loop.id}] (max-tasks=${maxTasks === Infinity ? 'unlimited' : maxTasks}, retry=${retry}${defer ? ', defer-blocked' : ''})${dryRun ? ' [DRY RUN]' : ''}\n`);
   while (tasksCompleted < maxTasks) {
     const tasks = backlogTasks();
-    const todo = tasks.filter((t) => t.status === 'todo');
+    const todo = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t));
     // Same two gates the interactive claim path applies: dependencies AND layer
     // gates. An autonomous run must not be the one path that can jump a layer.
     const autoPlan = computeLayerPlan({ checkGates: true, allTasks: tasks, persistGates: !dryRun });
@@ -4794,6 +4984,9 @@ function cmdLoopRunAuto(args) {
 
 function cmdLoop(args) {
   const sub = args._[0] || 'status';
+  if (sub === 'new' && versionMode()) versionRefusal('V1', 'This playbook uses versions; use pb version new');
+  if (sub === 'close' && activeLoop()?.version) versionRefusal('V6', 'Use pb version close so stop checks and explicit carry/drop are enforced');
+  if (sub === 'quarantine' && findVersion(args._[1] || args.loop)) versionRefusal('V7', 'Use version lifecycle commands for a versioned loop');
   if (sub === 'new') {
     const state = readLoops();
     const active = state.active ? state.loops.find((l) => l.id === state.active) : null;
@@ -4948,6 +5141,131 @@ function cmdLoop(args) {
 //  learn — structured user/agent reflection. Raw lessons stay in lessons.ndjson;
 //  durable rules, repair tasks, and skills are explicit promotions.
 // ============================================================================
+function cmdVersion(args) {
+  const sub = args._[0] || 'list';
+  if (sub === 'list') {
+    const versions = readLoops().loops.filter(l => l.version).map(l => ({
+      ...l, task_counts: backlogTasks().filter(t => t.version === l.version).reduce((a, t) => { a[t.disposition === 'dropped' ? 'dropped' : t.status] = (a[t.disposition === 'dropped' ? 'dropped' : t.status] || 0) + 1; return a; }, {}),
+    }));
+    if (args.json) return printJson({ schema: 'agent-playbook.versions.v1', versions });
+    for (const v of versions) console.log(`${v.version} · ${v.title || v.goal} · ${v.state} · ${v.id}`);
+    return;
+  }
+  if (!['new', 'open', 'freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|list|release-operation');
+  if (['freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) {
+    const context = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID', 'PB_CLAIM_TOKEN'].filter(k => process.env[k]);
+    if (context.length || args.token) versionRefusal('V6', `Lifecycle decisions require a person at the local CLI; agent context detected (${context.join(', ') || 'claim token'})`);
+  }
+  const agent = resolveAgentId(args);
+  let result;
+  try {
+    versionInTxn = true;
+    result = withStateTxn((draft, ctx) => {
+      const state = readLoops();
+      let v = openVersion(state);
+      if (sub === 'release-operation') {
+        const pid = Number(args.pid);
+        const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+        const op = latestProcessRecords().find(rec => rec.lifecycle_lease && rec.status !== 'stopped' && rec.pid === pid);
+        if (!op || !reason) versionRefusal('V6', 'Name an unfinished operation with --pid and explain your confirmed cleanup with --reason');
+        if (pidAlive(pid)) versionRefusal('V6', 'The operation is still running; stop its process tree first');
+        appendNdjson(PROCESSES, { ...op, ts: nowISO(), status: 'stopped', stopped_at: nowISO(), released_by: agent, reason });
+        appendJournal({ seq: ctx.seq, ts: nowISO(), loop_id: op.loop_id, task: op.task, agent, action: 'operation-release', status: 'event', checks: 'none', notes: reason });
+        return findVersion(op.loop_id, state);
+      }
+      const event = (version, active) => {
+        appendJournal({ seq: ctx.seq, ts: nowISO(), task: `version:${version.id}`, loop_id: version.id,
+          agent, action: 'version', status: 'event', checks: 'none', version: version.version,
+          version_record: version, active_loop: active, notes: `Version ${version.version}: ${version.state}` });
+        writeLoops(state);
+      };
+      if (sub === 'new') {
+        const name = typeof args.name === 'string' ? args.name.trim() : '';
+        const checks = (Array.isArray(args['stop-check']) ? args['stop-check'] : [args['stop-check']]).filter(c => typeof c === 'string' && c.trim()).map(c => c.trim());
+        if (!name || typeof args.goal !== 'string' || !args.goal.trim() || !checks.length) versionRefusal('V5', 'Provide --name, --goal and at least one executable --stop-check');
+        if (findVersion(name, state)) versionRefusal('V1', `Version ${name} already exists`);
+        if (!args.draft && (v || state.active)) versionRefusal('V1', 'Close the active version/legacy loop before opening another');
+        const loop = { id: nextLoopId(state), version: name, title: args.title || name, state: args.draft ? 'draft' : 'open',
+          status: args.draft ? 'draft' : 'active', goal: String(args.goal), stop: args.stop || String(args.goal), stop_checks: checks,
+          created_at: nowISO(), started_at: args.draft ? null : nowISO(), closed_at: null,
+          journal: { first_line: journalLineCount() + 1, last_line: null }, artifacts: null };
+        loop.artifacts = loopArtifactsRel(loop.id);
+        state.loops.push(loop);
+        if (!args.draft) state.active = loop.id;
+        event(loop, state.active);
+        if (!args.draft) seedCycleFromLoop(loop, { ...args, goal: loop.goal, stop: loop.stop });
+        return loop;
+      }
+      if (sub === 'open') {
+        if (v || state.active) versionRefusal('V1', 'Close the active version before opening the next draft');
+        v = findVersion(args.name || args._[1], state);
+        if (!v || v.state !== 'draft') versionRefusal('V1', 'Name an existing draft version with --name');
+        v.state = 'open'; v.status = 'active'; v.started_at = nowISO(); state.active = v.id;
+        event(v, v.id); seedCycleFromLoop(v, { ...args, goal: v.goal, stop: v.stop });
+        return v;
+      }
+      if (sub === 'carry' || sub === 'drop') {
+        const task = backlogTasks().find(t => t.id === args._[1]);
+        if (!task || !task.version) versionRefusal('V4', 'Name an existing versioned task');
+        const source = findVersion(task.version, state);
+        if (!source || source.state === 'closed') versionRefusal('V7', 'The source version is closed');
+        if (task.status === 'done' || task.disposition === 'dropped') versionRefusal('V6', 'Only unfinished, undisposed cards may be carried or dropped');
+        if (latestProcessRecords(source.id).some(rec => rec.lifecycle_lease && rec.status !== 'stopped' && rec.task === task.id)) versionRefusal('V6', 'Stop the worker operation before carrying or dropping its card');
+        if (draft[task.id]?.claim_token || task.status === 'in_progress') versionRefusal('V6', 'Release the active claim before carrying or dropping its card');
+        const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+        if (sub === 'drop' && !reason) versionRefusal('V6', 'Dropping a task requires --reason');
+        const ts = nowISO();
+        const base = { ts, task: task.id, agent, action: sub, status: task.status, checks: 'none', notes: reason || `Carry ${task.id} forward`, reason };
+        ctx.draft = draft;
+        if (sub === 'drop') {
+          appendJournal({ ...base, seq: ctx.seq, loop_id: source.id, version: source.version });
+          applyTaskMutation(task.id, () => ({ disposition: 'dropped', drop_reason: reason, updated_at: ts }), ctx, agent);
+          return source;
+        }
+        const drafts = state.loops.filter(l => l.version && l.state === 'draft');
+        const target = args.to === 'next' ? (drafts.length === 1 ? drafts[0] : null) : findVersion(args.to, state);
+        if (!target || target.state !== 'draft' || target.id === source.id) versionRefusal('V4', 'Stage a unique next draft using pb version new --draft --name ... --goal ... --stop-check ...');
+        const relation = { from_version: source.version, to_version: target.version, from_loop: source.id, to_loop: target.id };
+        appendJournal({ ...base, ...relation, seq: ctx.seq, loop_id: source.id, version: source.version, carry_side: 'source' });
+        const nextCtx = { ...ctx, seq: ctx.seq + 1 };
+        appendJournal({ ...base, ...relation, seq: nextCtx.seq, loop_id: target.id, version: target.version, carry_side: 'destination' });
+        draft.__seq = nextCtx.seq;
+        applyTaskMutation(task.id, () => ({ version: target.version, loop_id: target.id, carried_from: source.version, updated_at: ts }), nextCtx, agent);
+        return target;
+      }
+      if (!v || !['open', 'frozen'].includes(v.state)) versionRefusal('V6', 'No open version; use pb version new');
+      if (sub === 'freeze') {
+        v.state = 'frozen'; v.frozen_at = nowISO(); event(v, state.active); return v;
+      }
+      const pending = backlogTasks().filter(t => t.version === v.version && t.status !== 'done' && t.disposition !== 'dropped');
+      if (pending.length) versionRefusal('V6', `Carry or drop every unfinished task before closing: ${pending.map(t => t.id).join(', ')}`);
+      const live = latestProcessRecords(v.id).filter(rec => rec.status !== 'stopped' && (rec.lifecycle_lease || pidAlive(rec.pid)));
+      if (live.length) versionRefusal('V6', `Stop tracked processes before closing: ${live.map(rec => rec.pid).join(', ')}`);
+      const checks = runChecks({ id: v.id, acceptance_checks: v.stop_checks });
+      if (!checks.length || checks.some(c => !c.ok)) {
+        printCheckResults(checks);
+        versionRefusal('V6', 'Version stop checks are unverified; fix their failure or limit before closing');
+      }
+      v.stop_result = { outcome: 'passed', at: nowISO(), commands: v.stop_checks };
+      const originallyBorn = new Set((readData(BACKLOG)?.tasks || []).filter(t => t.version === v.version).map(t => t.id));
+      const participated = new Set(readJournal().filter(row => row.loop_id === v.id && row.task).map(row => row.task));
+      v.task_snapshot = backlogTasks().filter(t => t.version === v.version || originallyBorn.has(t.id) || participated.has(t.id)).map(t =>
+        t.version === v.version ? t : { ...t, version: v.version, disposition: 'carried', carried_to: t.version });
+      v.phase_snapshot = readText(CYCLE);
+      v.state = 'closed'; v.status = 'done'; v.closed_at = nowISO();
+      v.journal = { ...v.journal, last_line: journalLineCount() + 1 };
+      state.active = null; event(v, null);
+      return v;
+    }, { agent });
+  } catch (err) {
+    if (err instanceof VersionRefused) process.exit(1);
+    if (!(err instanceof StateTxnBusy)) throw err;
+    console.error('Version state is busy; nothing was written. Retry after the current writer finishes.'); process.exit(1);
+  } finally { versionInTxn = false; }
+  if (args.json) return printJson({ schema: 'agent-playbook.version.v1', version: result });
+  console.log(`Version ${result.version}: ${result.state} (${result.id})`);
+}
+
 function cmdLearn(args) {
   if (args._[0] === 'status') {
     const lessons = readLessons();
@@ -5622,7 +5940,7 @@ function cmdCheckpoint(args) {
   const journal = readJournal().filter((e) => !e.__malformed);
   const lastTs = journal.length ? journal[journal.length - 1].ts : null;
   const wip = tasks.filter((t) => t.status === 'in_progress');
-  const nextTodo = tasks.filter((t) => t.status === 'todo').sort((a, b) => prio(a) - prio(b))[0];
+  const nextTodo = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t)).sort((a, b) => prio(a) - prio(b))[0];
   const loopState = readLoops();
   const loop = activeLoop();
   const openHighLessons = openLessons().filter((l) => l.severity === 'high');
@@ -5825,7 +6143,20 @@ function cycleSectionText(text, key) {
   return body.join(' ').trim();
 }
 function cmdCycle(args) {
+  if ((args.edit || args.new) && versionMode() && !versionCycleTxn) {
+    try {
+      return withStateTxn((draft, ctx) => {
+        const prior = versionInTxn; versionInTxn = true; versionCycleTxn = ctx;
+        try { return cmdCycle(args); } finally { versionInTxn = prior; versionCycleTxn = null; }
+      }, { agent: resolveAgentId(args) });
+    } catch (err) {
+      if (err instanceof VersionRefused) process.exit(1);
+      if (!(err instanceof StateTxnBusy)) throw err;
+      console.error('Cycle state is busy; nothing was written. Retry after the current writer finishes.'); process.exit(1);
+    }
+  }
   const cur = readCycle();
+  if ((args.edit || args.new) && versionMode() && !['open', 'frozen'].includes(openVersion()?.state)) versionRefusal('V7', 'Open a version before changing the cycle brief');
   // `pb cycle --edit --stop "..."` — the OPEN brief is editable state, not a fossil. The goal
   // half of a steer is exactly this edit, and no command could make it until now, which is why
   // the room reported it as "not applied" instead of pretending.
@@ -5835,16 +6166,19 @@ function cmdCycle(args) {
     if (typeof args.stop === 'string' && args.stop.trim()) wanted.stop = args.stop.trim();
     if (!Object.keys(wanted).length) {
       console.error('Nothing to change: pass --stop "<text>" and/or --goal "<text>".');
+      if (versionCycleTxn) throw new VersionRefused('Nothing to change');
       process.exit(2);
     }
     if (!cur.exists) {
       console.error(`No cycle brief at ${CYCLE} — open the phase with \`pb cycle --new\` first.`);
+      if (versionCycleTxn) throw new VersionRefused('No cycle brief');
       process.exit(1);
     }
     const before = readText(CYCLE);
     let after;
     try { after = rewriteCycleBrief(before, wanted); } catch (err) {
       console.error(`Refusing to edit: ${err.message}`);
+      if (versionCycleTxn) throw new VersionRefused(err.message);
       process.exit(1);
     }
     if (after === before) {
@@ -5871,8 +6205,11 @@ function cmdCycle(args) {
     writeFileSync(p(CYCLE), after, 'utf8');
     const loop = activeLoop();
     const row = appendJournal({
-      action: 'cycle-edit',
+      seq: versionCycleTxn?.seq,
       ts: nowISO(),
+      loop_id: loop?.id || 'legacy',
+      agent: resolveAgentId(args),
+      action: 'cycle-edit',
       status: 'in_progress',
       task: null,
       loop: loop?.id || null,
@@ -5912,6 +6249,7 @@ function cmdCycle(args) {
     const phase = (Number.isInteger(cur.phase) ? cur.phase : 0) + 1;
     ensureDir(dirname(CYCLE));
     writeFileSync(p(CYCLE), cycleTemplate({ phase, goal: args.goal, stop: args.stop }), 'utf8');
+    if (versionCycleTxn) appendJournal({ seq: versionCycleTxn.seq, ts: nowISO(), loop_id: activeLoop()?.id, agent: resolveAgentId(args), action: 'cycle-open', status: 'event', task: null, phase, notes: `Opened phase ${phase}` });
     console.log(`Opened cycle brief: ${CYCLE} (phase ${phase}). Fill the five questions, then \`pb status\`.`);
     return;
   }
@@ -6367,6 +6705,15 @@ function cmdHelp() {
                           When this agent is already executing a task, the task's journal spawn
                           row records origin_task=<that task>, so pb graph draws the spawn edge
                           from the card that created it instead of from start.
+    version new --name <name> --goal ".." --stop-check <cmd> [--stop-check <cmd>] [--draft]
+                          Open a version, or stage the next draft without opening it.
+    version open --name <draft> | freeze | close
+                          Close requires passing stop checks and explicit carry/drop of open work.
+    version carry <task> --to next|<draft> | drop <task> --reason ".."
+                          Carry preserves the card ID and records both source and destination.
+    version list [--json]  Version history (loops with a name, state, and stop checks).
+    version release-operation --pid <pid> --reason "..."
+                          Human recovery after confirming a crashed worker's process tree is gone.
     loop new [--goal ".."] [--stop ".."] [--from-lessons] [--fresh]  Open a durable loop epoch.
                           Default continues from the existing backlog. --fresh archives the
                           current backlog (nothing lost) and resets it to empty for a ground-up
@@ -6504,7 +6851,7 @@ const api = {
 // same choice the CLI would make.
 function cmdNextPayload() {
   const tasks = backlogTasks();
-  const todo = tasks.filter((t) => t.status === 'todo');
+  const todo = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t));
   // Mirrors cmdNext's selection rules exactly, including the layer gate, so a host
   // previewing the next task cannot be told about work the CLI would refuse.
   const plan = computeLayerPlan({ checkGates: true, allTasks: tasks });
@@ -6564,6 +6911,7 @@ if (isMainModule) {
   case 'report': cmdReport(args); break;
   case 'plan': cmdPlan(args); break;
   case 'loop': cmdLoop(args); break;
+  case 'version': cmdVersion(args); break;
   case 'learn': cmdLearn(args); break;
   case 'run': cmdRun(args); break;
   case 'ps': cmdPs(args); break;
