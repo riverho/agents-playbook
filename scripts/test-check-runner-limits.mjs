@@ -49,11 +49,13 @@ const env = { PB_CHECK_MAX_OUTPUT_BYTES: '1000', PB_CHECK_TIMEOUT_MS: '60000' };
 }
 // 4. --retry
 {
+  const bare = runPb(root, ['loop', 'run', '--auto', '--dry-run', '--retry']);
+  ok('a bare --retry is refused, not read as 1', bare.code !== 0 && /--retry must be a whole number/.test(bare.err), bare.combined.slice(0, 300));
   const zero = runPb(root, ['loop', 'run', '--auto', '--retry', '0', '--dry-run', '--max-tasks', '1']);
   ok('--retry 0 means zero retries', /retry=0/.test(zero.out), zero.combined.slice(0, 600));
   const none = runPb(root, ['loop', 'run', '--auto', '--dry-run', '--max-tasks', '1']);
   ok('no --retry still means 3', /retry=3/.test(none.out), none.combined.slice(0, 600));
-  for (const bad of ['-1', 'abc', '1.5']) {
+  for (const bad of ['-1', 'abc', '1.5', '']) {
     const r = runPb(root, ['loop', 'run', '--auto', '--retry', bad, '--dry-run']);
     ok(`--retry ${bad} is refused`, r.code !== 0 && /--retry must be a whole number/.test(r.err), r.combined.slice(0, 300));
   }

@@ -43,6 +43,13 @@ if (process.platform === 'win32') {
   const rows = readJournal(root).filter((x) => x.task === 'slow' && x.action === 'auto-execute');
   const last = rows[rows.length - 1];
   ok('an autonomous run journals the failed kill', !!last && Array.isArray(last.check_timeouts) && String(last.check_timeouts[0]?.kill_failed ?? '').startsWith('pid ') && String(last.check_timeouts[0]?.kill_failed).includes('ENOENT'), auto.combined.slice(-600) + JSON.stringify(last));
+  // a refused record leaves one 'check-run' row (no status change) carrying the failed kill
+  const before = readJournal(root).length;
+  const rec = runPb(root, ['record', '--task', 'slow', '--action', 'execute', '--status', 'done', '--notes', 'x'], { agent: 'lead', env: { ...env, PB_TASKKILL: join(nowhere, 'taskkill.exe') } });
+  const after = readJournal(root);
+  const cr = after[after.length - 1];
+  ok('a refused record journals one check-run row with the failed kill', rec.code !== 0 && after.length === before + 1 && cr.action === 'check-run' && String(cr.check_timeouts?.[0]?.kill_failed ?? '').includes('ENOENT'), rec.combined.slice(-500) + JSON.stringify(cr));
+  ok('…and does not move the task', cr.status === 'todo' || cr.status === 'blocked');
   // the leaked child sleeps 4s and exits on its own; give it the time so the temp root can go
   await new Promise((res) => setTimeout(res, 4200));
 } else {

@@ -4197,6 +4197,20 @@ function cmdRecord(args) {
           printLimitRemedies(timeouts, overflows);
         }
         console.error('Fix the work, or record --status blocked with notes. (--skip-checks overrides, and is stamped on the entry.)');
+        // A refusal writes nothing — except that a check whose tree could NOT be killed may
+        // still be running, and that must outlive the console: one 'check-run' row, no
+        // status change, carrying what was left running (checker note on plan-20261010-042).
+        const leaked = noVerdict.filter((r) => r.kill_failed);
+        if (leaked.length) {
+          const agentId = resolveAgentId(args);
+          commitIteration(task.id, {
+            ts: nowISO(), loop_id: activeLoop()?.id || 'legacy', task: task.id, agent: agentId, agent_id: agentId,
+            action: 'check-run', status: task.status, checks: 'no-verdict', result: null, files: [],
+            notes: `record --status done was refused; ${leaked.length} check(s) could not be killed and may still be running.`,
+            check_timeouts: timeoutDetail(leaked), check_output_limits: overflowDetail(leaked),
+          }, () => ({}), { agent: agentId });
+          console.error(`Journalled a 'check-run' row: ${leaked.length} check process tree(s) could not be killed.`);
+        }
         process.exit(1);
       }
       checksOutcome = 'passed';
@@ -4509,7 +4523,8 @@ function cmdLoopRunAuto(args) {
   }
   const maxTasks = Number(args['max-tasks']) || Infinity;
   // an explicit 0 means "no retries"; `Number(x) || 3` once turned it into 3
-  const retry = args.retry === undefined ? 3 : Number(args.retry);
+  // a bare --retry (no number) or an empty --retry= is a typo, not 1 or 0
+  const retry = args.retry === undefined ? 3 : (typeof args.retry === 'string' && args.retry.trim() !== '' ? Number(args.retry) : NaN);
   if (!Number.isInteger(retry) || retry < 0) {
     console.error(`--retry must be a whole number of retries, 0 or more (got ${JSON.stringify(args.retry)}).`);
     process.exit(1);
