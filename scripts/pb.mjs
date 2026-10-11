@@ -2371,6 +2371,7 @@ function graphStepIds() {
 const GRAPH_STEP_ACTION = {
   claim: 'select', release: 'select',
   verify: 'verify', checker: 'verify', 'check-run': 'verify',
+  tick: 'report', defer: 'select', ask: 'select',
   record: 'record', comment: 'record', correct: 'record', provider_rate_limit: 'record',
   reflect: 'report', report: 'report',
 };
@@ -2922,6 +2923,203 @@ function cmdState(args) {
   const c = payload.counts;
   console.log(`tasks: ${c.todo} todo · ${c.in_progress} in progress (${c.stale} stale) · ${c.blocked} blocked · ${c.done} done · ${c.needs_you} need you`);
 }
+// ============================================================================
+//  tick — the cron orchestrator's ONE deterministic pass (D27; O1–O3, V8).
+// ----------------------------------------------------------------------------
+//  The host owns the schedule (D7); pb owns the pass. A tick, over the open version:
+//    1. stops (and records why) when there is no open version, it is closing or closed,
+//       the orchestrator is paused, or only blocked-by-gate work remains;
+//    2. RELEASES claims whose journal has been quiet past stale_claim_minutes;
+//    3. ASKS a person: a question nobody asked yet, re-asked at reprompt_minutes after the
+//       first ask (1 h, 4 h, 1 day by default) — it never answers one;
+//    4. CHOOSES the next claimable task by priority, ROUTING AROUND work that is blocked,
+//       waiting on a person, held by another claim or failed its checks twice — each one it
+//       passes gets a 'defer' row naming the task it chose instead;
+//    5. DISPATCHES by proposal only: whether a tick may start agents itself is undecided
+//       (D27 condition 3), so it names the task and the command, and starts nothing;
+//    6. CHECKS THE END GOAL when every task is done or dropped: runs the version's stop
+//       checks and, if they pass, PROPOSES closing — only a person closes (V6);
+//  then writes exactly ONE 'tick' row (O3). Everything it writes is in the orchestrator's
+//  own voice (agent 'orchestrator') with its reason (S8). Same journal, backlog and clock
+//  → same plan (O1): `--now` pins the clock, and --dry-run computes the plan and writes
+//  nothing. It never decides, opens or closes a version, merges, or plans a feature (O2).
+// ============================================================================
+const TICK_AGENT = 'orchestrator';
+function tickPlan({ now = Date.now(), runStopChecks = true } = {}) {
+  const cfg = orchestratorConfig() || { every_minutes: 15, max_workers: 0, stale_claim_minutes: STALE_CLAIM_MINUTES_DEFAULT, reprompt_minutes: [60, 240, 1440], paused: false };
+  const rows = readJournal().filter((r) => !r.__malformed);
+  const v = versionMode() ? openVersion() : null;
+  const loop = v || activeLoop();
+  const plan = {
+    schema: 'agent-playbook.tick.v1',
+    at: new Date(now).toISOString(),
+    version: v ? v.version : null,
+    loop_id: loop?.id || null,
+    config: { stale_claim_minutes: cfg.stale_claim_minutes, reprompt_minutes: cfg.reprompt_minutes, max_workers: cfg.max_workers },
+    stop_reason: null,
+    release: [], ask: [], defer: [], chosen: null, dispatch: null, goal_check: null,
+  };
+  if (!loop) { plan.stop_reason = 'no-open-version'; return plan; }
+  if (v && ['closing', 'closed', 'draft'].includes(v.state)) { plan.stop_reason = `version-${v.state}`; return plan; }
+  if (cfg.paused) { plan.stop_reason = 'paused'; return plan; }
+
+  const all = backlogTasks();
+  const scope = (v ? all.filter((t) => t.version === v.version) : all).filter((t) => t.disposition !== 'dropped');
+  const rowsOf = (id) => rows.filter((r) => r.task === id);
+  const lastAt = (id) => { const own = rowsOf(id).filter((r) => r.ts); return own.length ? Date.parse(own[own.length - 1].ts) : NaN; };
+  const decided = (id) => rowsOf(id).some((r) => r.action === 'decide');
+  const needsYou = (t) => t.status !== 'done' && (t.manual || t.human) && !decided(t.id);
+  const failedTwice = (id) => {
+    let n = 0;
+    for (const r of rowsOf(id)) { if (r.checks === 'passed') n = 0; else if (r.checks === 'failed' || r.checks === 'timed-out') n += 1; }
+    return n >= 2;
+  };
+
+  // 2. release quiet claims
+  for (const t of scope.filter((x) => x.status === 'in_progress')) {
+    const at = lastAt(t.id);
+    const quietMin = Number.isFinite(at) ? Math.floor((now - at) / 60000) : null;
+    if (quietMin === null || quietMin >= cfg.stale_claim_minutes) {
+      plan.release.push({ task: t.id, holder: taskHolder(t), quiet_minutes: quietMin, reason: `no journal row for ${quietMin === null ? 'ever' : `${quietMin} min`} (limit ${cfg.stale_claim_minutes})` });
+    }
+  }
+  const released = new Set(plan.release.map((x) => x.task));
+
+  // 3. ask a person — never answer
+  for (const t of scope.filter(needsYou)) {
+    const asks = rowsOf(t.id).filter((r) => r.action === 'ask' && r.agent === TICK_AGENT);
+    const first = asks.length ? Date.parse(asks[0].ts) : null;
+    const due = !asks.length || (asks.length <= cfg.reprompt_minutes.length && now - first >= cfg.reprompt_minutes[asks.length - 1] * 60000);
+    if (!due) continue;
+    const headline = graphHeadline(t).headline;
+    const human = graphHuman(t, headline, rowsOf(t.id), all.filter((x) => (x.dependencies || []).includes(t.id) && x.status !== 'done').map((x) => x.id));
+    plan.ask.push({
+      task: t.id, attempt: asks.length + 1, question: human.question, question_source: human.question_source,
+      options: human.options.map((o) => o.id), recommended: human.recommended, recommended_by: human.recommended_by,
+      waiting_on: human.waiting_on,
+    });
+  }
+
+  // 4. choose, and route around
+  const gatePlan = computeLayerPlan({ checkGates: false, allTasks: all });
+  const plannedById = new Map(gatePlan.tasks.map((p) => [p.id, p]));
+  const open = scope.filter((t) => t.status !== 'done').sort((a, b) => prio(a) - prio(b) || a.id.localeCompare(b.id));
+  const skipped = [];
+  for (const t of open) {
+    const why = t.status === 'blocked' ? 'blocked'
+      : needsYou(t) ? 'waiting on your decision'
+      : (t.status === 'in_progress' && !released.has(t.id)) ? `held by ${taskHolder(t)}`
+      : failedTwice(t.id) ? 'failed its checks twice'
+      : unmetDeps(t, all).length ? `waiting on ${unmetDeps(t, all).join(', ')}`
+      : (plannedById.get(t.id)?.group_blocked_by?.length) ? `a lower layer is open (${plannedById.get(t.id).group_blocked_by.slice(0, 3).join(', ')})`
+      : null;
+    if (why) { skipped.push({ task: t.id, why }); continue; }
+    plan.chosen = { task: t.id, priority: prio(t), title: graphHeadline(t).headline };
+    break;
+  }
+  // A defer row is ROUTING AROUND: only for work the chosen task jumps ahead of (same or
+  // higher priority) that is stuck — blocked, waiting on a person, or failing. A claim another
+  // agent holds, or a dependency not yet done, is ordinary order, not a reroute. And the same
+  // defer (same task, same reason, same choice) is not written again on every tick.
+  const ROUTED = new Set(['blocked', 'waiting on your decision', 'failed its checks twice']);
+  if (plan.chosen) {
+    for (const sk of skipped) {
+      const t = open.find((x) => x.id === sk.task);
+      if (prio(t) > plan.chosen.priority || !ROUTED.has(sk.why)) continue;
+      const lastDefer = rowsOf(sk.task).filter((r) => r.action === 'defer').pop();
+      if (lastDefer && lastDefer.reason === sk.why && lastDefer.chose === plan.chosen.task) continue;
+      plan.defer.push({ task: sk.task, chose: plan.chosen.task, reason: sk.why });
+    }
+    // 5. dispatch: propose only (D27 condition 3)
+    plan.dispatch = {
+      mode: 'propose',
+      task: plan.chosen.task,
+      command: `pb next --claim  (or: pb worker create ${plan.chosen.task} --agent <agent> --execute)`,
+      note: cfg.max_workers > 0
+        ? `max_workers is ${cfg.max_workers}, but starting agents from a tick is not enabled: spending is undecided (D27 condition 3)`
+        : 'the orchestrator proposes; a person or a harness starts the work',
+    };
+  }
+
+  // 6. the end goal
+  const unfinished = scope.filter((t) => t.status !== 'done');
+  if (!unfinished.length && v) {
+    const commands = Array.isArray(v.stop_checks) ? v.stop_checks : [];
+    if (runStopChecks && commands.length) {
+      const results = runChecks({ id: v.id, acceptance_checks: commands });
+      const passed = results.length > 0 && results.every((x) => x.ok);
+      plan.goal_check = { ran: true, passed, failing: results.filter((x) => !x.ok).map((x) => x.cmd) };
+      plan.stop_reason = passed ? 'goal-met-propose-close' : 'goal-not-met';
+    } else {
+      plan.goal_check = { ran: false, passed: null, failing: [] };
+      plan.stop_reason = 'all-tasks-done';
+    }
+  } else if (!plan.chosen) {
+    plan.stop_reason = scope.some(needsYou) ? 'waiting-on-you' : (unfinished.length ? 'nothing-claimable' : 'no-tasks');
+  }
+  return plan;
+}
+function tickSummary(plan) {
+  const parts = [];
+  if (plan.stop_reason && !plan.chosen) parts.push({
+    'no-open-version': 'no open version — nothing to do (V8)',
+    'version-closing': 'the version is closing — nothing to do', 'version-closed': 'the version is closed — nothing to do',
+    'version-draft': 'the version is a draft — nothing to do', paused: 'paused in playbook.yaml — nothing done',
+    'waiting-on-you': 'waiting on you', 'nothing-claimable': 'nothing claimable', 'no-tasks': 'no tasks in this version',
+    'goal-met-propose-close': 'every task is done and the stop checks pass — proposing to close (a person closes)',
+    'goal-not-met': 'every task is done but a stop check fails', 'all-tasks-done': 'every task is done',
+  }[plan.stop_reason] || plan.stop_reason);
+  if (plan.release.length) parts.push(`released ${plan.release.map((x) => x.task).join(', ')}`);
+  if (plan.ask.length) parts.push(`asked about ${plan.ask.map((x) => x.task).join(', ')}`);
+  if (plan.defer.length) parts.push(`deferred ${plan.defer.map((x) => x.task).join(', ')}`);
+  if (plan.chosen) parts.push(`proposes ${plan.chosen.task}`);
+  return parts.join('; ') || 'nothing to do';
+}
+function cmdTick(args) {
+  const now = args.now ? Date.parse(String(args.now)) : Date.now();
+  if (!Number.isFinite(now)) { console.error('--now must be an ISO time'); process.exit(1); }
+  const dry = !!args['dry-run'];
+  const plan = tickPlan({ now, runStopChecks: true });
+  plan.summary = tickSummary(plan);
+  if (dry) {
+    if (args.json) return printJson({ ...plan, dry_run: true });
+    console.log(`[dry-run] tick ${plan.version || plan.loop_id || '(no version)'}: ${plan.summary}`);
+    for (const x of plan.release) console.log(`  would release ${x.task} — ${x.reason}`);
+    for (const x of plan.ask) console.log(`  would ask about ${x.task} (attempt ${x.attempt}): ${x.question}`);
+    for (const x of plan.defer) console.log(`  would defer ${x.task} — ${x.reason}; chose ${x.chose}`);
+    if (plan.dispatch) console.log(`  proposes ${plan.dispatch.task}: ${plan.dispatch.command}`);
+    return;
+  }
+  const loopId = plan.loop_id || 'legacy';
+  const ts = new Date(now).toISOString();
+  const row = (task, action, notes, extra = {}) => ({
+    // a card's row carries the CARD's loop (the version guard refuses a row that names
+    // another one); the tick row itself carries the version's
+    ts, loop_id: (() => { const c = backlogTasks().find((t) => t.id === task); return c ? c.loop_id : loopId; })(), task, agent: TICK_AGENT, agent_id: TICK_AGENT, action, status: extra.status || (backlogTasks().find((t) => t.id === task)?.status ?? 'event'),
+    checks: 'none', result: null, files: [], notes, ...extra,
+  });
+  for (const x of plan.release) {
+    const entry = readBacklogState()[x.task] || {};
+    commitIteration(x.task, row(x.task, 'release', `The orchestrator released this claim: ${x.reason}.`, { status: 'todo', claimed_by: x.holder, released_token: entry.claim_token || undefined }),
+      () => ({ status: 'todo', __unset: ['claimed_by', 'agent_id', 'claim_token', 'claim_token_issued_at', 'claimed_at'], released_at: ts, released_by: TICK_AGENT }),
+      { agent: TICK_AGENT });
+  }
+  for (const x of plan.ask) {
+    commitIteration(x.task, row(x.task, 'ask', `${x.attempt > 1 ? `Asking again (${x.attempt}): ` : ''}${x.question}${x.recommended ? ` Recommended: ${x.recommended} (${x.recommended_by}).` : ''}`, { intent: 'question', attempt: x.attempt, options: x.options }), () => ({}), { agent: TICK_AGENT });
+  }
+  for (const x of plan.defer) {
+    commitIteration(x.task, row(x.task, 'defer', `Deferred: ${x.reason}. The orchestrator took ${x.chose} instead.`, { chose: x.chose, reason: x.reason }), () => ({}), { agent: TICK_AGENT });
+  }
+  // O3: exactly one tick row, whatever happened
+  const tickTask = plan.version ? `version:${plan.loop_id}` : 'orchestrator';
+  appendJournal({ ...row(tickTask, 'tick', `Tick: ${plan.summary}`, { status: 'event' }), tick: {
+    stop_reason: plan.stop_reason, released: plan.release.map((x) => x.task), asked: plan.ask.map((x) => x.task),
+    deferred: plan.defer.map((x) => x.task), chosen: plan.chosen?.task || null, dispatch: plan.dispatch, goal_check: plan.goal_check,
+  } });
+  if (args.json) return printJson(plan);
+  console.log(`tick ${plan.version || plan.loop_id || '(no version)'}: ${plan.summary}`);
+}
+
 function cmdGraph(args) {
   const payload = graphPayload({ version: typeof args.version === 'string' ? args.version : undefined });
   if (args.json) return printJson(payload);
@@ -6820,6 +7018,14 @@ function cmdHelp() {
     runcard list|show <id> [--json]
                            Portable RunCard projection for UI/runtime integrations, including
                            the task's ordered journal rows (its steering thread and history)
+    tick [--dry-run] [--json] [--now <iso>]
+                           ONE orchestrator pass over the open version: release quiet claims,
+                           ask open questions (re-asked on a schedule; never answered), choose
+                           the next task and route around blocked / waiting / failing work
+                           (a defer row each), PROPOSE dispatch, check the end goal and propose
+                           closing; exactly one tick row. Limits: orchestrator: in playbook.yaml
+                           (every_minutes, max_workers, stale_claim_minutes, reprompt_minutes,
+                           paused). --dry-run writes nothing. Never decides, closes or merges.
     state [--json]         The state bar's projection (agent-playbook.state.v1): open version,
                            phase, orchestrator state and last tick, counts (needs you, stale),
                            and journal_seq — the change token a room polls with. Read-only.
@@ -7100,6 +7306,7 @@ if (isMainModule) {
   case 'runcard': cmdRunCard(args); break;
   case 'graph': cmdGraph(args); break;
   case 'state': cmdState(args); break;
+  case 'tick': cmdTick(args); break;
   case 'worker': cmdWorker(args); break;
   case 'record': cmdRecord(args); break;
   case 'comment': cmdComment(args); break;
