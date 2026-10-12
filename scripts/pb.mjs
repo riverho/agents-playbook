@@ -7021,7 +7021,32 @@ function cmdUi(args) {
   child.on('exit', (code) => process.exit(code ?? 0));
 }
 
+// A package name npm accepts, and one that names the workspace: lowercase, no leading
+// dot/dash/underscore. A hidden folder (`<repo>/.agents-playbook`) borrows its parent's
+// name — `myrepo-agents-playbook`, not the '-agents-playbook' the old rule produced.
+function scaffoldPackageName(targetAbs) {
+  const clean = (s) => String(s).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/-{2,}/g, '-').replace(/^[._-]+|[._-]+$/g, '');
+  const base = basename(targetAbs);
+  let name = clean(base);
+  if (base.startsWith('.') || !name) name = [clean(basename(dirname(targetAbs))), name].filter(Boolean).join('-');
+  return (name || 'agent-playbook').slice(0, 214).replace(/[._-]+$/, '');
+}
+
+const SCAFFOLD_FLAGS = new Set(['_', 'target', 'with-ui', 'agent']);
+
 function cmdScaffold(args) {
+  // A flag scaffold does not read used to vanish silently (`--goal` looked accepted and
+  // did nothing). Refuse it before anything is written.
+  const unknown = Object.keys(args).filter((k) => !SCAFFOLD_FLAGS.has(k));
+  if (args.target === true) {
+    console.error('pb scaffold: --target needs a directory. Nothing was written.');
+    process.exit(1);
+  }
+  if (unknown.length || args._.length > 1) {
+    const what = unknown.length ? `unknown flag${unknown.length > 1 ? 's' : ''} ${unknown.map((k) => `--${k}`).join(', ')}` : `more than one target (${args._.join(', ')})`;
+    console.error(`pb scaffold: ${what}. Usage: pb scaffold --target <dir> [--with-ui [<built app dir>]]. Nothing was written.`);
+    process.exit(1);
+  }
   const target = args.target || args._[0] || '.';
   const targetAbs = resolve(process.cwd(), target);
   if (targetAbs === ROOT) {
@@ -7068,7 +7093,7 @@ function cmdScaffold(args) {
   // the dep + namespaced pb scripts so `npm install` makes the target self-running.
   // Never clobber an existing manifest (bridge into it by hand — flagged below).
   if (!tHas('package.json')) {
-    const name = basename(targetAbs).replace(/[^a-z0-9-]/gi, '-').toLowerCase() || 'agent-playbook';
+    const name = scaffoldPackageName(targetAbs);
     const pkg = {
       name, private: true, type: 'module',
       description: 'Agent-Playbook working instance (scaffolded engine).',
