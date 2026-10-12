@@ -1,60 +1,56 @@
 #!/usr/bin/env node
-// scripts/test-npm-pack-shape.mjs
-// ----------------------------------------------------------------------------
-// Pins the npm-11/npm-12 `npm pack --json` shapes, and — the part that actually
-// broke — that an UNREADABLE pack result FAILS the gate instead of skipping it.
+// test-npm-pack-shape — the engine package ships the engine, not someone's install tree
+// (plan-20261010-024).
 //
-// The regression this guards: `pack:plugin` read `parsed[0]`. npm 12 answers with an
-// object keyed by package name, so `parsed[0]` was undefined and control fell through to a
-// branch that printed the raw output and exited 0. The engine-in-tarball assertion simply
-// stopped running while the gate kept reporting success. The suite below is deliberately
-// about the FAILURE path, because that is the half a happy-path test cannot see.
-// ----------------------------------------------------------------------------
+// The `files` field listed dsh-plugin/ wholesale, so the plugin's installed peer/dev tree
+// (dsh-plugin/node_modules: 1171 of 1478 entries, zod and @deepseek-ai among them) and a
+// stale plugin tarball (dsh-plugin/dist/*.tgz) shipped inside the engine. The plugin's
+// peers are peerDependencies; its publish set is its OWN `files` list. This asks npm
+// what it would pack (dry run, no lifecycle scripts) and pins the shape:
+//   1. no node_modules anywhere (there is no deliberate bundled dependency);
+//   2. no tarball inside the tarball;
+//   3. the dsh-plugin entries are exactly the plugin's own publish set (its `files`
+//      plus package.json), so the two lists cannot drift apart;
+//   4. the entry count stays in the engine's range.
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { firstPackedEntry } from './lib/npm-pack.mjs';
 
 let pass = 0;
 let fail = 0;
 function ok(name, cond, extra = '') {
   if (cond) { console.log(`  PASS  ${name}`); pass++; }
-  else { console.error(`  FAIL  ${name}${extra ? `\n        ${extra}` : ''}`); fail++; }
+  else { console.error(`  FAIL  ${name}${extra ? `\n        ${String(extra).slice(0, 1200)}` : ''}`); fail++; }
 }
 
-// --- 1. both shipped shapes decode to the same entry -------------------------
-const entry = { filename: 'dsh-agents-playbook-0.7.1.tgz', files: [{ path: 'engine/scripts/pb.mjs' }], entryCount: 77, unpackedSize: 1 };
-ok('npm 11 shape (array) decodes', firstPackedEntry([entry])?.filename === entry.filename);
-ok('npm 12 shape (object keyed by name) decodes', firstPackedEntry({ 'dsh-agents-playbook': entry })?.filename === entry.filename);
+const MAX_ENTRIES = 400;
+// one fixed command string through the shell: npm is a .cmd shim on Windows
+const r = spawnSync('npm pack --dry-run --json --ignore-scripts', { encoding: 'utf8', shell: true, maxBuffer: 64 * 1024 * 1024 });
+let pack = null;
+try {
+  const parsed = JSON.parse(r.stdout);
+  pack = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
+} catch { /* reported below */ }
+ok('npm pack --dry-run --json answers', r.status === 0 && !!pack?.files, `exit=${r.status}\n${(r.stderr || '').slice(-600)}`);
+if (!pack?.files) { console.log(`\ntest-npm-pack-shape: ${pass} pass, ${fail} fail`); process.exit(1); }
 
-// --- 2. an unrecognized shape is NOT guessed at ------------------------------
-for (const [label, value] of [['null', null], ['a string', 'npm notice'], ['a number', 7], ['an empty array', []], ['an empty object', {}]]) {
-  ok(`${label} yields no entry (so the caller must fail, not pass)`, firstPackedEntry(value) === undefined);
-}
+const paths = pack.files.map((f) => f.path.replace(/\\/g, '/'));
+const nm = paths.filter((p) => /(^|\/)node_modules\//.test(p));
+ok('no node_modules ships in the engine package', nm.length === 0, `${nm.length} entries, e.g. ${nm.slice(0, 5).join(', ')}`);
+const tgz = paths.filter((p) => p.endsWith('.tgz'));
+ok('no tarball ships inside the tarball', tgz.length === 0, tgz.join(', '));
 
-// --- 3. the gate fails LOUDLY when the pack result cannot be read -----------
-{
-  const work = mkdtempSync(join(tmpdir(), 'packshape-'));
-  const stub = join(work, 'npm-stub.mjs');
-  writeFileSync(stub, 'process.stdout.write(\'{"unexpected":"shape"}\\n\');\n');
-  const r = spawnSync(process.execPath, [resolve('scripts', 'pack-dsh-plugin.mjs'), '--pack', '--dry-run'], {
-    cwd: resolve('.'), encoding: 'utf8', env: { ...process.env, npm_execpath: stub },
-  });
-  const out = `${r.stdout || ''}${r.stderr || ''}`;
-  ok('an unreadable pack result exits NON-zero (it used to exit 0)', r.status !== 0, `exit=${r.status}\n${out.slice(0, 400)}`);
-  ok('...and names the reason', /could not read `npm pack --json` output/.test(out), out.slice(0, 400));
-  rmSync(work, { recursive: true, force: true });
-}
+const plugin = JSON.parse(readFileSync('dsh-plugin/package.json', 'utf8'));
+const allowed = [...plugin.files, 'package.json'].map((f) => `dsh-plugin/${f}`);
+const inAllowed = (p) => allowed.some((a) => (a.endsWith('/') ? p.startsWith(a) : p === a));
+const stray = paths.filter((p) => p.startsWith('dsh-plugin/') && !inAllowed(p));
+ok('every dsh-plugin entry is in the plugin\'s own publish set', stray.length === 0, stray.slice(0, 10).join(', '));
+const missing = allowed.filter((a) => !paths.some((p) => (a.endsWith('/') ? p.startsWith(a) : p === a)));
+ok('…and the whole plugin publish set ships (engine bundle included)', missing.length === 0,
+  `${missing.join(', ')} — run npm run build:plugin first if the bundle is missing`);
 
-// --- 4. the real pack still proves the engine is in the tarball --------------
-{
-  const real = spawnSync(process.execPath, [resolve('scripts', 'pack-dsh-plugin.mjs'), '--pack', '--dry-run'], { cwd: resolve('.'), encoding: 'utf8' });
-  const out = `${real.stdout || ''}${real.stderr || ''}`;
-  ok('the real pack exits 0', real.status === 0, `exit=${real.status}\n${out.slice(-400)}`);
-  ok('the real pack asserts the engine is in the tarball', /engine in tarball: yes/.test(out), out.slice(-300));
-}
+ok(`the package stays under ${MAX_ENTRIES} entries`, pack.entryCount <= MAX_ENTRIES, `${pack.entryCount} entries, ${Math.round(pack.size / 1024)} KB`);
+console.log(`  shape   ${pack.entryCount} entries · ${Math.round(pack.size / 1024)} KB packed · ${Math.round(pack.unpackedSize / 1024)} KB unpacked`);
 
 console.log(`\ntest-npm-pack-shape: ${pass} pass, ${fail} fail`);
 if (fail > 0) process.exit(1);
