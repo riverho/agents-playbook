@@ -4608,9 +4608,17 @@ function cmdPlan(args) {
   // earlier than its dependencies). Refusing it here is the difference between a CLI
   // that cannot write a broken task and one that writes it and blames the gate.
   // checkGates:false — planning never runs a gate command.
+  //
+  // Refuse every problem the candidate INTRODUCES, whichever task a rule attributes it to.
+  // Filtering on p.task === candidate missed a problem landing on another card (a task
+  // that already named this id as a dependency becomes layer-too-early once it exists)
+  // and any rule with no task at all (a cycle); validate reports both. Problems already
+  // there before the candidate are not this plan's to refuse.
   if (depIds.length || task.layer) {
+    const key = (p) => `${p.code}|${p.task ?? ''}|${p.message}`;
+    const before = new Set(computeLayerPlan({ allTasks: backlogTasks() }).problems.map(key));
     const probe = computeLayerPlan({ allTasks: [...backlogTasks(), task] });
-    const mine = probe.problems.filter((p) => p.task === task.id);
+    const mine = probe.problems.filter((p) => !before.has(key(p)));
     if (mine.length) {
       console.error(`Refusing to plan [${task.id}] — it would make the plan invalid (\`pb validate\` would fail):`);
       for (const p of mine) console.error(`  ! ${p.message}`);

@@ -278,6 +278,30 @@ const CHECK = 'node -e process.exit(0)';
 }
 
 // ============================================================================
+//  3b. a problem the candidate causes on ANOTHER card is still refused
+//      (plan-20261010-004, checker finding B on plan-20261010-002)
+// ============================================================================
+// The probe used to keep only problems attributed to the candidate. A task that already
+// names the candidate's id as a dependency, declared in a LOWER layer, turns layer-order
+// RED the moment the candidate exists in a higher layer — and that problem is attributed
+// to the OTHER task, so plan wrote the card and validate failed on it.
+{
+  const nextId = `plan-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-001`;
+  const fx = makeFixture({
+    layers: 'layers:\n  - {id: L0, name: substrate}\n  - {id: L1, name: surface}\n',
+    tasks: 'tasks:\n  - {id: base-task, title: the substrate, status: todo, skill: run-task, mode: coding, priority: 1, layer: L0, acceptance_checks: ["' + CHECK + '"]}\n' +
+      `  - {id: waiter, title: waits on a card not yet planned, status: todo, skill: run-task, mode: coding, priority: 2, layer: L0, dependencies: [${nextId}], acceptance_checks: ["` + CHECK + '"]}\n',
+  });
+  const beforeYaml = fx.backlogText();
+  const validateBefore = fx.pb(['validate']).combined;
+  const elsewhere = fx.pb(['plan', '--goal', 'the awaited card', '--layer', 'L1', '--dep', 'base-task', '--check', CHECK], { agent: 'worker' });
+  ok('a candidate that would make ANOTHER card invalid is refused (the problem is attributed to that card)',
+    elsewhere.code === 1 && /waiter/.test(elsewhere.combined) && /Nothing was written/.test(elsewhere.combined), elsewhere.combined.slice(0, 600));
+  ok('that refusal wrote nothing to the backlog', fx.backlogText() === beforeYaml, fx.backlogText().slice(-400));
+  ok('validate reports no NEW problem after the refusal', fx.pb(['validate']).combined === validateBefore);
+}
+
+// ============================================================================
 //  4. a hand-edited bad dependency: validate RED, then GREEN — the file, not a cache
 // ============================================================================
 {
