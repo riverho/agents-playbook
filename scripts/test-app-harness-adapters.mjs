@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeFixture, makeSuite, readJournal } from './test-fixture-playbook.mjs';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER = join(ROOT, 'apps', 'flow-room', 'server.mjs');
@@ -30,11 +31,11 @@ const t = makeSuite('test-app-harness-adapters');
 const { ok } = t;
 
 // ── 1. detection ───────────────────────────────────────────────────────────
-const bin = mkdtempSync(join(tmpdir(), 'pb-harness-bin-'));
+const bin = tempDir('pb-harness-bin-');
 for (const name of ['claude', 'codex', 'opencode']) {
   writeFileSync(join(bin, process.platform === 'win32' ? `${name}.cmd` : name), '@echo off\r\nexit 0\r\n', { mode: 0o755 });
 }
-const empty = mkdtempSync(join(tmpdir(), 'pb-harness-empty-'));
+const empty = tempDir('pb-harness-empty-');
 {
   const three = detectHarnesses({ PATH: bin, PATHEXT: '.COM;.EXE;.BAT;.CMD' }).map((h) => h.id);
   ok('detect() reports exactly the three CLIs on PATH', three.join() === 'claude,codex,opencode', three.join());
@@ -45,7 +46,7 @@ const empty = mkdtempSync(join(tmpdir(), 'pb-harness-empty-'));
 
 // ── 1b. a .cmd shim under a path WITH A SPACE runs (checker note: 'Program' is not recognized) ──
 if (process.platform === 'win32') {
-  const spaced = mkdtempSync(join(tmpdir(), 'pb harness spaced '));
+  const spaced = tempDir('pb harness spaced ');
   writeFileSync(join(spaced, 'claude.cmd'), ['@echo off', 'more', ''].join(String.fromCharCode(13, 10)));
   const got = await new Promise((resolveRun) => {
     let out = '';

@@ -11,14 +11,15 @@ import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, cpSync, symlinkSyn
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 const repoRoot = process.cwd();
-const root = mkdtempSync(join(tmpdir(), 'pbblogwatch-'));
+const root = tempDir('pbblogwatch-');
 for (const d of ['scripts', 'memory', 'modes', 'skills', 'processes']) {
   mkdirSync(join(root, d), { recursive: true });
 }
 copyFileSync('scripts/pb.mjs', join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 const pb = join(root, 'scripts/pb.mjs');
 
 // Copy the REAL pack + coding mode into the temp playbook (exercise real artifacts).

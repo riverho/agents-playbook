@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MONITOR = resolve(ROOT, 'scripts/pb-daily-monitor.mjs');
@@ -30,7 +31,7 @@ function runMonitor(configPath) {
   }
 }
 
-const dir = mkdtempSync(resolve(tmpdir(), 'pb-fieldval-'));
+const dir = tempDir('pb-fieldval-');
 try {
   // 1. BAD: item omits source/criteria (the goal_template fields) -> must be rejected.
   const bad = resolve(dir, 'bad.yaml');

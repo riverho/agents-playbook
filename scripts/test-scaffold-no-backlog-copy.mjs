@@ -32,6 +32,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_BACKLOG = join(ROOT, 'memory', 'backlog.yaml');
@@ -62,7 +63,7 @@ const sourceRuntime = RUNTIME_ONLY.map((f) => [f, hashes(join(ROOT, 'memory', f)
 // the runtime files must exist in the SOURCE for the "not copied" assertions to mean anything
 check(sourceIds.size > 0, 'the source backlog has no task ids — the probe would be vacuous');
 
-const work = mkdtempSync(join(tmpdir(), 'pb-scaffold-probe-'));
+const work = tempDir('pb-scaffold-probe-');
 const repoDir = join(work, 'myrepo');
 const target = join(repoDir, '.agents-playbook');
 mkdirSync(repoDir, { recursive: true });

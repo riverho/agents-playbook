@@ -94,6 +94,10 @@ function cmdBuild(modeId, args) {
   // Stage: pack contents + mode.yaml (descriptor copy) so the archive is the
   // complete unit while the manifest walk of modes/<id>/ stays descriptor-free.
   const staging = mkdtempSync(resolve(tmpdir(), 'pb-pack-stage-'));
+  // fail() exits the process, and a `finally` does not run on process.exit: every refused
+  // run used to leave this staging dir in the temp folder. Remove it on exit too.
+  const dropStaging = () => rmSync(staging, { recursive: true, force: true });
+  process.on('exit', dropStaging);
   try {
     cpSync(packDir, staging, { recursive: true });
     copyFileSync(descriptor, resolve(staging, 'mode.yaml'));
@@ -110,7 +114,7 @@ function cmdBuild(modeId, args) {
     writeFileSync(`${artifact}.sha256`, `${hash}  ${filename}\n`, 'utf8');
     console.log(`${artifact}  ${hash}`);
   } finally {
-    rmSync(staging, { recursive: true, force: true });
+    dropStaging();
   }
 }
 
@@ -156,6 +160,10 @@ function cmdInstall(file, args) {
   const engineVersion = yaml.load(readFileSync(playbookPath, 'utf8'))?.version;
 
   const staging = mkdtempSync(resolve(tmpdir(), 'pb-pack-install-'));
+  // fail() exits the process, and a `finally` does not run on process.exit: every refused
+  // run used to leave this staging dir in the temp folder. Remove it on exit too.
+  const dropStaging = () => rmSync(staging, { recursive: true, force: true });
+  process.on('exit', dropStaging);
   try {
     const untar = spawnSync('tar', ['-xzf', archive, '-C', staging], { encoding: 'utf8' });
     if (untar.status !== 0) fail(`could not extract: ${(untar.stderr || '').trim()}`);
@@ -202,7 +210,7 @@ function cmdInstall(file, args) {
     console.log(`installed ${modeId}@${manifest.version} → ${packDir}`);
     console.log(`registered: playbook.yaml ${registeredMap ? 'added' : 'already present'}, modes/index.yaml ${registeredCatalog ? 'added' : catalogPath && existsSync(catalogPath) ? 'already present' : 'absent'}`);
   } finally {
-    rmSync(staging, { recursive: true, force: true });
+    dropStaging();
   }
 }
 

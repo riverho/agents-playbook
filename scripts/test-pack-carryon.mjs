@@ -11,11 +11,12 @@ import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, symlinkSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
-const root = mkdtempSync(join(tmpdir(), 'pbcarry-'));
+const root = tempDir('pbcarry-');
 for (const d of ['scripts', 'skills', 'processes', 'modes']) mkdirSync(join(root, d), { recursive: true });
 copyFileSync('scripts/check-modes.mjs', join(root, 'scripts/check-modes.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 const checker = join(root, 'scripts/check-modes.mjs');
 
 // base playbook: a valid coding mode (global indices, exempt) + the packmode under test.

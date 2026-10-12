@@ -7,13 +7,14 @@ import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, exis
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, execSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
-const root = mkdtempSync(join(tmpdir(), 'pbwin-'));
+const root = tempDir('pbwin-');
 for (const d of ['scripts', 'memory', 'processes', 'skills', 'artifacts/reports']) {
   mkdirSync(join(root, d), { recursive: true });
 }
 copyFileSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 
 const master = [
   'name: win32-runner-test',

@@ -17,6 +17,7 @@ import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import yaml from 'js-yaml';
 import { BASE_ENV } from './test-fixture-playbook.mjs';
+import { tempDir } from './lib/test-temp.mjs';
 
 const repo = process.cwd();
 const roots = [];
@@ -31,7 +32,7 @@ const UNRELATED = 'active: loop-design-001\nloops:\n  - id: loop-design-001\n   
   `    started_at: ${new Date().toISOString()}\n    goal: Paint the design for approval\n    stop: design approved\n    mode: coding\n`;
 
 function buildRoot(loops) {
-  const root = mkdtempSync(join(tmpdir(), 'pbmoninert-'));
+  const root = tempDir('pbmoninert-');
   roots.push(root);
   for (const d of ['scripts/lib', 'memory', 'modes', 'skills', 'processes', 'artifacts/reports']) mkdirSync(join(root, d), { recursive: true });
   for (const f of ['scripts/pb.mjs', 'scripts/pb-daily-monitor.mjs', 'scripts/lib/loop-lib.mjs', 'modes/coding.yaml', 'modes/blogwatch.yaml']) {

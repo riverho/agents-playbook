@@ -27,6 +27,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const problems = [];
@@ -38,7 +39,7 @@ const LATE_MS = 4000;       // when the fixtures write their marker, well after 
 const LINGER_MS = 1000;             // each green follow-up check: under the limit, so it PASSES
 const LINGERS = 5;                 // ...and five of them keep pb alive well past the late write
 
-const work = mkdtempSync(join(tmpdir(), 'pb-tree-kill-'));
+const work = tempDir('pb-tree-kill-');
 const repo = join(work, 'repo');
 const pbRoot = join(repo, '.agents-playbook');
 const pbTmp = join(work, 'tmp');      // the engine's temp dir for this test: pid files land here

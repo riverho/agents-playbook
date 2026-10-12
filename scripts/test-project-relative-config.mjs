@@ -13,11 +13,12 @@ import { tmpdir } from 'node:os';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MONITOR = resolve(ROOT, 'scripts/pb-daily-monitor.mjs');
 
-const ws = mkdtempSync(resolve(tmpdir(), 'pb-relcfg-'));
+const ws = tempDir('pb-relcfg-');
 try {
   const proj = resolve(ws, 'tproj');
   mkdirSync(resolve(proj, 'scaffolds'), { recursive: true });

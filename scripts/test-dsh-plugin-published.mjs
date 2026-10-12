@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { firstPackedEntry } from './lib/npm-pack.mjs';
+import { tempDir } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -34,7 +35,7 @@ if (!existsSync(join(PLUGIN, 'engine', 'scripts', 'pb.mjs'))) {
   process.exit(0);
 }
 
-const work = mkdtempSync(join(tmpdir(), 'pbpub-'));
+const work = tempDir('pbpub-');
 const npmCli = process.env.npm_execpath || join(process.env.APPDATA || '', 'npm', 'node_modules', 'npm', 'bin', 'npm-cli.js');
 const npm = [process.env.npm_execpath ? process.execPath : 'node', process.env.npm_execpath ? npmCli : npmCli];
 
@@ -76,7 +77,7 @@ const installed = join(work, 'node_modules', pluginPkg.name);
   // Its declared `js-yaml` dependency is resolved by walking up from the plugin's
   // own location, which is exactly how the engine it copies into the workspace
   // later finds it too.
-  const hostRoot = mkdtempSync(join(tmpdir(), 'pbpubhost-'));
+  const hostRoot = tempDir('pbpubhost-');
   const hostPlugin = join(hostRoot, 'node_modules', pluginPkg.name);
   mkdirSync(dirname(hostPlugin), { recursive: true });
   cpSync(installed, hostPlugin, { recursive: true });

@@ -19,6 +19,7 @@ import { mkdirSync, mkdtempSync, copyFileSync, writeFileSync, symlinkSync, readF
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -28,12 +29,12 @@ function ok(name, cond, extra = '') {
 }
 
 // --- a real playbook to operate on -------------------------------------------
-const root = mkdtempSync(join(tmpdir(), 'pbplugidx-'));
+const root = tempDir('pbplugidx-');
 for (const d of ['scripts', 'memory', 'modes', 'processes', 'skills/run-task', 'artifacts/reports']) {
   mkdirSync(join(root, d), { recursive: true });
 }
 copyFileSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 // A COMPLETE playbook: `validate --task` (action=check) validates the whole book, so a
 // partial fixture would make the check action fail for reasons unrelated to the plugin.
 writeFileSync(join(root, 'SKILL.md'), '---\nname: t\ndescription: t\n---\n');

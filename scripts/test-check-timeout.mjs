@@ -30,6 +30,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tempDir } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -60,7 +61,7 @@ const FAIL_JS = 'process.exit(3);\n';
 const CHATTY_JS = "process.stdout.write('x'.repeat(2 * 1024 * 1024));\n";
 
 function makeFixture({ tasks }) {
-  const root = mkdtempSync(join(tmpdir(), 'pbtimeout-'));
+  const root = tempDir('pbtimeout-');
   for (const d of ['scripts', 'memory', 'modes', 'skills/run-task', 'processes', 'artifacts/reports']) {
     mkdirSync(join(root, d), { recursive: true });
   }

@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 const repoRoot = process.cwd();
 let pass = 0, fail = 0;
@@ -30,14 +31,14 @@ function ok(name, cond, extra = '') {
 }
 
 function baseRoot() {
-  const root = mkdtempSync(join(tmpdir(), 'pbgen-'));
+  const root = tempDir('pbgen-');
   for (const d of ['scripts', 'scripts/lib', 'memory', 'modes', 'skills', 'processes', 'artifacts/reports']) {
     mkdirSync(join(root, d), { recursive: true });
   }
   copyFileSync(resolve(repoRoot, 'scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
   copyFileSync(resolve(repoRoot, 'scripts/pb-daily-monitor.mjs'), join(root, 'scripts/pb-daily-monitor.mjs'));
   copyFileSync(resolve(repoRoot, 'scripts/lib/loop-lib.mjs'), join(root, 'scripts/lib/loop-lib.mjs'));
-  try { symlinkSync(resolve(repoRoot, 'node_modules'), join(root, 'node_modules')); } catch {}
+  copyModules(resolve(repoRoot, 'node_modules'), join(root, 'node_modules'));
   copyFileSync(resolve(repoRoot, 'modes/coding.yaml'), join(root, 'modes/coding.yaml'));
   writeFileSync(join(root, 'skills/index.yaml'), 'skills: []\n');
   writeFileSync(join(root, 'processes/index.yaml'), 'processes: []\n');

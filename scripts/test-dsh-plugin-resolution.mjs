@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { tempDir } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -43,7 +44,7 @@ function harnessDir() {
 }
 
 // --- build a profile-shaped directory ---------------------------------------
-const work = mkdtempSync(join(tmpdir(), 'pbresolve-'));
+const work = tempDir('pbresolve-');
 const dshHome = join(work, 'dsh');
 const profile = join(dshHome, 'profiles', 'probe');
 mkdirSync(profile, { recursive: true });

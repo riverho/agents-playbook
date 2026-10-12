@@ -11,13 +11,14 @@ import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, symlinkSync } from
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
-const root = mkdtempSync(join(tmpdir(), 'pbpack-'));
+const root = tempDir('pbpack-');
 for (const d of ['scripts', 'memory', 'modes', 'skills', 'processes', 'modes/packmode/skills']) {
   mkdirSync(join(root, d), { recursive: true });
 }
 copyFileSync('scripts/pb.mjs', join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 const pb = join(root, 'scripts/pb.mjs');
 
 writeFileSync(join(root, 'playbook.yaml'),

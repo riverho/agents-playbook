@@ -2,11 +2,12 @@ import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, syml
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
-const root = mkdtempSync(join(tmpdir(), 'pbworker-'));
+const root = tempDir('pbworker-');
 for (const d of ['scripts', 'memory', 'processes', 'skills/run-task', 'artifacts/reports', 'modes']) mkdirSync(join(root, d), { recursive: true });
 copyFileSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 writeFileSync(join(root, 'SKILL.md'), '# test skill\n');
 writeFileSync(join(root, 'memory/project-memory.md'), '# memory\n');
 writeFileSync(join(root, 'memory/journal.ndjson'), '');
@@ -38,18 +39,34 @@ writeFileSync(join(root, 'playbook.yaml'), [
   'default_mode: coding', 'modes:', '  coding: modes/coding.yaml', 'guardrails:', '  allowed_statuses: [todo, in_progress, blocked, done]', ''
 ].join('\n'));
 writeFileSync(join(root, 'modes/coding.yaml'), 'id: coding\ndirective: ""\n');
-execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
-execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
-execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root });
-execFileSync('git', ['add', '.'], { cwd: root });
-execFileSync('git', ['commit', '-m', 'seed'], { cwd: root, stdio: 'ignore' });
+// Fail fast, never stall (plan-20261009-008): git worktree add/remove in %TEMP% once hung
+// this suite for 7-10 minutes. Every child gets a deadline, and a miss says which call.
+const GIT_MS = Number(process.env.PB_TEST_GIT_MS) || 60_000;
+const PB_MS = Number(process.env.PB_TEST_PB_MS) || 180_000;
+function timed(file, args, opts, ms) {
+  try { return execFileSync(file, args, { ...opts, timeout: ms, killSignal: 'SIGKILL' }); }
+  catch (err) {
+    if (err.code === 'ETIMEDOUT' || (err.signal && err.status === null)) {
+      const what = file === process.execPath ? `pb ${args.slice(1).join(' ')}` : `${file} ${args.join(' ')}`;
+      throw new Error(`TIMED OUT after ${ms / 1000}s: ${what} (in ${opts.cwd}). Failing fast instead of stalling.`);
+    }
+    throw err;
+  }
+}
+const git = (args, opts = {}) => timed('git', args, { cwd: root, ...opts }, GIT_MS);
+git(['init'], { stdio: 'ignore' });
+git(['config', 'user.email', 'test@example.com']);
+git(['config', 'user.name', 'Test']);
+git(['add', '.']);
+git(['commit', '-m', 'seed'], { stdio: 'ignore' });
 
-const pb = (args) => execFileSync(process.execPath, [join(root, 'scripts/pb.mjs'), ...args], { cwd: root, encoding: 'utf8' });
+const pb = (args) => timed(process.execPath, [join(root, 'scripts/pb.mjs'), ...args], { cwd: root, encoding: 'utf8' }, PB_MS);
 // pbFail: expect a clean nonzero exit, and return what the user actually saw.
 const pbFail = (args, label) => {
   try {
     pb(args);
   } catch (err) {
+    if (/^TIMED OUT/.test(err.message)) throw err;
     if (err.status === null || err.status === undefined) throw new Error(`${label}: process died without an exit code`);
     const text = `${err.stdout || ''}${err.stderr || ''}`;
     if (/^\s*at .*\(node:internal/m.test(text)) throw new Error(`${label}: leaked a raw node stack trace:\n${text}`);
@@ -101,7 +118,7 @@ if (ready.checks_outcome !== 'passed') throw new Error(`expected checks_outcome 
 const exec1 = JSON.parse(pb(['worker', 'create', 'task-worker', '--agent', 'codex', '--execute', '--json']));
 if (exec1.execute !== true) throw new Error('--execute must be reflected in the payload');
 if (!existsSync(exec1.worktree)) throw new Error('--execute did not create the worktree directory');
-const worktrees = execFileSync('git', ['worktree', 'list'], { cwd: root, encoding: 'utf8' });
+const worktrees = git(['worktree', 'list'], { encoding: 'utf8' });
 if (!worktrees.includes(exec1.branch)) throw new Error('git does not list the new worker worktree');
 if (readState()['task-worker'].worker?.status !== 'created') throw new Error('worker state not recorded as created');
 
@@ -115,7 +132,7 @@ if (!existsSync(exec1.worktree)) throw new Error('dry-run remove must not delete
 pb(['worker', 'remove', 'task-worker', '--delete-branch', '--force', '--execute']);
 if (existsSync(exec1.worktree)) throw new Error('worker remove --execute did not delete the worktree');
 if (readState()['task-worker'].worker?.status !== 'removed') throw new Error('worker state not recorded as removed');
-const afterRemove = execFileSync('git', ['branch', '--list', exec1.branch], { cwd: root, encoding: 'utf8' });
+const afterRemove = git(['branch', '--list', exec1.branch], { encoding: 'utf8' });
 if (afterRemove.trim()) throw new Error('--delete-branch did not delete the worker branch');
 // Teardown makes the slot reusable rather than permanently poisoned.
 pb(['worker', 'create', 'task-worker', '--agent', 'codex', '--execute']);

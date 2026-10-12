@@ -7,8 +7,9 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import yaml from 'js-yaml';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
-const root = mkdtempSync(join(tmpdir(), 'pbcoding-'));
+const root = tempDir('pbcoding-');
 for (const dir of ['scripts', 'memory', 'modes', 'skills', 'processes']) {
   mkdirSync(join(root, dir), { recursive: true });
 }
@@ -17,7 +18,7 @@ copyFileSync(resolve('modes/coding.yaml'), join(root, 'modes/coding.yaml'));
 copyFileSync(resolve('modes/demo.yaml'), join(root, 'modes/demo.yaml'));
 cpSync(resolve('modes/coding'), join(root, 'modes/coding'), { recursive: true });
 cpSync(resolve('modes/demo'), join(root, 'modes/demo'), { recursive: true });
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 
 writeFileSync(join(root, 'playbook.yaml'), [
   'name: coding-pack-test',

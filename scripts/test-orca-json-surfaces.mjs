@@ -2,11 +2,12 @@ import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, symlinkSync } from
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
-const root = mkdtempSync(join(tmpdir(), 'pbjson-'));
+const root = tempDir('pbjson-');
 for (const d of ['scripts', 'memory', 'processes', 'skills/run-task', 'artifacts/reports', 'modes']) mkdirSync(join(root, d), { recursive: true });
 copyFileSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 writeFileSync(join(root, 'SKILL.md'), '# test skill\n');
 writeFileSync(join(root, 'memory/project-memory.md'), '# memory\n');
 writeFileSync(join(root, 'memory/journal.ndjson'), '{"ts":"2026-01-01T00:00:00Z","task":"task-json","action":"seed","status":"done"}\n');

@@ -27,6 +27,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tempDir } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -155,7 +156,7 @@ let tree = '';
       } catch (e) { out.llmError = String(e.message).slice(0, 160); }
       console.log('__API__' + JSON.stringify(out));
     `;
-    const probePath = join(mkdtempSync(join(tmpdir(), 'pbapi-')), 'probe.mjs');
+    const probePath = join(tempDir('pbapi-'), 'probe.mjs');
     writeFileSync(probePath, probe);
     const r = spawnSync(process.execPath, [probePath], { encoding: 'utf8', timeout: 120_000 });
     const line = (r.stdout || '').split('\n').find((l) => l.startsWith('__API__'));
@@ -190,7 +191,7 @@ let tree = '';
 // overlay whose row is disabled — i.e. that mounting the plugin is a deliberate row,
 // not something that sneaks in.
 {
-  const offPath = join(mkdtempSync(join(tmpdir(), 'pbpatch-')), 'disabled.yml');
+  const offPath = join(tempDir('pbpatch-'), 'disabled.yml');
   writeFileSync(offPath, `- insert:\n    - id: agent-playbook-off\n      name: '${pluginPkg.name}'\n      disabled: true\n`);
   const r = runDsh(['--profile', profile, '--patch', offPath, '--dump-config']);
   const offTree = `${r.stdout || ''}${r.stderr || ''}`;

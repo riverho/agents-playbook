@@ -31,6 +31,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -70,12 +71,12 @@ const HUMAN_GATE = `node -e "require('fs').writeFileSync('${GATE_MARKER}','the g
 
 // --- fixture A: a non-git playbook with deps, a manual task, a doc and provenance --
 function makeGraphFixture() {
-  const root = mkdtempSync(join(tmpdir(), 'pbgraph-'));
+  const root = tempDir('pbgraph-');
   for (const d of ['scripts', 'memory', 'modes', 'processes', 'skills/run-task', 'artifacts/reports', 'docs']) {
     mkdirSync(join(root, d), { recursive: true });
   }
   cpSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-  try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch { /* already linked */ }
+  copyModules(resolve('node_modules'), join(root, 'node_modules'));
   writeFileSync(join(root, 'SKILL.md'), '---\nname: graph-test\ndescription: t\n---\n');
   writeFileSync(join(root, 'processes/index.yaml'), 'processes:\n  - id: run-task\n    file: processes/run-task.yaml\n');
   writeFileSync(join(root, 'processes/run-task.yaml'), 'id: run-task\n');
@@ -386,12 +387,12 @@ ok('the comment rows replay as non-events: repair-state finds no drift',
 //  7. a merged worker branch is journaled, so repair-state --strict keeps the merge
 // ============================================================================
 function makeGitFixture() {
-  const gitRoot = mkdtempSync(join(tmpdir(), 'pbgraphmerge-'));
+  const gitRoot = tempDir('pbgraphmerge-');
   for (const d of ['scripts', 'memory', 'modes', 'processes', 'skills/run-task', 'artifacts/reports']) {
     mkdirSync(join(gitRoot, d), { recursive: true });
   }
   cpSync(resolve('scripts/pb.mjs'), join(gitRoot, 'scripts/pb.mjs'));
-  try { symlinkSync(resolve('node_modules'), join(gitRoot, 'node_modules')); } catch { /* already linked */ }
+  copyModules(resolve('node_modules'), join(gitRoot, 'node_modules'));
   writeFileSync(join(gitRoot, 'SKILL.md'), '---\nname: merge-test\ndescription: t\n---\n');
   writeFileSync(join(gitRoot, 'processes/index.yaml'), 'processes:\n  - id: run-task\n    file: processes/run-task.yaml\n');
   writeFileSync(join(gitRoot, 'processes/run-task.yaml'), 'id: run-task\n');

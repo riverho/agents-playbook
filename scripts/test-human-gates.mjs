@@ -20,6 +20,7 @@ import { mkdirSync, mkdtempSync, copyFileSync, writeFileSync, readFileSync, exis
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -33,10 +34,10 @@ function ok(name, cond, extra = '') {
 const GATE = "node -e process.exit(require('fs').existsSync('memory/infra.ok')?0:1)";
 
 function makePlaybook({ layers, tasks }) {
-  const root = mkdtempSync(join(tmpdir(), 'pbhuman-'));
+  const root = tempDir('pbhuman-');
   for (const d of ['scripts', 'memory', 'modes']) mkdirSync(join(root, d), { recursive: true });
   copyFileSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-  try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+  copyModules(resolve('node_modules'), join(root, 'node_modules'));
   writeFileSync(join(root, 'playbook.yaml'),
     'name: human-gates-test\nversion: 0.6.3\nentry: SKILL.md\n' +
     'paths:\n  scripts: scripts\n  memory: memory\n  modes: modes\n  artifacts: artifacts\n  reports: artifacts/reports\n' +

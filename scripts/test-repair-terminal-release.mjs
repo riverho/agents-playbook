@@ -17,6 +17,7 @@ import { mkdirSync, mkdtempSync, copyFileSync, writeFileSync, readFileSync, syml
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 let fail = 0;
 const ok = (name, cond, extra = '') => {
@@ -26,10 +27,10 @@ const ok = (name, cond, extra = '') => {
 
 // A scratch playbook in the shape the existing suite uses: only the pieces the
 // record/repair paths actually read.
-const root = mkdtempSync(join(tmpdir(), 'pbrelterm-'));
+const root = tempDir('pbrelterm-');
 for (const d of ['scripts', 'memory', 'modes']) mkdirSync(join(root, d), { recursive: true });
 copyFileSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 
 writeFileSync(join(root, 'playbook.yaml'),
   'name: repair-terminal-release-test\nversion: 0.6.3\nentry: SKILL.md\n' +

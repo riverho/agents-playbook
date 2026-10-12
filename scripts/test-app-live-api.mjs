@@ -27,6 +27,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SERVER = join(ROOT, 'apps', 'flow-room', 'server.mjs');
@@ -47,7 +48,7 @@ function pb(cwd, args) {
   }
 }
 
-const work = mkdtempSync(join(tmpdir(), 'pb-flow-api-'));
+const work = tempDir('pb-flow-api-');
 const pbRoot = join(work, 'scratch-playbook');
 let server = null;
 let base = '';

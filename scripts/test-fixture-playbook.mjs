@@ -10,6 +10,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ENGINE = resolve('scripts/pb.mjs');
 const MODULES = resolve('node_modules');
@@ -62,7 +63,7 @@ const yamlScalar = (v) => JSON.stringify(String(v));
 // layers: [{ id, name, about?, gate?, human? }] or null for an unlayered playbook
 // journal: array of row objects; state: backlog-state.json object (without __ fields)
 export function makeFixture({ prefix = 'pbv2-', layers = null, tasks = [], journal = [], state = {}, loops = null, cycle = true } = {}) {
-  const root = mkdtempSync(join(tmpdir(), prefix));
+  const root = tempDir(prefix);
   for (const d of ['scripts', 'memory', 'modes', 'processes', 'skills/run-task', 'artifacts/reports']) mkdirSync(join(root, d), { recursive: true });
   cpSync(ENGINE, join(root, 'scripts/pb.mjs'));
   cpSync(MODULES, join(root, 'node_modules'), { recursive: true });

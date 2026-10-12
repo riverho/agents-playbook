@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { BASE_ENV } from './test-fixture-playbook.mjs';
+import { tempDir } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -21,7 +22,7 @@ function ok(name, cond, extra = '') {
   else { console.error(`  FAIL  ${name}${extra ? `\n        ${String(extra).slice(0, 1200)}` : ''}`); fail++; }
 }
 const PB = resolve('scripts/pb.mjs');
-const base = mkdtempSync(join(tmpdir(), 'pbscaffold-'));
+const base = tempDir('pbscaffold-');
 const run = (script, args, cwd) => {
   const r = spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', env: BASE_ENV });
   return { code: r.status, out: `${r.stdout || ''}${r.stderr || ''}` };

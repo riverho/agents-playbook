@@ -19,12 +19,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const GATE = join(ROOT, 'scripts', 'check-wenmei-retired.mjs');
 const problems = [];
 
-const work = mkdtempSync(join(tmpdir(), 'pb-wenmei-teeth-'));
+const work = tempDir('pb-wenmei-teeth-');
 const repo = join(work, 'repo');
 const app = join(repo, 'apps', 'flow-room');
 const source = join(work, 'wenmei-source');

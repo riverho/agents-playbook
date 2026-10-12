@@ -18,6 +18,7 @@ import { mkdirSync, mkdtempSync, copyFileSync, writeFileSync, readFileSync, exis
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -39,10 +40,10 @@ const LAYERS_WITH_GATE =
 // next to the gated work so "waiting on the gate" cannot be confused with
 // "waiting on a sibling".
 function makePlaybook({ layers = LAYERS_WITH_GATE, tasks, extraMaster = '' } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'pblayers-'));
+  const root = tempDir('pblayers-');
   for (const d of ['scripts', 'memory', 'modes', 'skills/run-task', 'processes']) mkdirSync(join(root, d), { recursive: true });
   copyFileSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-  try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+  copyModules(resolve('node_modules'), join(root, 'node_modules'));
   // A minimal but REAL catalog, so `pb plan` (which defaults to skill `run-task`) can
   // resolve a skill the way a scaffolded playbook would. Without it, every `pb plan`
   // assertion below would fail on the fixture instead of on the behavior under test.

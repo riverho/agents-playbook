@@ -8,11 +8,12 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BUILDER = resolve(ROOT, 'scripts/pb-pack.mjs');
 const SOURCE = resolve(ROOT, 'modes/blogwatch');
-const tempRoot = mkdtempSync(resolve(tmpdir(), 'pb-pack-build-'));
+const tempRoot = tempDir('pb-pack-build-');
 let pass = 0;
 
 function fixture(name) {

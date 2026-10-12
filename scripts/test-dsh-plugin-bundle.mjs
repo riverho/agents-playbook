@@ -20,6 +20,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { tempDir } from './lib/test-temp.mjs';
 
 const core = await import('../dsh-plugin/core.mjs');
 const { bundledEngine, engineVersion, resolveEngine, findPlaybookRoot, readMasterVersion, scaffoldFromBundle, PLUGIN_DIR } = core;
@@ -76,7 +77,7 @@ if (!bundle) {
   // The plugin now CONTAINS a playbook-shaped tree, so a naive ancestor walk could
   // "discover" the vendored copy. Probe from a standalone workspace with no playbook:
   // discovery must find nothing, and the engine must still be offered for execution.
-  const bare = mkdtempSync(join(tmpdir(), 'pbbare-'));
+  const bare = tempDir('pbbare-');
   mkdirSync(join(bare, 'src'), { recursive: true });
   const found = findPlaybookRoot({ workspace: join(bare, 'src'), exclude: PLUGIN_DIR });
   ok('a workspace with no playbook discovers none', found === null, `found=${found}`);
@@ -102,7 +103,7 @@ if (!bundle) {
 
 // --- 4. a workspace playbook wins over the bundle -----------------------------
 {
-  const ws = mkdtempSync(join(tmpdir(), 'pbws-'));
+  const ws = tempDir('pbws-');
   mkdirSync(join(ws, 'scripts'), { recursive: true });
   writeFileSync(join(ws, 'playbook.yaml'), 'name: user-project\nversion: 1.2.3\n');
   // Give the workspace its OWN engine file so the resolver has to choose.
@@ -127,7 +128,7 @@ if (!bundle) {
 
 // --- 5. the payoff: bootstrap a workspace from the bundle --------------------
 {
-  const ws = mkdtempSync(join(tmpdir(), 'pbinit-'));
+  const ws = tempDir('pbinit-');
   // Mirror the real deployment topology: the plugin (with its js-yaml dependency)
   // lives in the project's node_modules, so a playbook scaffolded INTO that project
   // resolves the engine's single dependency by walking up to it.

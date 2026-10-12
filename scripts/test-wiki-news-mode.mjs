@@ -6,12 +6,13 @@ import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, cpSync, symlinkSyn
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 const repoRoot = process.cwd();
-const root = mkdtempSync(join(tmpdir(), 'pbwikinews-'));
+const root = tempDir('pbwikinews-');
 for (const d of ['scripts', 'scripts/lib', 'memory', 'modes', 'skills', 'processes', 'artifacts/reports']) mkdirSync(join(root, d), { recursive: true });
 for (const f of ['scripts/pb.mjs', 'scripts/pb-daily-monitor.mjs', 'scripts/wiki-news-daily.mjs', 'scripts/lib/loop-lib.mjs']) copyFileSync(f, join(root, f));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 copyFileSync(resolve('modes/coding.yaml'), join(root, 'modes/coding.yaml'));
 copyFileSync(resolve('modes/wiki-news.yaml'), join(root, 'modes/wiki-news.yaml'));
 cpSync(resolve('modes/wiki-news'), join(root, 'modes/wiki-news'), { recursive: true });

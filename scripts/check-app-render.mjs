@@ -24,6 +24,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { extname, join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'apps', 'flow-room', 'dist');
@@ -168,7 +169,7 @@ try {
   }
 
   const debugPort = 9500 + Math.floor(Math.random() * 400);
-  profile = mkdtempSync(join(tmpdir(), 'flow-room-render-'));
+  profile = tempDir('flow-room-render-');
   browser = spawn(
     CHROME,
     [

@@ -10,12 +10,13 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PACK = resolve(ROOT, 'scripts/pb-pack.mjs');
 const CHECKER = resolve(ROOT, 'scripts/check-pack-manifest.mjs');
 const SOURCE = resolve(ROOT, 'modes/blogwatch');
-const tempRoot = mkdtempSync(resolve(tmpdir(), 'pb-pack-install-test-'));
+const tempRoot = tempDir('pb-pack-install-test-');
 let pass = 0;
 let total = 0;
 

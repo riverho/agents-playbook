@@ -14,12 +14,13 @@ import { mkdtempSync, writeFileSync, mkdirSync, copyFileSync, symlinkSync, readF
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
-const base = mkdtempSync(join(tmpdir(), 'pbupd-'));
+const base = tempDir('pbupd-');
 const install = join(base, 'install');
 const source = join(base, 'source');
 for (const d of [join(install, 'scripts'), join(install, 'memory'), join(source, 'scripts')]) mkdirSync(d, { recursive: true });
-try { symlinkSync(resolve('node_modules'), join(install, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(install, 'node_modules'));
 
 // --- an older INSTALL fixture (v0.3.2) ---------------------------------------
 copyFileSync('scripts/pb.mjs', join(install, 'scripts/pb.mjs'));

@@ -5,12 +5,13 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, copyFileSync, read
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execSync } from 'node:child_process';
-const root = mkdtempSync(join(tmpdir(), 'pbrep-'));
+import { tempDir, copyModules } from './lib/test-temp.mjs';
+const root = tempDir('pbrep-');
 mkdirSync(join(root, 'scripts'));
 mkdirSync(join(root, 'memory'), { recursive: true });
 mkdirSync(join(root, 'artifacts/reports'), { recursive: true });
 copyFileSync('scripts/pb.mjs', join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 writeFileSync(join(root, 'playbook.yaml'),
   'name: t\nindex:\n  memory:\n    backlog: memory/backlog.yaml\n    journal: memory/journal.ndjson\npaths:\n  reports: artifacts/reports\nguardrails:\n  allowed_statuses: [todo, in_progress, blocked, done]\n');
 writeFileSync(join(root, 'memory/journal.ndjson'), '');

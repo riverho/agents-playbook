@@ -32,6 +32,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFil
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tempDir } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -41,7 +42,7 @@ function ok(name, cond, extra = '') {
 }
 
 const REPO = resolve('.');
-const tmp = mkdtempSync(join(tmpdir(), 'pbplugws-'));
+const tmp = tempDir('pbplugws-');
 
 // --- a minimal, VALID playbook, parameterised by its own name -----------------
 // `pb status --json` reports this name, which is how the assertions tell the two

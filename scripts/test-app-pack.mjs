@@ -30,13 +30,14 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const problems = [];
 const check = (condition, message) => { if (!condition) problems.push(message); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const work = mkdtempSync(join(tmpdir(), 'pb-app-pack-'));
+const work = tempDir('pb-app-pack-');
 let uiChild = null;
 
 function killTree(pid) {

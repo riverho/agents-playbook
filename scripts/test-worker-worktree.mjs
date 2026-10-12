@@ -22,6 +22,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -31,12 +32,12 @@ function ok(name, cond, extra = '') {
 }
 
 // --- fixture: a real git repo with a real playbook engine ---------------------
-const root = mkdtempSync(join(tmpdir(), 'pbwt-'));
+const root = tempDir('pbwt-');
 for (const d of ['scripts', 'memory', 'modes', 'processes', 'skills/run-task', 'artifacts/reports']) {
   mkdirSync(join(root, d), { recursive: true });
 }
 cpSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 writeFileSync(join(root, 'SKILL.md'), '---\nname: t\ndescription: t\n---\n');
 writeFileSync(join(root, 'memory/project-memory.md'), '# memory\n');
 writeFileSync(join(root, 'memory/journal.ndjson'), '');

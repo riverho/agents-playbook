@@ -25,12 +25,13 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const problems = [];
 const check = (condition, message) => { if (!condition) problems.push(message); };
 
-const work = mkdtempSync(join(tmpdir(), 'pb-mode-check-'));
+const work = tempDir('pb-mode-check-');
 const repo = join(work, 'repo');
 const pbRoot = join(repo, '.agents-playbook');
 mkdirSync(repo, { recursive: true });

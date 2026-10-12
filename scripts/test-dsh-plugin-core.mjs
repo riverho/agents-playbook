@@ -11,6 +11,7 @@
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { tempDir } from './lib/test-temp.mjs';
 
 const core = await import('../dsh-plugin/core.mjs');
 const {
@@ -27,7 +28,7 @@ function ok(name, cond, extra = '') {
 
 // --- 1. playbook discovery ----------------------------------------------------
 {
-  const root = mkdtempSync(join(tmpdir(), 'pbplug-'));
+  const root = tempDir('pbplug-');
   const nested = join(root, 'packages', 'app', 'src');
   mkdirSync(nested, { recursive: true });
   ok('no master anywhere → null (the plugin stays dormant)', findPlaybookRoot({ workspace: nested }) === null);
@@ -37,7 +38,7 @@ function ok(name, cond, extra = '') {
   ok('a master in an ANCESTOR is found from a nested cwd (monorepo layout)',
     findPlaybookRoot({ workspace: nested }) === root, String(findPlaybookRoot({ workspace: nested })));
   ok('playbook.json is accepted as a master too', (() => {
-    const r2 = mkdtempSync(join(tmpdir(), 'pbplug2-'));
+    const r2 = tempDir('pbplug2-');
     writeFileSync(join(r2, 'playbook.json'), '{}');
     return findPlaybookRoot({ workspace: r2 }) === r2;
   })());
@@ -69,7 +70,7 @@ function ok(name, cond, extra = '') {
 
 // --- 3. subprocess result handling -------------------------------------------
 {
-  const tmp = mkdtempSync(join(tmpdir(), 'pbplug3-'));
+  const tmp = tempDir('pbplug3-');
   const okScript = join(tmp, 'ok.mjs');
   writeFileSync(okScript, 'console.log(JSON.stringify({schema:"x",n:1}));');
   const badScript = join(tmp, 'bad.mjs');

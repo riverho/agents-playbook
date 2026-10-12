@@ -7,11 +7,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import yaml from 'js-yaml';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CHECKER = resolve(ROOT, 'scripts/check-pack-manifest.mjs');
 const SOURCE = resolve(ROOT, 'modes/blogwatch');
-const tempRoot = mkdtempSync(resolve(tmpdir(), 'pb-pack-manifest-'));
+const tempRoot = tempDir('pb-pack-manifest-');
 let pass = 0;
 
 function fixture(name) {

@@ -26,6 +26,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const APP = join(ROOT, 'apps', 'flow-room');
@@ -58,7 +59,7 @@ check(/nothing written/i.test(dockSrc),
   'the toast has no honest headline for the not-persisted case');
 
 // ── DYNAMIC: click it for real ────────────────────────────────────────────────
-const work = mkdtempSync(join(tmpdir(), 'pb-write-wiring-'));
+const work = tempDir('pb-write-wiring-');
 const repo = join(work, 'repo');
 const pbRoot = join(repo, '.agents-playbook');
 const TASK_GOAL = 'gate task: one comment must land as one journal row';
@@ -121,7 +122,7 @@ try {
 
   if (health && CHROME && taskId) {
     const debugPort = 9200 + Math.floor(Math.random() * 200);
-    profile = mkdtempSync(join(tmpdir(), 'pb-write-wiring-chrome-'));
+    profile = tempDir('pb-write-wiring-chrome-');
     browser = spawn(CHROME, [
       '--headless=new', '--disable-gpu', '--no-sandbox', '--no-first-run', '--disable-extensions', '--hide-scrollbars',
       `--remote-debugging-port=${debugPort}`, `--user-data-dir=${profile}`, '--window-size=1500,950', 'about:blank',

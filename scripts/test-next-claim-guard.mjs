@@ -6,13 +6,14 @@ import { mkdtempSync, mkdirSync, copyFileSync, writeFileSync, readFileSync, syml
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
-const root = mkdtempSync(join(tmpdir(), 'pbclaim-'));
+const root = tempDir('pbclaim-');
 for (const d of ['scripts', 'memory', 'processes', 'skills', 'artifacts/reports']) {
   mkdirSync(join(root, d), { recursive: true });
 }
 copyFileSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 
 writeFileSync(join(root, 'SKILL.md'), '# test skill\n');
 writeFileSync(join(root, 'memory/project-memory.md'), '# memory\n');

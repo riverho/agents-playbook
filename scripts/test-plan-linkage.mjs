@@ -34,6 +34,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -73,12 +74,12 @@ const plannedId = (r) => (/Planned \[([^\]]+)\]/.exec(r.out) || [])[1] || null;
 // an unlayered fixture cannot be held back by a layer gate or a lower layer's open work,
 // so a refusal here can only be the dependency.
 function makeFixture({ layers = '', tasks = 'tasks: []\n' } = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'pblink-'));
+  const root = tempDir('pblink-');
   for (const d of ['scripts', 'memory', 'modes', 'skills/run-task', 'processes', 'artifacts/reports']) {
     mkdirSync(join(root, d), { recursive: true });
   }
   copyFileSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-  try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch { /* already linked */ }
+  copyModules(resolve('node_modules'), join(root, 'node_modules'));
   writeFileSync(join(root, 'SKILL.md'), '---\nname: linkage-test\ndescription: t\n---\n');
   writeFileSync(join(root, 'skills/index.yaml'),
     'skills:\n  - {id: run-task, file: skills/run-task/SKILL.md, process: run-task}\n');

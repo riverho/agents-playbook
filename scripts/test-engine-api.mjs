@@ -19,6 +19,7 @@ import { mkdirSync, mkdtempSync, copyFileSync, writeFileSync, symlinkSync } from
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -27,10 +28,10 @@ function ok(name, cond, extra = '') {
   else { console.error(`  FAIL  ${name}${extra ? `\n        ${extra}` : ''}`); fail++; }
 }
 
-const root = mkdtempSync(join(tmpdir(), 'pbapi-'));
+const root = tempDir('pbapi-');
 for (const d of ['scripts', 'memory', 'modes']) mkdirSync(join(root, d), { recursive: true });
 copyFileSync(resolve('scripts/pb.mjs'), join(root, 'scripts/pb.mjs'));
-try { symlinkSync(resolve('node_modules'), join(root, 'node_modules')); } catch {}
+copyModules(resolve('node_modules'), join(root, 'node_modules'));
 
 writeFileSync(join(root, 'playbook.yaml'),
   'name: api-test\nversion: 9.9.9\nentry: SKILL.md\n' +

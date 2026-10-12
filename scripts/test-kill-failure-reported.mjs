@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeFixture, makeSuite, readJournal, runPb } from './test-fixture-playbook.mjs';
+import { tempDir } from './lib/test-temp.mjs';
 
 const t = makeSuite('test-kill-failure-reported');
 const { ok } = t;
@@ -29,7 +30,7 @@ const env = { PB_CHECK_TIMEOUT_MS: '800' };
 }
 
 if (process.platform === 'win32') {
-  const nowhere = mkdtempSync(join(tmpdir(), 'pb-no-sysroot-'));
+  const nowhere = tempDir('pb-no-sysroot-');
   rmSync(nowhere, { recursive: true, force: true });
   const r = runPb(root, ['validate', '--task', 'slow'], { env: { ...env, PB_TASKKILL: join(nowhere, 'taskkill.exe') } });
   ok('the forced case still reports TIMEOUT', /TIMEOUT\s+node -e/.test(r.out), r.combined);

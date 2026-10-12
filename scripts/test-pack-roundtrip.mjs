@@ -16,11 +16,12 @@ import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
+import { tempDir, copyModules } from './lib/test-temp.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PB = resolve(ROOT, 'scripts/pb.mjs');
 const PACK = resolve(ROOT, 'scripts/pb-pack.mjs');
-const tempRoot = mkdtempSync(resolve(tmpdir(), 'pb-pack-roundtrip-'));
+const tempRoot = tempDir('pb-pack-roundtrip-');
 const scratch = resolve(tempRoot, 'scratch');
 let pass = 0;
 let total = 0;
@@ -56,7 +57,7 @@ try {
 
   // The scaffolded pb.mjs needs js-yaml, and the monitor dry-run needs the
   // orchestrator + its lib (scaffold only ships the engine CLI).
-  symlinkSync(resolve(ROOT, 'node_modules'), resolve(scratch, 'node_modules'));
+  copyModules(resolve(ROOT, 'node_modules'), resolve(scratch, 'node_modules'));
   copyFileSync(resolve(ROOT, 'scripts/pb-daily-monitor.mjs'), resolve(scratch, 'scripts/pb-daily-monitor.mjs'));
   mkdirSync(resolve(scratch, 'scripts/lib'), { recursive: true });
   cpSync(resolve(ROOT, 'scripts/lib'), resolve(scratch, 'scripts/lib'), { recursive: true });

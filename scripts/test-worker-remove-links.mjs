@@ -35,6 +35,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { tempDir } from './lib/test-temp.mjs';
 
 let pass = 0;
 let fail = 0;
@@ -64,7 +65,7 @@ const SENTINEL_FILE = 'must-survive.txt';
 const SENTINEL_BYTES = 'these bytes are the root checkout in miniature\n';
 
 function makeFixture() {
-  const base = mkdtempSync(join(tmpdir(), 'pbrmlinks-'));
+  const base = tempDir('pbrmlinks-');
   const root = join(base, 'repo');
   const sentinel = join(base, 'shared-deps');
   mkdirSync(sentinel, { recursive: true });
