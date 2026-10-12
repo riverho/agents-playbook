@@ -152,8 +152,10 @@ export function bandsFor(graph: FlowGraph, view: BandView = {}): Band[] {
     const info = infos.find(l => l.id === id) ?? derivedInfo.get(id);
     const isDeclared = declared.has(id);
     const all = members.get(id) ?? [];
-    const done = all.filter(n => n.status === "done").sort((a, b) => a.id.localeCompare(b.id));
-    const open = sortOpen(all.filter(n => n.status !== "done"));
+    // a dropped card (V4) is finished work for the band: stacked, never counted open
+    const finished = (n: FlowNode) => n.status === "done" || n.disposition === "dropped";
+    const done = all.filter(finished).sort((a, b) => a.id.localeCompare(b.id));
+    const open = sortOpen(all.filter(n => !finished(n)));
     return {
       id,
       name: info?.name ?? null,

@@ -26,7 +26,7 @@ export interface DecisionRow {
 /** H4: this is a read-only view of engine asks; no local task status changes. */
 export function decisionItems(graph: FlowGraph): DecisionItem[] {
   const open = new Set(graph.nodes.filter(n => n.status !== "done").map(n => n.id));
-  return graph.nodes.filter(n => (!n.kind || n.kind === "task" || n.kind === "fork") && n.status !== "done" &&
+  return graph.nodes.filter(n => (!n.kind || n.kind === "task" || n.kind === "fork") && n.status !== "done" && n.disposition !== "dropped" &&
     (n.manual || n.human?.question) && !n.human?.decided).map(node => {
     const h = node.human;
     const waiting = node.manual ? [...new Set(h?.waiting_on ?? graph.edges.filter(e => e.kind === "dep" && e.from === node.id).map(e => e.to))].filter(id => open.has(id)) : [];

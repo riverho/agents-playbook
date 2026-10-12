@@ -16,6 +16,7 @@ import {
 } from "./flow-bands";
 import { buildLayerEdges } from "./flow-projection";
 import { faceHeight, faceState } from "./flow-face";
+import { decisionItems } from "./flow-decisions";
 import type { FlowGraph, FlowLayerInfo, FlowNode } from "./flow-types";
 import { FlowTaskCard } from "../components/stage/FlowCards";
 
@@ -170,5 +171,19 @@ describe("J1–J3 — jumping in", () => {
     expect(layout.extraNodes.map(n => n.id)).toContain("draft:d");
     expect(draftCommand(draft, true)).toBe('pb plan --goal "tidy the gate" --dep a --layer L1');
     expect(draftCommand({ ...draft, kind: "card", band: "D1" }, false)).toBe('pb plan --goal "tidy the gate"');
+  });
+});
+
+describe("V4 — a dropped card is finished work, not an open question", () => {
+  it("stacks with the band's finished cards, says Dropped, and asks nobody", () => {
+    const dropped = t("old", { declared_layer: "L1", manual: true, status: "blocked", disposition: "dropped" });
+    const g = graphOf([dropped, t("work", { declared_layer: "L1" })], [info("L1")]);
+    const [band] = bandsFor(g);
+    expect(band.open.map(n => n.id)).toEqual(["work"]);
+    expect(band.done.map(n => n.id)).toEqual(["old"]);
+    expect(band.provenDone).toBe(0);
+    expect(band.needsYou).toBe(0);
+    expect(faceState(dropped)).toMatchObject({ kind: "closed", label: "Dropped" });
+    expect(decisionItems(g)).toEqual([]);
   });
 });

@@ -151,5 +151,17 @@ setState(root, {
   const real = tick(r, ['--json']);
   ok('a real tick runs them', existsSync(join(r, 'side-effect.txt')), real.combined.slice(0, 400));
 }
+// a manual card dropped from its version waits on nobody: state, tick and graph agree
+{
+  const r = versionedFixture([{ id: 'stale-publish', title: 'publish a version already on npm', manual: true }, { id: 'work', title: 'real work', priority: 2 }]);
+  setState(r, { 'stale-publish': { status: 'blocked', disposition: 'dropped', drop_reason: 'superseded', seq: 2, updated_at: at(-5) } },
+    [{ ts: at(-5), task: 'stale-publish', agent: 'human', action: 'drop', status: 'blocked', checks: 'none', notes: 'superseded', reason: 'superseded', seq: 30 }]);
+  const s = pbJson(r, ['state', '--json']);
+  const p = pbJson(r, ['tick', '--dry-run', '--json', '--now', at(0)]);
+  const g = pbJson(r, ['graph', '--json']);
+  ok('a dropped manual card needs nobody in pb state', s.counts.needs_you === 0, JSON.stringify(s.counts));
+  ok('the tick neither asks about nor defers a dropped card', !p.ask.length && !p.defer.some((x) => x.task === 'stale-publish') && p.chosen?.task === 'work', JSON.stringify({ ask: p.ask, defer: p.defer, chosen: p.chosen }));
+  ok('pb graph holds no human batch for a dropped card', g.human.batch.length === 0 && !g.edges.some((e) => e.kind === 'hil'), JSON.stringify(g.human.batch));
+}
 
 t.finish();

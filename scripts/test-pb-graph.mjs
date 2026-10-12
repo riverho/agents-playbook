@@ -298,6 +298,16 @@ ok('a declared human layer gate with open work above it is reported as UNEVALUAT
 ok('an unevaluated gate is NOT silently folded into the human batch',
   !graph.human.batch.some((b) => b.kind === 'gate'), JSON.stringify(graph.human.batch));
 ok('the payload states that gates were not checked', graph.human.gates_checked === false);
+{
+  // a decided manual card waits on nobody: it leaves the batch and loses its human edge,
+  // as `pb state` (needs_you) and the room's inbox already let it go
+  const decidedRoot = makeGraphFixture();
+  const decide = runPb(decidedRoot, ['decide', '--task', 'human-task', '--option', 'approve', '--reason', 'publish it']);
+  ok('pb decide records the decision', decide.code === 0, decide.combined.slice(0, 300));
+  const g = parseJson(runPb(decidedRoot, ['graph', '--json']), 'graph --json after decide');
+  ok('a decided manual task is not in the human batch', g.human.batch.length === 0, JSON.stringify(g.human.batch));
+  ok('a decided manual task has no needs-a-human edge', !g.edges.some((e) => e.kind === 'hil'), JSON.stringify(g.edges.filter((e) => e.kind === 'hil')));
+}
 ok('pb graph did NOT execute the layer gate command',
   !existsSync(join(root, GATE_MARKER)), `marker ${join(root, GATE_MARKER)} exists — a read-only projection ran a gate`);
 ok('pb validate neither executed the gate', !existsSync(join(root, GATE_MARKER)));

@@ -2497,7 +2497,8 @@ function humanBlockProblems(task) {
   const warnings = [];
   const h = task.human;
   if (h === undefined || h === null) {
-    if (task.manual && task.status !== 'done') warnings.push(`[${task.id}] is manual: true but declares no human.question — a person will see the generic "Approve: …?" (H1)`);
+    // a dropped card (V4) asks nobody anything, so it needs no question
+    if (task.manual && task.status !== 'done' && task.disposition !== 'dropped') warnings.push(`[${task.id}] is manual: true but declares no human.question — a person will see the generic "Approve: …?" (H1)`);
     return { errors, warnings };
   }
   if (typeof h !== 'object' || Array.isArray(h)) { errors.push(`Task ${task.id} human: must be a mapping (question, options, recommended, recommended_by)`); return { errors, warnings }; }
@@ -2655,7 +2656,7 @@ function graphEdges(nodes, plan) {
     });
   }
   for (const node of nodes) {
-    if (node.manual && node.status !== 'done') {
+    if (graphAwaitsPerson(node)) {
       edges.push({ from: node.id, to: 'human', kind: 'hil', proven: true, reason: 'the task declares manual: true — only a person can close it' });
     }
   }
@@ -2671,10 +2672,16 @@ function graphEdges(nodes, plan) {
 //                        unevaluated gate inside `batch` would be the engine being
 //                        confidently wrong about needing a human; labelling it here is
 //                        the honest default the design's gap #5 asked for.
+// A manual card waits on a person until it is done, dropped from its version, or decided:
+// the same rule `pb state` (needs_you), `pb tick` and the room's inbox apply, so the batch
+// never holds a card every other surface has let go.
+function graphAwaitsPerson(node) {
+  return !!node.manual && node.status !== 'done' && node.disposition !== 'dropped' && !node.human?.decided;
+}
 function graphHumanBatch(nodes, plan) {
   const batch = [];
   for (const node of nodes) {
-    if (!node.manual || node.status === 'done') continue;
+    if (!graphAwaitsPerson(node)) continue;
     batch.push({
       kind: 'manual',
       gate: null,

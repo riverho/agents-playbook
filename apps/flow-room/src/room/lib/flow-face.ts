@@ -37,7 +37,7 @@ export function decisionRow(node: FlowNode): FlowJournalRow | undefined {
 
 /** A person is being asked right now: a manual task (or a declared human question) not yet answered. */
 export function asksYou(node: FlowNode): boolean {
-  if (node.status === "done") return false;
+  if (node.status === "done" || node.disposition === "dropped") return false;
   const asked = node.manual === true || !!node.human?.question;
   return asked && !decisionRow(node);
 }
@@ -48,6 +48,10 @@ export function asksYou(node: FlowNode): boolean {
  * the green "Done" every card uses.
  */
 export function faceState(node: FlowNode): FaceState {
+  // V4: a card dropped from its version is finished without proof — it asks nobody anything
+  if (node.disposition === "dropped") {
+    return { kind: "closed", label: "Dropped", short: "Dropped", icon: "dash", flashing: false };
+  }
   if (asksYou(node)) {
     return { kind: "you", label: "Needs your decision", short: "You", icon: "hand", flashing: true };
   }
