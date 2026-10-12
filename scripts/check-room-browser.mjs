@@ -454,6 +454,25 @@ try {
     await evaluate(`document.querySelector('button[aria-label="Close decisions"]')?.click()`);
   }
 
+  // ── the legend folds away when it covers cards (plan-20261011-005) ─────────
+  {
+    const legend = await evaluate(`(async () => {
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      const state = () => ({ panel: !!document.querySelector('.flow-legend'), show: !!document.querySelector('button[aria-label="Show legend"]') });
+      const open0 = state();
+      document.querySelector('button[aria-label="Hide legend"]')?.click(); await wait(150);
+      const folded = state();
+      const toggle = document.querySelector('button[aria-label="Show legend"]')?.getBoundingClientRect();
+      document.querySelector('button[aria-label="Show legend"]')?.click(); await wait(150);
+      return { open0, folded, reopened: state(), toggleH: toggle ? Math.round(toggle.height) : null };
+    })()`);
+    console.log(`  legend  ${JSON.stringify(legend)}`);
+    if (!legend.open0.panel) problems.push('legend: the panel is not shown on first visit');
+    if (legend.folded.panel || !legend.folded.show) problems.push(`legend: Hide legend did not fold it to one button: ${JSON.stringify(legend.folded)}`);
+    if (legend.toggleH == null || legend.toggleH > 40) problems.push(`legend: the folded button is not small (${legend.toggleH}px)`);
+    if (!legend.reopened.panel) problems.push('legend: Show legend did not bring the panel back');
+  }
+
   // ── F4: reduced motion, on an injected probe card ─────────────────────────
   const probe = `(() => {
     let host = document.getElementById('__motion-probe');

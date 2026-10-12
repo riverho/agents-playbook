@@ -20,11 +20,12 @@
 //   1. NO TWO NODE RECTS overlap or sit closer than FLOW_MIN_GUTTER — dagre's
 //      output is de-collided until the pairwise invariant holds (pure, iterated,
 //      deterministic; never a CSS nudge).
-//   2. NO EDGE-LABEL BOX intersects a node rect, a gate pill, another label or
-//      the reserved legend. A label that fits nowhere is SUPPRESSED (visible:
-//      false) rather than clipped — a clipped label lies about what it says.
-//   3. The gate pills live in a reserved top strip and the legend in a reserved
-//      bottom-left rect: both are canvas-space, so the guarantee is exact.
+//   2. NO EDGE-LABEL BOX intersects a node rect, a gate pill or another label.
+//      A label that fits nowhere is SUPPRESSED (visible: false) rather than
+//      clipped — a clipped label lies about what it says.
+//   3. The gate pills live in a reserved top strip (canvas space, so exact). The
+//      legend is a collapsible SCREEN overlay (plan-20261011-005): the layout only
+//      sizes it and reserves no canvas for it.
 //   4. The reserved rects are part of the layout's width/height, so `fitView`
 //      maps the whole picture (labels included) into the viewport.
 
@@ -55,14 +56,6 @@ export const FLOW_GATE_LABEL_H = 18;
  */
 export const FLOW_MIN_GUTTER = 12;
 
-/**
- * The floating legend's reserve is DERIVED from the legend's own drawn content
- * (`flowLegendModel` → `flowLegendContentSize`), never a literal: the old
- * 660x104 constant was smaller than the ~105-121 px the rows actually need, so
- * the legend was clipped at the canvas bottom. `FLOW_LEGEND_GAP` is the only
- * literal left, and it is a gap, not a size.
- */
-export const FLOW_LEGEND_GAP = 16;
 
 /** The top-right status chips reserve, so a card never sits under them. */
 export const FLOW_CHIPBAR_RESERVE = { width: 320, height: 28 };
@@ -189,6 +182,7 @@ export interface FlowLayoutResult {
   columns: FlowLayoutColumn[];
   gateLabels: FlowGateLabel[];
   /** Chrome the layout reserves in canvas space. */
+  /** legend: SIZE only (x/y 0) — it is a screen overlay and takes no canvas */
   chrome: { legend: FlowRect; chipbar: FlowRect };
   width: number;
   height: number;
@@ -435,19 +429,13 @@ export function layoutFlow(graph: FlowGraph): FlowLayoutResult {
     );
   }
 
-  // ── reserved chrome, in canvas space ──────────────────────────────────
-  const contentBottom = Math.max(...placed.map(node => node.y + node.height));
-  // The legend's size is its drawn content, so the panel can never clip a row.
-  const legendSize = flowLegendRequiredSize(graph);
-  const legend: FlowRect = {
-    x: FLOW_MARGIN,
-    y: contentBottom + FLOW_LEGEND_GAP,
-    width: legendSize.width,
-    height: legendSize.height,
-  };
+  // ── the legend: SIZE only ─────────────────────────────────────────────
+  // It is a screen overlay, so it has no canvas position (x/y stay 0) and takes no
+  // canvas: its size is its drawn content, so the panel can never clip a row.
+  const legend: FlowRect = { x: 0, y: 0, ...flowLegendRequiredSize(graph) };
 
   // ── de-collision: the pairwise gutter invariant, enforced ─────────────
-  const declutterMoved = declutterRects(placed, FLOW_MIN_GUTTER, [legend]);
+  const declutterMoved = declutterRects(placed, FLOW_MIN_GUTTER, []);
 
   // ── gate pills: a reserved top strip nobody else may enter ────────────
   const gateposts = nodes.filter(node => node.kind === "gatepost");
@@ -500,13 +488,11 @@ export function layoutFlow(graph: FlowGraph): FlowLayoutResult {
   const width =
     Math.max(
       ...placed.map(node => node.x + node.width),
-      legend.x + legend.width,
       FLOW_CARD_W
     ) + FLOW_MARGIN;
   const height =
     Math.max(
       ...placed.map(node => node.y + node.height),
-      legend.y + legend.height,
       FLOW_CARD_H
     ) + FLOW_MARGIN;
 
@@ -531,33 +517,19 @@ export function layoutFlow(graph: FlowGraph): FlowLayoutResult {
   };
 }
 
-// ── what the room fits, so the reserved legend is on screen ──────────────
+// ── what the room fits ───────────────────────────────────────────────────
 
 /** The fit padding the room uses (React Flow applies it inside the viewport). */
 export const FLOW_FIT_PADDING = 0.06;
 
 /**
- * What the room hands `fitBounds`: the LAYOUT's own rect, legend reserve included.
- *
- * Fitting the nodes' bounding box instead (React Flow's default `fitView`) leaves
- * the reserved legend band below the fold — exactly how the legend ended up
- * off-viewport with only its top sliver showing at the canvas bottom.
+ * What the room hands `fitBounds`: the LAYOUT's own rect — every node, gate pill and
+ * margin. No legend band: the legend is a screen overlay and takes no canvas.
  */
 export function flowFitBounds(layout: FlowLayoutResult): FlowRect {
   return { x: 0, y: 0, width: layout.width, height: layout.height };
 }
 
-/** True when the legend's reserved rect lies inside the rect the room fits. */
-export function legendInsideFitBounds(layout: FlowLayoutResult): boolean {
-  const fit = flowFitBounds(layout);
-  const legend = layout.chrome.legend;
-  return (
-    legend.x >= fit.x &&
-    legend.y >= fit.y &&
-    legend.x + legend.width <= fit.x + fit.width &&
-    legend.y + legend.height <= fit.y + fit.height
-  );
-}
 
 // ── edge labels: placed where they fit, suppressed where they do not ─────
 
@@ -575,8 +547,7 @@ export function edgeKeyOf(edge: FlowEdge, index: number): string {
 
 /**
  * Place every edge label. A label is only drawn when its box fits in free canvas
- * space: it must not intersect a node rect, a gate pill, another label or the
- * reserved legend. Candidates are tried in order (gutter → midpoint, above →
+ * space: it must not intersect a node rect, a gate pill or another label. Candidates are tried in order (gutter → midpoint, above →
  * below) and the label is SUPPRESSED when none fits — never clipped.
  */
 export function placeEdgeLabels(
@@ -598,7 +569,6 @@ export function placeEdgeLabels(
       width: label.width,
       height: label.height,
     })),
-    layout.chrome.legend,
   ];
 
   const boxes: FlowLabelBox[] = [];

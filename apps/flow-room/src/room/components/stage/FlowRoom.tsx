@@ -33,7 +33,7 @@ import {
   type EdgeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { LayoutGrid, Undo2 } from "lucide-react";
+import { ChevronDown, LayoutGrid, ListTree, Undo2 } from "lucide-react";
 import { movedSince, pushHistory, restore, snapshot, type Positions } from "@/lib/flow-moves";
 import { useStageEscape } from "@/lib/stage-escape";
 
@@ -540,7 +540,8 @@ function FlowCanvas({
 
       {/* the legend is a SCREEN overlay (plan-20261010-006): drawn on the canvas it sat in a
           reserve that the first fit put at 17–33% zoom, where the overview hides all text —
-          nobody saw it until they zoomed past 75%. On screen it is readable at every zoom. */}
+          nobody saw it until they zoomed past 75%. On screen it is readable at every zoom,
+          and it folds away when it covers cards (plan-20261011-005). */}
       <FlowLegend graph={graph} rect={layout.chrome.legend} />
 
       {/* M1: who is in the room — each active agent, what it is on, when it last spoke */}
@@ -647,14 +648,37 @@ function FlowCanvas({
   );
 }
 
-// ── the legend (frame 1, bottom-left, canvas space) ───────────────────────
+// ── the legend (frame 1, bottom-left, a screen overlay) ───────────────────
 //
 // Rendered FROM `flowLegendModel(graph)` — the same model the layout measures to
-// size the reserve — so a row can never be added here without the panel growing.
+// size the panel — so a row can never be added here without the panel growing.
+// It folds to one button (plan-20261011-005); the choice is a per-viewer convenience.
+
+const LEGEND_OPEN_KEY = "flow-room:legend-open";
+function readLegendOpen(): boolean {
+  try { return window.localStorage.getItem(LEGEND_OPEN_KEY) !== "false"; } catch { return true; }
+}
 
 function FlowLegend({ graph, rect }: { graph: FlowGraph; rect: FlowRect }) {
   const groups = flowLegendModel(graph);
+  const [open, setOpen] = useState(readLegendOpen);
+  const toggle = (next: boolean) => {
+    setOpen(next);
+    try { window.localStorage.setItem(LEGEND_OPEN_KEY, String(next)); } catch { /* private window: this view only */ }
+  };
+  if (!open) {
+    return (
+      <button type="button" className="flow-legend-toggle" aria-expanded="false" aria-label="Show legend" onClick={() => toggle(true)}>
+        <ListTree size={14} aria-hidden /> Legend
+      </button>
+    );
+  }
   return (
+    <>
+    <button type="button" className="flow-legend-toggle flow-legend-toggle--hide" aria-expanded="true" aria-label="Hide legend"
+      style={{ left: `calc(var(--legend-left) + ${rect.width + 6}px)` }} onClick={() => toggle(false)}>
+      <ChevronDown size={14} aria-hidden />
+    </button>
     <div
       className="flow-legend"
       aria-label="Legend"
@@ -693,5 +717,6 @@ function FlowLegend({ graph, rect }: { graph: FlowGraph; rect: FlowRect }) {
         </div>
       ))}
     </div>
+    </>
   );
 }

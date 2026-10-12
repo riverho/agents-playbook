@@ -272,10 +272,10 @@ export function layoutLayers(graph: FlowGraph, view: BandView = {}): LayerLayout
   if (goal) push(goal, x, BAND_TOP + BAND_HEAD, BOOKEND_W + 10, BOOKEND_H, lists.length + 1);
   const right = goal ? x + BOOKEND_W + 10 : x - BAND_GUTTER;
   const bottom = BAND_TOP + bandH;
-  const legendSize = flowLegendRequiredSize(graph);
-  const legend: FlowRect = { x: 0, y: bottom + 24, width: legendSize.width, height: legendSize.height };
-  const width = Math.max(right, legend.width) + 16;
-  const height = legend.y + legend.height + 16;
+  // the legend is a screen overlay: sized here, but it takes no canvas (plan-20261011-005)
+  const legend: FlowRect = { x: 0, y: 0, ...flowLegendRequiredSize(graph) };
+  const width = right + 16;
+  const height = bottom + 16;
   return {
     nodes: placed,
     columns: [],

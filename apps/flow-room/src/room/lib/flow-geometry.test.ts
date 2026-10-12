@@ -25,18 +25,15 @@ import {
   flowLegendModel,
 } from "@/lib/flow-derive";
 import {
-  FLOW_FIT_PADDING,
   FLOW_GATE_LABEL_TOP,
   FLOW_MIN_GUTTER,
   declutterRects,
   estimateLabelWidth,
   flowFitBounds,
   layoutFlow,
-  legendInsideFitBounds,
   placeEdgeLabels,
   rectsIntersect,
   type FlowLayoutNode,
-  type FlowRect,
   type FlowLayoutResult,
 } from "@/lib/flow-layout";
 import { buildEdges } from "@/lib/flow-projection";
@@ -112,7 +109,7 @@ describe("2 — edge labels never clip and never sit under a card", () => {
       const visible = boxes.filter(box => box.visible);
       const problems: string[] = [];
       for (const box of visible) {
-        for (const rect of [...nodes, ...gates, layout.chrome.legend]) {
+        for (const rect of [...nodes, ...gates]) {
           if (rectsIntersect(box, rect, 1)) {
             problems.push(`"${box.text}" at [${box.x},${box.y}] overlaps a rect at [${rect.x},${rect.y}]`);
           }
@@ -156,18 +153,8 @@ describe("2 — edge labels never clip and never sit under a card", () => {
   });
 });
 
-describe("3 — the legend cannot sit on a card", () => {
-  for (const [name, graph] of both) {
-    it(`${name}: the reserved legend rect intersects no node rect`, () => {
-      const layout = layoutFlow(graph);
-      const offenders = layout.nodes
-        .filter(node => rectsIntersect(node, layout.chrome.legend, FLOW_MIN_GUTTER))
-        .map(node => node.id);
-      expect(offenders).toEqual([]);
-    });
-  }
-
-  it("reserves at least the legend's own drawn content, for both payloads", () => {
+describe("3 — the legend is sized from its drawn content, and takes no canvas", () => {
+  it("sizes the panel to at least the legend's own drawn content, for both payloads", () => {
     // The required height is recomputed HERE, from the legend MODEL's row counts
     // and the documented metrics — not by calling the layout's own sizing helper
     // and not from a literal. A reserve smaller than this (or a zeroed floor, or
@@ -220,21 +207,8 @@ describe("3 — the legend cannot sit on a card", () => {
           rows * FLOW_LEGEND_METRICS.rowH +
           Math.max(0, rows - 1) * FLOW_LEGEND_METRICS.rowGap
       );
-      const contentBottom = Math.max(...layout.nodes.map(node => node.y + node.height));
-      // The reserved rect is EXCLUDED from the content band: it starts below it.
-      expect(legend.y, `${name} legend inside the content band`).toBeGreaterThanOrEqual(
-        contentBottom
-      );
-      expect(layout.height).toBeGreaterThanOrEqual(legend.y + legend.height);
-      // …and the DRAWN legend rect intersects neither a node nor a visible label.
-      const nodeHits = layout.nodes
-        .filter(node => rectsIntersect(node, legend, 0))
-        .map(node => node.id);
-      expect(nodeHits, `${name} legend overlaps a node`).toEqual([]);
-      const labelHits = placeEdgeLabels(graph.edges, layout)
-        .filter(box => box.visible && rectsIntersect(box, legend, 0))
-        .map(box => box.text);
-      expect(labelHits, `${name} legend overlaps a label`).toEqual([]);
+      // a screen overlay: sized, never placed on the canvas (plan-20261011-005)
+      expect([legend.x, legend.y], `${name} legend has a canvas position`).toEqual([0, 0]);
     }
   });
 
@@ -283,75 +257,23 @@ describe("4 — the minimap matches the painted frame", () => {
   });
 });
 
-describe("5 — the legend is on screen after the initial fit", () => {
-  for (const [name, graph] of both) {
-    it(`${name}: the legend lies inside the rect the room fits`, () => {
-      const layout = layoutFlow(graph);
-      const legend = layout.chrome.legend;
-      const fit = flowFitBounds(layout);
-      expect(
-        legendInsideFitBounds(layout),
-        `${name}: the legend would be off-viewport — the room fits ${JSON.stringify(fit)} but the legend is at ${JSON.stringify(legend)}`
-      ).toBe(true);
-      // The shipped defect was fitting the NODES' bounding box: the fit must reach
-      // past the last node, or the reserved legend band ends up below the fold.
-      const nodeBottom = Math.max(...layout.nodes.map(node => node.y + node.height));
-      expect(fit.height, `${name}: the fit stops at the nodes`).toBeGreaterThan(nodeBottom);
-      expect(fit.height).toBeGreaterThanOrEqual(legend.y + legend.height);
-      expect(fit.width).toBeGreaterThanOrEqual(legend.x + legend.width);
-      expect(legend.y + legend.height).toBeLessThanOrEqual(layout.height);
-    });
-  }
-
-  // "Only its top sliver shows" is the regression: React Flow's default fit maps the
-  // NODES' bounding box, the legend lives below them, and on screen only its top few
-  // pixels were left. The measure is the VISIBLE FRACTION of the legend's area after the
-  // fit transform, clipped to the viewport — 1.0 means all of it is on screen. (The old
-  // assertion compared legend.height × scale with itself and could not fail.)
-  const VIEW = { width: 1440, height: 920 };
-  function visibleFraction(fit: FlowRect, legend: FlowRect): number {
-    // React Flow's fit: scale the rect to the viewport minus the padding, centred
-    const scale = Math.min(
-      (VIEW.width * (1 - 2 * FLOW_FIT_PADDING)) / fit.width,
-      (VIEW.height * (1 - 2 * FLOW_FIT_PADDING)) / fit.height
-    );
-    const x = (VIEW.width - fit.width * scale) / 2 + (legend.x - fit.x) * scale;
-    const y = (VIEW.height - fit.height * scale) / 2 + (legend.y - fit.y) * scale;
-    const w = legend.width * scale;
-    const h = legend.height * scale;
-    const visW = Math.max(0, Math.min(x + w, VIEW.width) - Math.max(x, 0));
-    const visH = Math.max(0, Math.min(y + h, VIEW.height) - Math.max(y, 0));
-    return (visW * visH) / (w * h);
-  }
-  /** What React Flow's own fitView would fit: the nodes' bounding box, nothing else. */
-  function nodeBox(layout: FlowLayoutResult): FlowRect {
-    const xs = layout.nodes.map(n => n.x), ys = layout.nodes.map(n => n.y);
-    const x = Math.min(...xs), y = Math.min(...ys);
-    return {
-      x, y,
-      width: Math.max(...layout.nodes.map(n => n.x + n.width)) - x,
-      height: Math.max(...layout.nodes.map(n => n.y + n.height)) - y,
-    };
-  }
+describe("5 — the fit is the content: no legend band under the cards", () => {
+  // The legend used to be drawn on the canvas in a band reserved under the cards, and
+  // the fit had to include it. It is a collapsible screen overlay now (plan-20261011-005),
+  // so that band only shrank the first fit. The layout's rect must end at its content.
   for (const [name, layout] of [
     ["the dagre layout", layoutFlow(sample)],
     ["the layer view the room draws", layoutLayers(sample)],
     ["the layer view over the live backlog", layoutLayers(live)],
   ] as const) {
-    it(`maps the WHOLE legend on screen, not a sliver — ${name}`, () => {
+    it(`reserves nothing below the last card — ${name}`, () => {
       const fit = flowFitBounds(layout);
-      const legend = layout.chrome.legend;
-      // the fit input really includes the legend…
-      expect(legend.y + legend.height).toBeLessThanOrEqual(fit.y + fit.height);
-      // …so all of it is visible
-      expect(visibleFraction(fit, legend)).toBeCloseTo(1, 6);
+      // content = every card, and in the layer view every band (a band runs past its last card)
+      const bands = "bands" in layout ? layout.bands : [];
+      const contentBottom = Math.max(...layout.nodes.map(node => node.y + node.height), ...bands.map(b => b.y + b.height));
+      expect(fit.height, `${name}: the fit stops above a card`).toBeGreaterThanOrEqual(contentBottom);
+      // only the outer margin (14-16 px) may sit under the content, never a ~130 px legend band
+      expect(fit.height - contentBottom, `${name}: a band is still reserved under the cards`).toBeLessThanOrEqual(24);
     });
   }
-  it('the measure catches the regression: a node-box fit leaves the legend off screen', () => {
-    // the negative control, on the tall layout where the sliver happened: the very fit
-    // that produced it scores < 1. (The wide layer view has vertical slack, so a node-box
-    // fit happens to show its legend — there it is the positive check above that guards.)
-    const layout = layoutFlow(sample);
-    expect(visibleFraction(nodeBox(layout), layout.chrome.legend)).toBeLessThan(0.5);
-  });
 });

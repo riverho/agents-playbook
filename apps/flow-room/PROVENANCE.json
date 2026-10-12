@@ -164,9 +164,9 @@
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "1078b4e7b41dbdabf58c7daebf8833b86249f983abda8720e7c3af3fa70ac507",
-      "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask (034, 015); legend as screen overlay (006); plan-20261010-040: changed-card ids from the host, a past version is read-only with Fork into the open version (S7); isExpanded so an unfolded stack can fold back from its band head (G3); card moves are undoable view state: Undo (Ctrl+Z) and Reorganize in the zoom controls",
-      "recorded": "2026-10-12T01:42:21.354Z",
+      "sha256": "e3c59c68f278fbc45c2e8cfac0abf158d83ae00811d022507a93498868215c96",
+      "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask (034, 015); legend as screen overlay (006); plan-20261010-040: changed-card ids from the host, a past version is read-only with Fork into the open version (S7); isExpanded so an unfolded stack can fold back from its band head (G3); card moves are undoable view state: Undo (Ctrl+Z) and Reorganize in the zoom controls; plan-20261011-005: the legend folds to one button (Hide/Show legend, remembered per viewer)",
+      "recorded": "2026-10-12T09:25:53.148Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -231,6 +231,10 @@
         {
           "sha256": "c0dd2ee02b9a2d2974f1488d68d53ad78716886bedb756a44370eb27b1271386",
           "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask (034, 015); legend as screen overlay (006); plan-20261010-040: changed-card ids from the host, a past version is read-only with Fork into the open version (S7); isExpanded so an unfolded stack can fold back from its band head (G3)"
+        },
+        {
+          "sha256": "1078b4e7b41dbdabf58c7daebf8833b86249f983abda8720e7c3af3fa70ac507",
+          "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask (034, 015); legend as screen overlay (006); plan-20261010-040: changed-card ids from the host, a past version is read-only with Fork into the open version (S7); isExpanded so an unfolded stack can fold back from its band head (G3); card moves are undoable view state: Undo (Ctrl+Z) and Reorganize in the zoom controls"
         }
       ]
     },
@@ -353,13 +357,17 @@
       ]
     },
     "lib/flow-geometry.test.ts": {
-      "sha256": "d07aa89ab93edd40a9eabebdba97a72ab8fbe235cd7b86ee57f5188b0c827a94",
-      "reason": "plan-20261010-028 + 006: blocked tone pinned to --tone-risk; the 'not a sliver' identity replaced by the visible fraction of the legend under the fit (+ node-box negative control)",
-      "recorded": "2026-10-11T17:28:43.895Z",
+      "sha256": "a84d6e0b6663b90fb0f7d27bb9ee96bc4c5cfbdffcfb23b0bff258d5bcd4cc8b",
+      "reason": "plan-20261010-028 + 006: blocked tone pinned to --tone-risk; the 'not a sliver' identity replaced by the visible fraction of the legend under the fit (+ node-box negative control); plan-20261011-005: the legend takes no canvas - sized from its content, x/y 0, and the fit ends at the cards (layer view: at the bands)",
+      "recorded": "2026-10-12T09:25:53.239Z",
       "superseded": [
         {
           "sha256": "57c183b1aabd3961d22b3f8cfc82dd847dbe5dd6798af6061a26d7e1ba4b733d",
           "reason": "plan-20261010-028 (v2 contract, D12/D13/D19/D20): the minimap's blocked tone is pinned to --tone-risk (was rose)"
+        },
+        {
+          "sha256": "d07aa89ab93edd40a9eabebdba97a72ab8fbe235cd7b86ee57f5188b0c827a94",
+          "reason": "plan-20261010-028 + 006: blocked tone pinned to --tone-risk; the 'not a sliver' identity replaced by the visible fraction of the legend under the fit (+ node-box negative control)"
         }
       ]
     },
@@ -380,9 +388,15 @@
       "recorded": "2026-10-10T18:51:09.395Z"
     },
     "lib/flow-layout.ts": {
-      "sha256": "70a2bee53a350351fe0cd3b86a7d6ca0dab5de87366a845c688d2446ff5ca3e8",
-      "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): task cards are 288 wide and as tall as faceHeight(node) (K5)",
-      "recorded": "2026-10-11T03:20:37.780Z"
+      "sha256": "5920fab98ac0ebc009b7284c6583cd01fc130c3932b80570b7b6c0d91ed36c6e",
+      "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): task cards are 288 wide and as tall as faceHeight(node) (K5); plan-20261011-005: no canvas reserve for the legend (a screen overlay): sized only, out of width/height, declutter and label avoidance; legendInsideFitBounds removed",
+      "recorded": "2026-10-12T09:25:53.332Z",
+      "superseded": [
+        {
+          "sha256": "70a2bee53a350351fe0cd3b86a7d6ca0dab5de87366a845c688d2446ff5ca3e8",
+          "reason": "plan-20261010-030 (v2 card face, D13/D14/D19/D20; K1-K5, F1-F4, T3): task cards are 288 wide and as tall as faceHeight(node) (K5)"
+        }
+      ]
     },
     "lib/flow-types.ts": {
       "sha256": "ee7e48a738072a7f08c5384771aa5fb6fae18795f9f4d007ad1bb1663ccf2ef3",
