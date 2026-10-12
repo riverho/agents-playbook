@@ -1,12 +1,15 @@
 # Agents-Playbook
 
-Current release: **v0.7.1** — a patch fixing the plugin's `@deepseek-ai/dsh*` peer range (which
-made it uninstallable on dsh `0.2.0-rc.2`) and a pack gate that had stopped checking, on top of
-**v0.7.0**: **layered planning** with a provably read-only dry run,
-**human-gated branches** that batch everything only a person can clear, **multi-agent leases**,
-complete **worktrees**, crash recovery, and the **DeepSeek Harness plugin**
-(`dsh-agents-playbook`). On npm as [`agents-playbook`](https://www.npmjs.com/package/agents-playbook)
-· [what's in it](#whats-in-v070).
+Current release: **v0.8.0** — the release that makes "finished" something you have to prove:
+**versions** with an executable close, an **orchestrator** (`pb tick`) that proposes and never
+decides, **`pb state` / `pb graph`** projections with the **Flow room** as an app in this repo
+(`pb ui`), human-in-the-loop steering that lands in the journal, and a configurable check runner
+in which a killed check is a *non-verdict* rather than a failure. It sits on top of **v0.7.0**'s
+**layered planning** with a provably read-only dry run, **human-gated branches** that batch
+everything only a person can clear, **multi-agent leases**, complete **worktrees**, crash
+recovery, and the **DeepSeek Harness plugin** (`dsh-agents-playbook`). On npm as
+[`agents-playbook`](https://www.npmjs.com/package/agents-playbook)
+· [what's in it](#whats-in-v080).
 
 > **Done is an exit code, not prose.** The kernel is a `pb record --status done` that re-runs each
 > task's `acceptance_checks` (shell commands) and *refuses* on failure. Anchoring, the North Star
@@ -34,6 +37,80 @@ That's the whole thesis. No specs pipeline, no debt ledger — the playbook earn
 when a real workload demands it. (Layers arrived in v0.7.0 and are held to that bar: they are an
 executable plan the claim path enforces, not metadata beside it. See
 [what came back differently](#what-was-deliberately-cut--and-what-came-back-differently).)
+
+## What's in v0.8.0
+
+**A version is a claim you have to close with a command.** `pb version new|open|freeze|close|carry|drop|list`
+makes a loop a named unit with a goal and **stop checks**. `version close` *runs* those checks and
+refuses while work is open: every open card must be carried (`--to next`, keeping its id and history)
+or dropped with a reason, and a dropped card stays in history without ever being reported as passed.
+Only one version may be open or frozen; a frozen version takes fixes, chores and experiments but no
+features. Closing, carrying, dropping and retitling are **person-only** — the engine refuses them
+when it sees agent context, because "this version is finished" is not a decision an agent gets to make
+alone.
+
+**`pb tick` — an orchestrator that proposes and never decides.** One deterministic pass over the open
+version, configured by the master's `orchestrator:` block: it releases claims whose journal has gone
+quiet past `stale_claim_minutes`, re-asks open questions on the `reprompt_minutes` schedule, routes
+around blocked / waiting / failing work (one `defer` row each), proposes the next card, and proposes
+closing once the stop checks pass — writing exactly **one** `tick` row. It never answers a decision,
+opens or closes a version, merges, or starts an agent. `--dry-run --json` writes nothing. The host
+owns the schedule; the engine owns the pass.
+
+**`pb state` and `pb graph`: the two read-only projections a UI needs.** `state` (schema
+`agent-playbook.state.v1`) carries the open version, phase, orchestrator state and last tick, counts,
+and `journal_seq` + `change_token` — the token a room polls with, so an unchanged playbook answers
+`304` instead of re-rendering. `graph` (schema `agent-playbook.graph.v1`) carries the start/goal
+bookends, a node per card with its cycle, provenance, worker truth and a **live** flag, proven edges
+(a dependency, or the `origin_task` of a spawn row — a bare claim is drawn dashed, never as the same
+ink), `layers[]` with each gate's last **real** result, and the human batch. `--version <name>` renders
+a historical version's graph.
+
+**The Flow room is an app in this repo, and it draws the live playbook.**
+
+```bash
+pb ui                      # serve the room against the playbook above cwd (→ http://127.0.0.1:4317/)
+pb ui --port 4400 --app <dir>
+```
+
+`apps/flow-room` renders `pb graph --json` — cards, five kinds of proven edge, the layer view, the
+per-card inspector, the state bar, History and versions, and a multi-select steering dock whose
+actions land in the journal as ordinary attributed rows. A zero-dependency `server.mjs` serves the
+built `dist/` plus `/api/{graph,state,history,task,comment,steer,attach,fork,worker,decide,harness,ask}`.
+It also renders as a **DeepSeek Harness panel** (`dsh-plugin/client.js`). The room began as a design
+probe in the Wenmei playground; that dependence is **retired** — this repo owns the code,
+`PROVENANCE.json` pins the commit it was copied from, and both directions are gated
+(`check-app-decoupled.mjs`, `check-wenmei-retired.mjs`; see `docs/flow-room-retirement.md`).
+
+**A person can steer from the record.** `pb comment --task <id> --text "…" --intent
+comment|steer|question|finding` appends an attributable note without moving status; `pb attach`
+associates a document that must exist; `pb decide --task <id> --option <id> --reason "…"` answers a
+`human:` ask in one row. An agent may recommend an option but must not decide in the person's place —
+the engine refuses an agent answering its own human gate.
+
+**A killed check is a non-verdict, and the limits are yours to set.** A task's `check_timeout_ms`
+beats `PB_CHECK_TIMEOUT_MS`, which beats the documented 600000 ms default; a check killed by the limit
+is `TIMEOUT` and an over-printing one is `OUTPUT-LIMIT` (16 MiB, `PB_CHECK_MAX_OUTPUT_BYTES`) — neither
+is ever reported as a failed check, and a nonsense limit warns and falls through instead of silently
+disabling the bound. Each check runs under a launcher that kills its **whole process tree** before
+reporting, and a kill that cannot be confirmed is reported next to the verdict and journalled in one
+`check-run` row with no status change.
+
+**`skills/harness-lifecycle/SKILL.md`** is the orchestrator's entry point: the pb data schema, how to
+slice a plan by layers, the tick and its human-in-the-loop contract, worker worktrees, and commit/push.
+
+### Also in this release
+
+| Area | What shipped |
+| --- | --- |
+| **Versions** | `version new\|open\|freeze\|close\|carry\|drop\|list`, `version retitle`, `version migrate` (a reviewable batch; `--apply` is a person's step). A close runs the stop checks and refuses unfinished cards. |
+| **Orchestrator** | `pb tick [--dry-run] [--json] [--now <iso>]` + the master's `orchestrator:` block; `max_workers: 0` = propose only. |
+| **Projections** | `pb state --json`, `pb graph --json [--version <name>]`, RunCards carrying their own journal rows. |
+| **Flow room** | `apps/flow-room` + `pb ui`; `npm run build:app` builds the dist the engine ships (`prepack` refuses a stale or empty app). |
+| **Human-in-the-loop** | `pb comment --intent …`, `pb attach`, `pb decide`, `human:` blocks; the person-only (V6) list. |
+| **Robustness** | Whole-tree check kills with an honest failure report; `OUTPUT-LIMIT` split from `TIMEOUT`; `worker remove` unlinks links instead of following them; version-lifecycle races closed. |
+
+Full detail in [`CHANGELOG.md`](CHANGELOG.md); release steps in [`RELEASE.md`](RELEASE.md).
 
 ## What's in v0.7.0
 
@@ -164,10 +241,13 @@ AGENTS.md          Pointer for cross-tool compatibility (CLAUDE.md mirrors it)
                    — gitignored: not in the git repo, but shipped in the npm tarball
 scripts/pb.mjs     The loop CLI — every command (see "Command reference")
 processes/         Canonical, ordered workflows (+ index.yaml)
-skills/            Short "how-to"s that route to processes (+ index.yaml)
+skills/            Short "how-to"s that route to processes (+ index.yaml),
+                   including skills/harness-lifecycle/ — orchestrating a version
 modes/             Persona packs mounted on the invariant floor (+ index in playbook.yaml)
 memory/            project-memory.md · backlog.yaml · journal.ndjson · loops · lessons
 artifacts/reports/ Generated human-facing rollups
+apps/flow-room/    The Flow room — a standalone React app drawing `pb graph --json`
+run-flow-room.sh   One-line launcher for the room (`node apps/flow-room/server.mjs`)
 dsh-plugin/        DeepSeek Harness plugin (carries its own bundled engine)
 ```
 
@@ -186,9 +266,12 @@ node scripts/pb.mjs validate --task T1            # run the task's checks on dem
 node scripts/pb.mjs record --task T1 --action execute --status done --notes "did the thing"
 #   ^ re-runs the checks; refuses to record done if any fail
 node scripts/pb.mjs report        # writes artifacts/reports/report-<date>.md
+node scripts/pb.mjs ui            # serve the Flow room for this playbook (→ :4317)
 ```
 
 There are npm aliases too: `npm run status`, `npm run next`, `npm run validate`, `npm run report`.
+Building the app / the plugin bundle: `npm run build:app`, `npm run build:client`,
+`npm run build:plugin`.
 
 ## Install as a package
 
@@ -349,10 +432,12 @@ surfaces at the heartbeat instead of being discovered later.
 published on npm (the 0.6.2 rename to the plural; earlier revisions shipped under the singular
 spelling). It exposes one `playbook` tool
 (status / anchor / next / claim / task / check / record / worker / init / unlock / repair), registers
-the playbook's own skills as harness skills (`playbook-<id>`), and stages the constitution — North
-Star, active loop, task in hand and **its checks** — on the agent's inbox before each step, so
-compaction cannot lose the plot. It bundles the engine, so installation is one step and cannot drift
-from the engine it was tested against.
+the playbook's own skills as harness skills (`playbook-<id>`, including `playbook-harness-lifecycle`),
+and stages the constitution — North Star, active loop, task in hand and **its checks** — on the agent's
+inbox before each step, so compaction cannot lose the plot. It bundles the engine, so installation is
+one step and cannot drift from the engine it was tested against: **the bundle carries pb v0.8.0**, so a
+workspace with no playbook of its own still gets versions, `pb tick`, `pb state`/`pb graph` and the
+Flow room. It also ships the room as a Harness panel (`dsh.client`, `client.js`).
 
 Two rules define the boundary, and they are the whole design:
 
@@ -405,6 +490,21 @@ For HTML sources, start from
 Pencil sources, produce the same target-repository artifact with `source.kind: pencil` and stable
 Pencil provenance. The adapter processes live under `modes/coding/processes/`.
 
+## Versions, and the phase loop above the task loop
+
+**A version** (`pb version …`) is the unit a release is closed on: a named loop with a goal and
+`stop_checks`, closed by running them (`version close`), with every open card explicitly carried or
+dropped first. **A phase** (`pb cycle` → `pb reflect`) is the lighter rhythm inside it, and the
+**orchestrator** (`pb tick`) is the pass a host runs on a schedule: it releases quiet claims, re-asks
+open questions, routes around blocked work, proposes the next card, and proposes closing — never
+deciding, closing or merging. `pb state` is the projection to poll (`journal_seq` is the change
+token); `pb graph` is the projection to draw.
+
+Closing, carrying, dropping and retitling a version, and applying a `version migrate` batch, are
+**person-only**: the engine refuses them from a process carrying agent context. Everything else —
+claims, checks, records, comments, worker lifecycles — is an agent's to do, and every one of them is
+attributable back to the agent that did it.
+
 ## Loop epochs and lessons
 
 Use `pb loop new` to open a durable loop epoch. New `pb record` entries are stamped with the active
@@ -441,15 +541,19 @@ git rm -r --cached memory artifacts
 | Group | Commands |
 | --- | --- |
 | Loop | `status` · `next --claim` · `record` · `report` · `validate [--task]` |
-| Task & plan | `task show <id>` · `plan --goal ".."` · `runcard list\|show <id>` |
+| Task & plan | `task show <id>` · `plan --goal ".." [--dep …] [--layer …] [--check …]` · `plan --layers [--check-gates]` · `runcard list\|show <id>` |
+| Versions | `version new\|open\|freeze\|close\|carry\|drop\|list` · `version retitle` · `version migrate` (freeze/close/carry/drop/retitle/migrate-apply are **person-only**) |
+| Orchestrator | `tick [--dry-run] [--json]` · `state [--json]` · `graph [--json] [--version <name>]` |
+| Human-in-the-loop | `comment --task <id> --text ".." [--intent …]` · `attach --task <id> --path <file>` · `decide --task <id> --option <id> --reason ".."` |
 | Multi-agent | `release --task <id> [--token] \| --stale <min>` · `unlock [--force]` · `repair-state [--check\|--apply]` |
 | Worktrees | `worker create\|status\|exec\|verify\|merge\|remove\|checker\|merge-ready\|provider-rate-limit` |
 | Loop epochs | `loop new\|status\|run\|close\|quarantine` · `learn` · `learn status` |
-| Phase | `cycle [--new]` · `reflect` |
+| Phase | `cycle [--new] [--edit]` · `reflect` |
 | Context | `anchor [--brief]` · `checkpoint [--snapshot]` |
 | Processes | `run -- <cmd>` · `ps` · `stop` |
 | Packs & modes | `list [processes\|skills\|modes]` · `pack build\|install` |
-| Lifecycle | `scaffold` · `init` · `bootstrap` · `update [--check]` · `help` |
+| Room | `ui [--port N] [--app <dir>]` |
+| Lifecycle | `scaffold [--with-ui]` · `init` · `bootstrap` · `update [--check]` · `help` |
 
 Run `node scripts/pb.mjs help` for flags. Statuses: `todo, in_progress, blocked, done`.
 
@@ -463,10 +567,29 @@ Being explicit about what is shipped and what is not:
 
 | Artifact | State |
 | --- | --- |
-| Engine (`agents-playbook`) | **repo** `0.7.1` (unreleased, untagged); **npm latest is `0.7.0`** |
-| Git tags | `v0.1.0`, `v0.3`, `v0.3.2`, `v0.6.0`, `v0.6.1`, `v0.6.2`, `v0.6.3`, `v0.7.0` |
-| Harness plugin (`dsh-agents-playbook`) | **repo** `0.7.1`; **npm latest is `0.7.0`**. Install `dsh plugin --profile <p> add dsh-agents-playbook@^0.7.1` (needs pnpm; plain `npm install` does **not** enable it). On dsh `0.2.0-rc.2` only `0.7.1` installs: `0.7.0` declares `^0.1.5-rc.2` peers, which that runtime's compatibility gate rejects |
-| Live in-harness verification | pending (a boot either serves the Web UI or runs an LLM task, so it stays a human step) |
+| Engine (`agents-playbook`) | **repo** `0.8.0` (unreleased, untagged); **npm latest is `0.7.1`** |
+| Git tags | `v0.1.0`, `v0.3`, `v0.3.2`, `v0.6.0`, `v0.6.1`, `v0.6.2`, `v0.6.3`, `v0.7.0`, `v0.7.1` |
+| Harness plugin (`dsh-agents-playbook`) | **repo** `0.8.0`; **npm latest is `0.7.1`**. Install `dsh plugin --profile <p> add dsh-agents-playbook@^0.8.0` (needs pnpm; plain `npm install` does **not** enable it) |
+| Live in-harness verification | the plugin's tool and skill provider are verified against the real packages; a live session's *authorship* stays a human step |
+
+### Installing an unpublished build into a Harness profile
+
+A version that is not on npm can still be mounted, from the tarball the build produces — the same
+shape a `file:` dependency takes in any profile:
+
+```powershell
+npm run build:plugin && npm run pack:plugin        # bundle the engine + check the publish set
+cd dsh-plugin && npm pack --pack-destination dist  # → dist/dsh-agents-playbook-0.8.0.tgz
+
+# `dsh` ships inside the app (…\dsh\resources\runtime\cli\bin\dsh.cmd); it is not on PATH.
+& "<dsh-install>\resources\runtime\cli\bin\dsh.cmd" plugin --profile <profile> `
+    add 'file:D:/<repo>/dsh-plugin/dist/dsh-agents-playbook-0.8.0.tgz'
+```
+
+`dsh plugin` is a guarded pnpm passthrough: it validates the runtime compatibility gate, rewrites the
+profile's `package.json`, and **rolls back** if the plugin is rejected. `dsh.profile.bundles` needs no
+edit — a package declaring `dsh.bundle.patch` is appended to the layer stack by name. Reload the
+session afterwards (the profile is composed at boot).
 
 ## What was deliberately cut — and what came back differently
 

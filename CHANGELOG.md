@@ -5,6 +5,109 @@ makes the pair identifiable. `npm run check:version` guards the engine's own
 `package.json` ↔ `playbook.yaml` agreement, and `npm run pack:plugin` refuses to build a
 tarball whose plugin version differs from the engine it carries.
 
+## 0.8.0 — versions you have to close, an orchestrator that only proposes, and the Flow room as a real app
+
+Minor. New lifecycle surface (versions), a new scheduling surface (`pb tick`), and the graph UI
+moved out of another project's playground and into this repo. A playbook that never calls
+`pb version` keeps the legacy loop workflow unchanged.
+
+### Added
+
+- **Versions, with an executable close.** `pb version new|open|freeze|close|carry|drop|list`
+  (plus `version retitle` and `version migrate`) turn a loop into a named unit with a goal and
+  **stop checks**. `version close` runs those checks and refuses while work is open: every open
+  card must be carried (`--to next`, keeping its id and history) or dropped with a reason, and
+  dropped cards stay in history without ever being reported as passed. Only one version may be
+  open or frozen, a frozen version accepts fixes, chores and experiments but no features, and a
+  closed version is read-only. Closing, carrying, dropping and retitling are **person-only**
+  (V6): the engine refuses them when it sees agent context (`PB_RUNTIME`, `PB_SESSION_ID`,
+  `PB_AGENT_CHAIN`, `PB_PARENT_AGENT_ID`, `PB_CLAIM_TOKEN`), because "this version is finished"
+  is a decision no agent gets to make on its own. `version migrate` writes a reviewable batch
+  that turns a pre-version loop into a closed version and opens the next — `--apply` is a
+  person's step.
+- **An orchestrator that proposes and never decides: `pb tick`.** One deterministic pass over
+  the open version, configured by the master's `orchestrator:` block (`every_minutes`,
+  `max_workers: 0`, `stale_claim_minutes`, `reprompt_minutes`, `paused`). It releases claims
+  whose journal has gone quiet, re-asks open questions on the `reprompt_minutes` schedule,
+  routes around blocked / waiting / failing work (one `defer` row each), proposes the next card,
+  and proposes closing once the stop checks pass — writing exactly **one** `tick` row. It never
+  answers a decision, opens or closes a version, merges, or starts an agent. `--dry-run --json`
+  shows the plan and writes nothing; `paused: true` stops it. The host owns the schedule; the
+  engine owns the pass.
+- **`pb state --json` — the projection a room polls.** Schema `agent-playbook.state.v1`: the open
+  version, the phase, orchestrator state and last tick, counts (`todo` / `in_progress` / `blocked`
+  / `done` / `needs_you` / `stale`), and `journal_seq` + `change_token` — the token a UI polls
+  with, so an unchanged playbook answers `304` instead of re-rendering.
+- **The Flow room is an app in this repo** — `apps/flow-room`, served by `pb ui [--port N]
+  [--app <dir>]` (or `run-flow-room.sh`). It draws the **live** `pb graph --json` of the playbook
+  above the working directory: the start card, the backlog as cards, five kinds of proven edge,
+  the human batch, the cycle-stop card, a per-card inspector and a multi-select steering dock. A
+  zero-dependency `server.mjs` serves the built `dist/` plus
+  `/api/{graph,state,history,task,comment,steer,attach,fork,worker,decide,harness,ask}`, so
+  steering from the room lands in the journal as an ordinary attributed row. It also renders as a
+  DeepSeek Harness panel (`dsh-plugin/client.js`). The room was built in the Wenmei playground as
+  a design probe; the dependence is **retired** — `apps/flow-room` is the source of truth,
+  `PROVENANCE.json` pins the commit it was copied from, `check-app-decoupled.mjs` proves the
+  module graph and `check-wenmei-retired.mjs` proves the resolution graph. `docs/flow-room-retirement.md`
+  records the direction and the honest limits of the gate.
+- **`pb graph --json` (schema `agent-playbook.graph.v1`) grew up.** `layers[]` now carries each
+  layer's gate and its last **real** result, each node carries a `live` flag (a held claim plus a
+  journal row under 15 minutes old), and `--version <name>` renders a historical version's graph.
+  RunCards carry their own ordered journal rows, so a card's steering thread needs no second
+  store; an edge says whether it is `proven` (a dependency, or the `origin_task` of a spawn row)
+  or a bare claim to draw dashed.
+- **Steering a person can perform from the record.** `pb comment --task <id> --text "…"
+  --intent comment|steer|question|finding` appends a note without moving status; `pb attach`
+  associates a document that must EXIST; `pb decide --task <id> --option <id> --reason "…"`
+  answers a `human:` ask in one row. An agent may recommend an option but must not decide in the
+  person's place — the engine refuses an agent answering its own human gate.
+- **`skills/harness-lifecycle/SKILL.md`** (→ `processes/harness-lifecycle.yaml`): how to
+  orchestrate a version rather than execute one card — the pb data schema, the layer-sliced plan,
+  the tick and its human-in-the-loop contract, worker worktrees, and commit/push.
+- **Check limits are configurable and their outcomes are distinct.** A task's `check_timeout_ms`
+  beats `PB_CHECK_TIMEOUT_MS`, which beats the documented 600000 ms default; a killed check is
+  `TIMEOUT` and an over-printing one is `OUTPUT-LIMIT` — neither is ever reported as a failed
+  check, and a nonsense limit warns and falls through instead of disabling the bound. Layer gates
+  run through the same launcher with their own shorter budget.
+
+### Fixed
+
+- **A killed check's whole process tree is killed — and a kill that fails is no longer silent.**
+  The engine used to kill only its own child, so on Windows the `cmd.exe` shim died while the
+  real check lived on and could write after the engine had declared "no verdict". Each check now
+  runs under a launcher that enforces the time and output bounds itself and kills the tree before
+  reporting. When that kill cannot be confirmed, the console warns next to the verdict and the
+  fact is journalled in one `check-run` row with **no status change** — previously a leaked
+  process was invisible. Pinned by `scripts/test-timeout-kills-tree.mjs` and
+  `scripts/test-kill-failure-reported.mjs`.
+- **`ENOBUFS` was misreported as a timeout, and `timeout: 0` disabled the limit entirely.**
+  A full pipe is now its own outcome (`OUTPUT-LIMIT`, 16 MiB, `PB_CHECK_MAX_OUTPUT_BYTES`) and a
+  numeric limit that cannot be used warns and falls through to the next source, because Node
+  reads `0` as "never time out". Pinned by `scripts/test-check-runner-limits.mjs`.
+- **`pb worker remove` could empty the real `node_modules`.** Teardown followed a junction or
+  symlink out of the worktree and deleted the target's contents; project-memory rule 27 records
+  the incident. Removal now `lstat`s the tree, unlinks every link **as a link**, and refuses
+  (naming the path, deleting nothing) rather than follow one. Pinned by
+  `scripts/test-worker-remove-links.mjs`.
+- **`pb attach` could corrupt a JSON backlog**, and `pb plan --dep` accepted a card that broke
+  another card's ordering (including one it landed on only indirectly). Both are refused before
+  anything is written; pinned by `scripts/test-room-write-primitives.mjs` and
+  `scripts/test-plan-linkage.mjs`.
+- **`pb scaffold` silently accepted flags it did not read** (`--goal` looked accepted and did
+  nothing), and `pb-daily-monitor.mjs --help` performed a REAL iteration — it adopted whatever
+  loop was active and scaffolded work into it. A `--help` is a read; unknown flags refuse.
+  Pinned by `scripts/test-scaffold-lifecycle.mjs` and `scripts/test-daily-monitor-help-inert.mjs`.
+- **Version lifecycle races.** A claim could move under a lifecycle change, and worker effects
+  could commit unserialized; both are refused/serialized now, with long worker operations on a
+  tracked lease so other agents can still record. Pinned by `scripts/test-version-races.mjs`.
+- **A test asserted the contract the engine had already improved.** `test-check-timeout.mjs`
+  required that a refused `record --status done` write NO journal row, which is true only when
+  the check's process tree is confirmed dead. On a machine where `taskkill /T /F` cannot prove it
+  (measured on Windows: exit 128, "The operation attempted is not supported"), the engine
+  correctly journals its one `check-run` trace — so a correct refusal was reported as a red
+  suite. The assertion now pins both worlds: a refusal never changes a task's status, and the
+  `check-run` trace appears **exactly** when the console warned the kill was unconfirmed.
+
 ## 0.7.1 — the peer range that locked the plugin out, and a gate that had stopped checking
 
 Patch. No engine behaviour changes; the playbook surface is identical to 0.7.0.
