@@ -59,7 +59,8 @@ function loadFlow(idOrPath) {
 const runPb = (argv) => runNode(PB, argv, { cwd: ROOT });
 
 function runStep(step, dryRun) {
-  const argv = ['--mode', step.mode];
+  // the flow opened (or reused) this loop for its steps: the monitor runs inside it on purpose
+  const argv = ['--mode', step.mode, '--adopt-loop'];
   if (step.input) argv.push('--input', step.input);
   if (step.output) argv.push('--output', step.output);
   if (dryRun) argv.push('--dry-run');

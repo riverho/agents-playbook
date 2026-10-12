@@ -39,23 +39,44 @@ const DEFAULT_MONITOR_MODE =
       ? _bootMaster.default_mode.trim()
       : Object.keys(_bootMaster.modes || {})[0];
 
+const USAGE = `Usage: node scripts/pb-daily-monitor.mjs [--mode <id>] [--config <file>] [--project <id>] [--window <w>]
+                                       [--input <dir>] [--output <dir>] [--dry-run] [--reset-cycle] [--adopt-loop]
+
+One monitoring iteration: open (or reuse) the monitor's loop, scaffold the mode's backlog,
+auto-run it and surface errors. It WRITES (backlog, journal, loops, reports) unless --dry-run.
+
+  --adopt-loop   run inside an active loop the monitor did not open (pb-flow passes this
+                 for its own flow loop). Without it, an unrelated active loop is refused.
+  --help, -h     print this and exit; nothing is read or written.`;
+
+// Every flag is known, or the run is refused BEFORE anything is read or written: a
+// --help that ran a real iteration wrote a false `done` into an unrelated loop once.
 function parseArgs(argv) {
-  const args = { mode: DEFAULT_MONITOR_MODE, project: null, window: null, config: null, input: null, output: null, dryRun: false, resetCycle: false };
+  const args = { mode: DEFAULT_MONITOR_MODE, project: null, window: null, config: null, input: null, output: null, dryRun: false, resetCycle: false, adoptLoop: false, help: false };
+  const VALUED = { '--mode': 'mode', '--project': 'project', '--window': 'window', '--config': 'config',
+    '--input': 'input',    // flow handoff: read scaffold from a prior step's output dir
+    '--output': 'output' }; // flow handoff: write this step's output for the next step
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--mode') args.mode = argv[++i];
-    else if (a === '--project') args.project = argv[++i];
-    else if (a === '--window') args.window = argv[++i];
-    else if (a === '--config') args.config = argv[++i];
-    else if (a === '--input') args.input = argv[++i];   // flow handoff: read scaffold from a prior step's output dir
-    else if (a === '--output') args.output = argv[++i]; // flow handoff: write this step's output for the next step
+    if (a === '--help' || a === '-h') args.help = true;
+    else if (a in VALUED) {
+      const v = argv[++i];
+      if (v === undefined || v.startsWith('--')) return { error: `${a} needs a value` };
+      args[VALUED[a]] = v;
+    }
     else if (a === '--dry-run') args.dryRun = true;
     else if (a === '--reset-cycle') args.resetCycle = true;
+    else if (a === '--adopt-loop') args.adoptLoop = true;
+    else return { error: `unknown argument: ${a}` };
   }
   return args;
 }
 
 const args = parseArgs(process.argv);
+if (args.help) { console.log(USAGE); process.exit(0); }
+if (args.error) { console.error(`pb-daily-monitor: ${args.error}. Nothing was run or written.
+
+${USAGE}`); process.exit(2); }
 const DRY_RUN = args.dryRun;
 const MODE = args.mode;
 const PROJECT = args.project;
@@ -151,14 +172,22 @@ function resolveConfigPath() {
 
 const CONFIG_PATH = resolveConfigPath();
 
+// The loop this monitor opens for itself; any OTHER active loop is someone's phase.
+const OWN_LOOP_GOAL = `Daily ${MODE} monitoring`;
+
 function ensureLoop() {
   const loop = readActiveLoop(ROOT);
+  if (loop && loop.goal !== OWN_LOOP_GOAL && !args.adoptLoop) {
+    console.error(`pb-daily-monitor: the active loop ${loop.id} ("${loop.goal ?? loop.title ?? 'no goal'}") was not opened by this monitor. ` +
+      'Scaffolding watch tasks into it would mix them into that phase. Close it first, or pass --adopt-loop to run inside it on purpose. Nothing was written.');
+    process.exit(3);
+  }
   if (loop) return loop;
   if (DRY_RUN) {
     console.log('[dry-run] would create a new loop');
     return { id: 'DRY' };
   }
-  runPb(['loop', 'new', '--fresh', '--goal', `Daily ${MODE} monitoring`, '--stop', 'Backlog drained and errors surfaced']);
+  runPb(['loop', 'new', '--fresh', '--goal', OWN_LOOP_GOAL, '--stop', 'Backlog drained and errors surfaced']);
   return readActiveLoop(ROOT);
 }
 
