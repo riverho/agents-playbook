@@ -1232,9 +1232,26 @@ code,
   background: currentColor;
   animation: flow-led 1.2s ease-in-out infinite;
 }
+/* The live card stands ~10% larger than its neighbours and is raised above them, so a
+   fleet's working cards read at a glance; each animates on its own, any number at once. */
 .flow-face--live {
+  scale: 1.1;
   animation: flow-breathe 2.4s ease-in-out infinite;
 }
+.flow-room .react-flow__node:has(.flow-face--live) {
+  z-index: 1000 !important;
+}
+/* the stage being worked on now flashes (1 per second, under the F3 limit) */
+.flow-face__bar--working i.flow-cycle__cur {
+  animation: flow-stage 1s ease-in-out infinite;
+}
+/* its glow is the stage's own colour */
+.flow-cycle[data-step="1"] i.flow-cycle__cur { color: var(--s1); }
+.flow-cycle[data-step="2"] i.flow-cycle__cur { color: var(--s2); }
+.flow-cycle[data-step="3"] i.flow-cycle__cur { color: var(--s3); }
+.flow-cycle[data-step="4"] i.flow-cycle__cur { color: var(--s4); }
+.flow-cycle[data-step="5"] i.flow-cycle__cur { color: var(--s5); }
+.flow-cycle[data-step="6"] i.flow-cycle__cur { color: var(--s6); }
 /* F2: the card that needs a person rings until it is answered */
 .flow-face[data-hil="asking"] {
   border-color: var(--you);
@@ -1246,7 +1263,12 @@ code,
   50% { opacity: 0.25; box-shadow: 0 0 0 0 currentColor; }
 }
 @keyframes flow-breathe {
-  50% { box-shadow: 0 0 0 4px var(--accent-tint); }
+  0%, 100% { box-shadow: 0 0 0 2px var(--accent-teal), 0 0 6px 2px var(--accent-tint); }
+  50% { box-shadow: 0 0 0 3px var(--accent-teal), 0 0 26px 10px var(--accent-tint); }
+}
+@keyframes flow-stage {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px currentColor; }
+  50% { opacity: 0.3; box-shadow: none; }
 }
 @keyframes flow-asking {
   0% { background: var(--you); color: var(--surface-1); }
@@ -1375,6 +1397,7 @@ code,
   .flow-st--asking,
   .flow-face[data-hil="asking"],
   .flow-face__bar--working i.flow-cycle__cur::after,
+  .flow-face__bar--working i.flow-cycle__cur,
   .flow-beacon--work,
   .flow-beacon--work::before,
   .flow-beacon--hil::before {
@@ -1391,6 +1414,11 @@ code,
   }
   .flow-face--live {
     box-shadow: 0 0 0 3px var(--accent-teal);
+  }
+  /* still larger, and the current stage is outlined instead of flashing */
+  .flow-face__bar--working i.flow-cycle__cur {
+    outline: 2px solid var(--accent-teal);
+    outline-offset: 1px;
   }
 }
 
@@ -2210,6 +2238,8 @@ code,
   vertical-align: top;
 }
 .flow-history__table th { color: var(--text-tertiary); font-weight: 600; white-space: nowrap; }
+/* pb version retitle: the words a version carried before its correction */
+.flow-history__was { display: block; margin-top: 2px; color: var(--text-tertiary); font-size: 12px; }
 .flow-history__table code { display: block; font-family: var(--f-code); font-size: 12px; }
 .flow-history__table tr[aria-current="true"] { background: var(--accent-tint); }
 .flow-history__table tr[data-state="legacy"] { color: var(--text-secondary); }
@@ -2232,5 +2262,3 @@ code,
   color: var(--text-tertiary);
   white-space: nowrap;
 }
-/* pb version retitle: the words a version carried before its correction */
-.flow-history__was { display: block; margin-top: 2px; color: var(--text-tertiary); font-size: 12px; }

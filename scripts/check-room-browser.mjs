@@ -465,7 +465,10 @@ try {
       host.style.cssText = 'position:fixed;left:-2000px;top:0;width:400px;height:300px';
       host.innerHTML = '<div class="flow-face flow-face--live" data-hil="asking"><span class="flow-st flow-st--asking">Needs your decision</span><span class="flow-led"></span>' +
         '<div class="flow-cycle flow-face__bar flow-face__bar--working" data-step="3"><i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on flow-cycle__cur"></i><i></i><i></i><i></i></div>' +
-        '<span class="flow-beacon flow-beacon--work"></span><span class="flow-beacon flow-beacon--hil"></span></div>';
+        '<span class="flow-beacon flow-beacon--work"></span><span class="flow-beacon flow-beacon--hil"></span></div>' +
+        // a SECOND live card: a fleet works several cards at once, and each must animate on its own
+        '<div class="flow-face flow-face--live" id="__motion-second"><div class="flow-cycle flow-face__bar flow-face__bar--working" data-step="5">' +
+        '<i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on flow-cycle__cur"></i><i></i></div></div>';
       document.body.appendChild(host);
     }
     const q = (s) => host.querySelector(s);
@@ -474,6 +477,10 @@ try {
       card: anim(q('.flow-face')), label: anim(q('.flow-st--asking')), led: anim(q('.flow-led')),
       sweep: anim(q('.flow-cycle__cur'), '::after'), beacon: anim(q('.flow-beacon--work')), sonar: anim(q('.flow-beacon--hil'), '::before'),
       outline: getComputedStyle(q('.flow-st--asking')).outlineStyle,
+      stage: anim(q('.flow-cycle__cur')),
+      card2: anim(q('#__motion-second')), stage2: anim(q('#__motion-second .flow-cycle__cur')),
+      scale: getComputedStyle(q('.flow-face')).scale, scale2: getComputedStyle(q('#__motion-second')).scale,
+      stageOutline: getComputedStyle(q('#__motion-second .flow-cycle__cur')).outlineStyle,
     };
   })()`;
   // headless Chrome may itself report reduced motion: state BOTH preferences explicitly
@@ -486,7 +493,15 @@ try {
   await cdp.send('Emulation.setEmulatedMedia', { features: [] });
   console.log(`  motion  normal: ${JSON.stringify(moving)}`);
   console.log(`  motion  reduce: ${JSON.stringify(still)}`);
-  for (const k of ['card', 'label', 'led', 'sweep', 'beacon', 'sonar']) {
+  // the live-work UX (plan-20261012-002): the current stage flashes, the card breathes and
+  // stands 10% larger — on every live card at once — and the size survives reduced motion
+  for (const [k, v] of Object.entries({ moving, still })) {
+    if (v.scale !== '1.1' || v.scale2 !== '1.1') problems.push(`live card is not 10% larger (${k}): ${v.scale} / ${v.scale2}`);
+  }
+  if (moving.stage !== 'flow-stage' || moving.stage2 !== 'flow-stage') problems.push(`the current stage does not flash on every live card: ${moving.stage} / ${moving.stage2}`);
+  if (moving.card2 !== 'flow-breathe') problems.push(`the second live card does not breathe: ${moving.card2}`);
+  if (still.stageOutline === 'none') problems.push('F4: under reduced motion the current stage lost its steady outline');
+  for (const k of ['card', 'label', 'led', 'sweep', 'beacon', 'sonar', 'stage', 'card2', 'stage2']) {
     if (moving[k] === 'none') problems.push(`F4 probe: ${k} does not animate even with motion allowed — the probe stopped watching`);
     if (still[k] !== 'none') problems.push(`F4: ${k} still animates (${still[k]}) under prefers-reduced-motion`);
   }
