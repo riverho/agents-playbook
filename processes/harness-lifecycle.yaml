@@ -1,0 +1,81 @@
+# processes/harness-lifecycle.yaml
+# Orchestrating a VERSION through the playbook (as of v0.8): schema discipline, the
+# layered plan, the orchestrator tick and human-in-the-loop, worker worktrees, and
+# commit/push. The single-card unit is run-task; this is the layer above it.
+name: harness-lifecycle
+version: 1.0.0
+purpose: >-
+  Take a version from plan to close with a fleet of agents, keeping every write inside
+  the pb data schema, every card check-gated and layer-ordered, every person-only
+  decision with the person, and every landed change committed per card.
+
+source_of_truth:
+  master: playbook.yaml
+  memory: memory/project-memory.md
+  backlog: memory/backlog.yaml
+  skill: skills/harness-lifecycle/SKILL.md
+
+applies_to:
+  - planning or re-planning a version's cards
+  - dispatching and supervising agents (one or a fleet) on an open version
+  - answering the room's questions and steers, and escalating lifecycle decisions
+  - landing worker branches and committing the result
+
+required_inputs:
+  - an open version (pb state --json shows it), or a person ready to open one
+  - pb validate green
+  - the orchestrator block in playbook.yaml (cadence and limits)
+
+canonical_steps:
+  - step: 1
+    name: Orient on the schema
+    requirements:
+      - Run pb anchor --brief, pb status, pb validate; read SKILL.md and memory/project-memory.md.
+      - Read pb state --json and pb graph --json; never infer a field the schema does not carry.
+      - Every agent shell carries PB_AGENT_ID and a claim token or PB_AGENT_CHAIN; no unproven writes.
+  - step: 2
+    name: Slice the plan by layers
+    requirements:
+      - Plan each card with pb plan --goal --dep --layer --check (dependencies at birth, executable checks).
+      - Manual cards carry a human block (question, options with effect, recommended, recommended_by).
+      - Verify with pb validate and pb plan --layers --json (exit 2 = invalid; fix before dispatch).
+  - step: 3
+    name: Dispatch and supervise
+    requirements:
+      - Run pb tick --dry-run, then pb tick on the declared cadence; it proposes, never decides.
+      - Before every claim and on every tick, read new comment rows; answer questions on the card, act on steers.
+      - One card in progress per agent; post progress so the room shows the card live.
+      - Block with a reason that names what unblocks it; record done only through the checks.
+  - step: 4
+    name: Escalate person-only decisions
+    requirements:
+      - Never run version freeze/close/carry/drop/retitle/release-operation or migrate --apply from an agent (V6).
+      - Hand the person a ready-to-run command line, and answer on the card so the room shows it.
+      - A manual card waits for pb decide from the person.
+  - step: 5
+    name: Land worker branches
+    requirements:
+      - worker create --execute, work and verify IN the worktree, an independent checker records the verdict.
+      - Merge only when merge-ready exits 0; remove the worktree with worker remove --execute.
+      - Never link node_modules into a worktree or fixture; never touch another agent's worktree.
+  - step: 6
+    name: Commit and push
+    requirements:
+      - One commit per card, only its files, after pb validate, its checks and the suites it touched pass.
+      - Rebuild the plugin after changing a bundled file; re-record provenance after editing a pinned room file.
+      - Push only when a person asks; release through the release skill.
+  - step: 7
+    name: Close and report
+    requirements:
+      - When the stop checks pass and every card is done or dropped, hand the person version close.
+      - Run pb report and pb reflect --notes to close the phase loop.
+
+outputs:
+  - a check-gated, layer-valid plan the room draws faithfully
+  - journal rows that attribute every write and answer every question
+  - one commit per landed card; no push without a person
+
+done_when:
+  - pb validate passes and pb plan --layers exits 0
+  - every card is done (checks exited 0) or dropped by a person
+  - the version's stop checks pass and the person has closed it

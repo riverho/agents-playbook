@@ -35,3 +35,8 @@ skills:
     file: skills/triage/SKILL.md
     process: triage-claim
     summary: Convert narrative input (reflection findings, user bug lists, subagent reports) into check-gated backlog tasks before any code change.
+
+  - id: harness-lifecycle
+    file: skills/harness-lifecycle/SKILL.md
+    process: harness-lifecycle
+    summary: Orchestrate a version (v0.8) — pb data schema, layer-sliced plan, orchestrator tick + human-in-the-loop (comments, decide, person-only lifecycle), worker worktrees, commit/push.
