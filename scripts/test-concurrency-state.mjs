@@ -24,6 +24,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 let pass = 0;
 let fail = 0;
@@ -303,6 +304,40 @@ const records = await Promise.all(
     after === before, `before=${before} after=${after}`);
   ok('the refused writer does not claim success in its output',
     !/^Recorded /m.test(refused.out), refused.out.slice(0, 200));
+}
+
+// --- 5c. Windows: a lock mid-delete answers EPERM, which is contention --------
+// Creating a file whose previous holder is still being deleted fails on Windows
+// with EPERM, not EEXIST. acquireLock used to rethrow it, so a losing writer in the
+// 24-writer storm crashed at node:fs openSync and its row was simply missing
+// (plan-20261011-004). The race is rare, so inject it: a preload makes the lock
+// open throw EPERM, a few times (must wait and commit) or forever (must refuse).
+{
+  const preload = join(root, 'eperm-lock.mjs');
+  writeFileSync(preload, [
+    "import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';",
+    'const real = fs.openSync; let left = Number(process.env.EPERM_TIMES);',
+    'fs.openSync = function (p, flags, ...rest) {',
+    "  if (flags === 'wx' && String(p).endsWith('.lock') && left !== 0) { left--; const e = new Error(`EPERM: operation not permitted, open '${p}'`); e.code = 'EPERM'; throw e; }",
+    '  return real.call(this, p, flags, ...rest); };',
+    'syncBuiltinESMExports();',
+  ].join('\n'));
+  const NODE_OPTIONS = `--import=${pathToFileURL(preload).href}`;
+  const probeTask = readFileSync(join(root, 'memory/backlog.yaml'), 'utf8').match(/id:\s*([^\s,}]+)/)?.[1];
+  const rec = (agent, env) => run(['record', '--task', probeTask, '--action', 'implement', '--status', 'done', '--skip-checks', '--notes', agent], agent, env);
+
+  const before = readJournal().length;
+  const waited = await rec('eperm-few', { NODE_OPTIONS, EPERM_TIMES: '25' });
+  ok('a writer that meets EPERM on the lock (a lock mid-delete) waits and commits, no crash',
+    waited.code === 0 && !/at openSync/.test(waited.out) && readJournal().length === before + 1,
+    `exit=${waited.code} out=${JSON.stringify(waited.out.slice(-400))}`);
+
+  const before2 = readJournal().length;
+  const stuck = await rec('eperm-always', { NODE_OPTIONS, EPERM_TIMES: '-1', PB_LOCK_TRANSIENT_MS: '300' });
+  ok('a lock that keeps answering EPERM is refused with an actionable message, not a stack trace',
+    stuck.code !== 0 && /Nothing was recorded/i.test(stuck.out) && /EPERM/.test(stuck.out) && !/at openSync/.test(stuck.out),
+    `exit=${stuck.code} out=${JSON.stringify(stuck.out.slice(-400))}`);
+  ok('the EPERM-refused writer appended NO journal row', readJournal().length === before2);
 }
 
 console.log(`\ntest-concurrency-state: ${pass} pass, ${fail} fail`);

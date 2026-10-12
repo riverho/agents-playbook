@@ -627,9 +627,13 @@ const WORKER_LOCK_STALE_MS = Math.max(5000, Number(process.env.PB_LOCK_STALE_MS)
 // a lost record. A holder stuck past the stale window is broken, not waited out.
 const LOCK_WAIT_MS = Math.max(200, Number(process.env.PB_LOCK_WAIT_MS) || 5 * 60_000);
 const lockTokens = new Map();
+const TRANSIENT_LOCK_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+// PB_LOCK_TRANSIENT_MS is a test lever (how long a persistent EPERM is waited out).
+const TRANSIENT_LOCK_MS = Math.max(50, Number(process.env.PB_LOCK_TRANSIENT_MS) || 10_000);
 function acquireLock(lockPath, { timeoutMs = LOCK_WAIT_MS, staleMs = LOCK_STALE_MS } = {}) {
   const start = Date.now();
   const token = randomBytes(8).toString('hex');
+  let transientSince = null;
   for (;;) {
     try {
       const fd = openSync(lockPath, 'wx');
@@ -639,7 +643,22 @@ function acquireLock(lockPath, { timeoutMs = LOCK_WAIT_MS, staleMs = LOCK_STALE_
       if (process.env.PB_TXN_TRACE) process.stderr.write(`[lock] ACQUIRE t=${Date.now()} ${basename(lockPath)} pid=${process.pid}\n`);
       return true;
     } catch (e) {
+      // On Windows, creating a file whose previous holder is still mid-delete fails
+      // with EPERM (sometimes EACCES/EBUSY), not EEXIST: the lock is being RELEASED,
+      // which is contention, not a fault. Rethrowing it crashed a losing writer
+      // (node:fs:561) mid-storm. Wait it out like EEXIST; a code that persists for
+      // TRANSIENT_LOCK_MS is a real fault, so refuse (return false: nothing written).
+      if (TRANSIENT_LOCK_CODES.has(e.code)) {
+        transientSince ??= Date.now();
+        if (Date.now() - transientSince > TRANSIENT_LOCK_MS) {
+          console.error(`ERROR: cannot create ${basename(lockPath)} (${e.code} for ${TRANSIENT_LOCK_MS / 1000}s). Check that ${dirname(lockPath)} is writable and not held by a scanner.`);
+          return false;
+        }
+        busySleepMs(20);
+        continue;
+      }
       if (e.code !== 'EEXIST') throw e;
+      transientSince = null;
       // Break ONLY a lock that has aged past its window. Age is the only signal that
       // cannot be wrong about a live holder; a liveness probe could (and did) misread
       // an active holder as dead and steal its lock.
@@ -2799,6 +2818,8 @@ function versionSummary(v) {
     stop_checks: Array.isArray(v.stop_checks) ? v.stop_checks : [],
     stop_result: v.stop_result || null,
     opened_at: v.started_at || null, closed_at: v.closed_at || null,
+    // pb version retitle: the words a version carried before, oldest first
+    retitles: Array.isArray(v.retitles) ? v.retitles : [],
     // V7 / S7: a closed version is history — comments and forks into the open version only
     read_only: v.state === 'closed',
   };
@@ -2818,8 +2839,6 @@ function graphPayload(opts = {}) {
   // who waits on whom: the open tasks that depend on each task (human.waiting_on's fallback)
   const dependentsOf = new Map();
   for (const t of tasks) for (const dep of Array.isArray(t.dependencies) ? t.dependencies : []) {
-    // pb version retitle: the words a version carried before, oldest first
-    retitles: Array.isArray(v.retitles) ? v.retitles : [],
     if (t.status === 'done') continue;
     if (!dependentsOf.has(dep)) dependentsOf.set(dep, []);
     dependentsOf.get(dep).push(t.id);
@@ -5613,25 +5632,6 @@ function cmdVersion(args) {
         event(v, v.id); seedCycleFromLoop(v, { ...args, goal: v.goal, stop: v.stop });
         return v;
       }
-      if (sub === 'carry' || sub === 'drop') {
-        const task = backlogTasks().find(t => t.id === args._[1]);
-        if (!task || !task.version) versionRefusal('V4', 'Name an existing versioned task');
-        const source = findVersion(task.version, state);
-        if (!source || source.state === 'closed') versionRefusal('V7', 'The source version is closed');
-        if (task.status === 'done' || task.disposition === 'dropped') versionRefusal('V6', 'Only unfinished, undisposed cards may be carried or dropped');
-        if (latestProcessRecords(source.id).some(rec => rec.lifecycle_lease && rec.status !== 'stopped' && rec.task === task.id)) versionRefusal('V6', 'Stop the worker operation before carrying or dropping its card');
-        if (draft[task.id]?.claim_token || task.status === 'in_progress') versionRefusal('V6', 'Release the active claim before carrying or dropping its card');
-        const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
-        if (sub === 'drop' && !reason) versionRefusal('V6', 'Dropping a task requires --reason');
-        const ts = nowISO();
-        const base = { ts, task: task.id, agent, action: sub, status: task.status, checks: 'none', notes: reason || `Carry ${task.id} forward`, reason };
-        ctx.draft = draft;
-        if (sub === 'drop') {
-          appendJournal({ ...base, seq: ctx.seq, loop_id: source.id, version: source.version });
-          applyTaskMutation(task.id, () => ({ disposition: 'dropped', drop_reason: reason, updated_at: ts }), ctx, agent);
-          return source;
-        }
-        const drafts = state.loops.filter(l => l.version && l.state === 'draft');
       // retitle: correct a version's words — title, goal, stop — by APPENDING a version row.
       // The journal stays append-only; the old words stay on the record (retitles[]), so
       // History can say what a version was called before. Any state, closed included: a
@@ -5660,6 +5660,25 @@ function cmdVersion(args) {
         writeLoops(state);
         return target;
       }
+      if (sub === 'carry' || sub === 'drop') {
+        const task = backlogTasks().find(t => t.id === args._[1]);
+        if (!task || !task.version) versionRefusal('V4', 'Name an existing versioned task');
+        const source = findVersion(task.version, state);
+        if (!source || source.state === 'closed') versionRefusal('V7', 'The source version is closed');
+        if (task.status === 'done' || task.disposition === 'dropped') versionRefusal('V6', 'Only unfinished, undisposed cards may be carried or dropped');
+        if (latestProcessRecords(source.id).some(rec => rec.lifecycle_lease && rec.status !== 'stopped' && rec.task === task.id)) versionRefusal('V6', 'Stop the worker operation before carrying or dropping its card');
+        if (draft[task.id]?.claim_token || task.status === 'in_progress') versionRefusal('V6', 'Release the active claim before carrying or dropping its card');
+        const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+        if (sub === 'drop' && !reason) versionRefusal('V6', 'Dropping a task requires --reason');
+        const ts = nowISO();
+        const base = { ts, task: task.id, agent, action: sub, status: task.status, checks: 'none', notes: reason || `Carry ${task.id} forward`, reason };
+        ctx.draft = draft;
+        if (sub === 'drop') {
+          appendJournal({ ...base, seq: ctx.seq, loop_id: source.id, version: source.version });
+          applyTaskMutation(task.id, () => ({ disposition: 'dropped', drop_reason: reason, updated_at: ts }), ctx, agent);
+          return source;
+        }
+        const drafts = state.loops.filter(l => l.version && l.state === 'draft');
         const target = args.to === 'next' ? (drafts.length === 1 ? drafts[0] : null) : findVersion(args.to, state);
         if (!target || target.state !== 'draft' || target.id === source.id) versionRefusal('V4', 'Stage a unique next draft using pb version new --draft --name ... --goal ... --stop-check ...');
         const relation = { from_version: source.version, to_version: target.version, from_loop: source.id, to_loop: target.id };
@@ -7348,6 +7367,9 @@ function cmdHelp() {
                           Open a version, or stage the next draft without opening it.
     version open --name <draft> | freeze | close
                           Close requires passing stop checks and explicit carry/drop of open work.
+    version retitle <version> [--title ".."] [--goal ".."] [--stop ".."] --reason ".."
+                          Person-only. Corrects a version's words by appending a version row;
+                          the old words stay on the record (History shows them).
     version carry <task> --to next|<draft> | drop <task> --reason ".."
                           Carry preserves the card ID and records both source and destination.
     version list [--json]  Version history (loops with a name, state, and stop checks).
@@ -7367,9 +7389,6 @@ function cmdHelp() {
                           Autonomous loop execution: claim, execute commands, run checks,
                           record done/blocked, and retry failed checks up to N times.
                           Stops on blockers, manual tasks, honor-only tasks, or empty backlog.
-    version retitle <version> [--title ".."] [--goal ".."] [--stop ".."] --reason ".."
-                          Person-only. Corrects a version's words by appending a version row;
-                          the old words stay on the record (History shows them).
     loop close --status <done|failed|abandoned> [--reason ".."] [--allow-unreflected]
                           Close the active loop; failed loops require a learning reflection
                           before the next loop unless --skip-learning is stamped on loop new
