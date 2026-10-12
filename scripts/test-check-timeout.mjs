@@ -20,8 +20,11 @@
 //   D. the limit is honoured from the env var — in both directions
 //   E. the limit is honoured from the task field, and the field BEATS the env var
 //   F. a genuinely failing check is still a FAIL, with no TIMEOUT in sight
-//   G. a refused `record --status done` says TIMED OUT (not "checks failed") and writes
-//      no row; when a row IS written (auto-run) it carries `checks: timed-out` + details
+//   G. a refused `record --status done` says TIMED OUT (not "checks failed") and RECORDS
+//      NOTHING: the only row it may write is the `check-run` audit trace, and only when
+//      the console warned that the check's process tree could NOT be killed (the tree may
+//      still be running, so the fact must outlive the console). When a row IS written by
+//      the autonomous runner it carries `checks: timed-out` + details
 //   H. a nonsense field value warns and falls back to the next source
 // ----------------------------------------------------------------------------
 import {
@@ -200,8 +203,26 @@ let documented = null;
   ok('the refusal repeats the limit, its source, and both ways to raise it',
     /limit 400ms/.test(rec.combined) && /check_timeout_ms/.test(rec.combined) && /PB_CHECK_TIMEOUT_MS/.test(rec.combined),
     rec.combined.slice(0, 700));
-  ok('a refused record wrote no journal row (the refusal is not a record)',
-    fx.journal().length === before, `${before} → ${fx.journal().length}`);
+  // The refusal is not a record. Two ways this can be true, and the engine must not
+  // claim the wrong one: a refusal writes NOTHING, unless the kill of the check's
+  // process tree could not be confirmed — then it journals exactly one `check-run`
+  // trace, because a process that may still be running must outlive the console
+  // (SKILL.md, "A kill takes the whole process tree"; pinned by
+  // scripts/test-kill-failure-reported.mjs, which forces that path via PB_TASKKILL).
+  //
+  // The old assertion here — `journal().length === before` — pinned only the first
+  // world, so on a machine where taskkill cannot prove the tree died (measured on
+  // Windows: `taskkill /T /F` exits 128 with "The operation attempted is not
+  // supported" / "not found") a CORRECT refusal was reported as a red suite.
+  const added = fx.journal().slice(before);
+  const killUnproven = /could NOT be killed/.test(rec.combined);
+  ok('a refused record is not a record: every row it writes is the check-run trace, never a status change',
+    added.every((r) => r.action === 'check-run' && r.checks === 'no-verdict') &&
+    !added.some((r) => ['done', 'blocked', 'in_progress'].includes(r.status)),
+    `${before} → ${fx.journal().length} ${JSON.stringify(added.map((r) => ({ action: r.action, status: r.status, checks: r.checks })))}`);
+  ok('the check-run trace appears exactly when the console warned the kill was unconfirmed, and says so',
+    (killUnproven ? added.length === 1 && /could not be killed/.test(String(added[0].notes)) : added.length === 0),
+    `killUnproven=${killUnproven} added=${added.length} notes=${JSON.stringify(added[0]?.notes)}`);
 
   const recFail = fx.pb(['record', '--task', 't-fails', '--action', 'execute', '--status', 'done', '--notes', 'x']);
   ok('a red check still gets the plain failed-checks refusal',
