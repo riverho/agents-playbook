@@ -385,9 +385,9 @@
       "recorded": "2026-10-11T03:20:37.780Z"
     },
     "lib/flow-types.ts": {
-      "sha256": "9890e2db95f89281c26b3a3e8b17289b45ac93bf18472b6aba6fe702b5bc7fc5",
-      "reason": "plan-20261010-030/031/034/008 (v2) merged with main: headline, now, live, human, check_names, journal summary/intent; layers[] gate_result; node kinds stack and draft; plan-20261010-040: graph version, node version/task_kind/carried_from/disposition, StateProjection, VersionHistory",
-      "recorded": "2026-10-11T18:23:34.563Z",
+      "sha256": "ee7e48a738072a7f08c5384771aa5fb6fae18795f9f4d007ad1bb1663ccf2ef3",
+      "reason": "plan-20261010-030/031/034/008 (v2) merged with main: headline, now, live, human, check_names, journal summary/intent; layers[] gate_result; node kinds stack and draft; plan-20261010-040: graph version, node version/task_kind/carried_from/disposition, StateProjection, VersionHistory; plan-20261012-001: FlowVersionInfo.retitles (pb version retitle history)",
+      "recorded": "2026-10-12T02:31:24.111Z",
       "superseded": [
         {
           "sha256": "012a4f1a3ba99b14bb1028155fc845e2353114c4e69dc7b7bb70e7d1c21dc00e",
@@ -407,6 +407,10 @@
         },
         {
           "sha256": "b498cd7db2ce314fd2150fe4537d930a7a32fed5169b1366032c2120053ca26c",
+          "reason": "plan-20261010-030/031/034/008 (v2) merged with main: headline, now, live, human, check_names, journal summary/intent; layers[] gate_result; node kinds stack and draft; plan-20261010-040: graph version, node version/task_kind/carried_from/disposition, StateProjection, VersionHistory"
+        },
+        {
+          "sha256": "9890e2db95f89281c26b3a3e8b17289b45ac93bf18472b6aba6fe702b5bc7fc5",
           "reason": "plan-20261010-030/031/034/008 (v2) merged with main: headline, now, live, human, check_names, journal summary/intent; layers[] gate_result; node kinds stack and draft; plan-20261010-040: graph version, node version/task_kind/carried_from/disposition, StateProjection, VersionHistory"
         }
       ]

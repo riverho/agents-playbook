@@ -8,7 +8,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { History, RefreshCw, X } from "lucide-react";
-import type { FlowVersionInfo, StateProjection, VersionHistory } from "@/lib/flow-types";
+import type { FlowVersionInfo, RetitledField, StateProjection, VersionHistory } from "@/lib/flow-types";
 import { ageText, isStale, REFRESH_CHOICES, type RefreshMinutes } from "@/lib/flow-refresh";
 import { ageLabel } from "@/lib/flow-face";
 
@@ -20,6 +20,12 @@ const ORCH_WORDS: Record<string, string> = {
   "waiting-on-you": "Orchestrator waiting on you",
   stopped: "Orchestrator stopped",
 };
+
+/** pb version retitle: what a field read before its first correction, or null if never retitled. */
+export function formerly(v: FlowVersionInfo, field: RetitledField): string | null {
+  const first = (v.retitles ?? []).find(r => Object.hasOwn(r.was, field));
+  return first ? first.was[field] ?? null : null;
+}
 
 export function versionLabel(v: FlowVersionInfo | null | undefined): string {
   if (!v) return "No version";
@@ -145,8 +151,12 @@ export function FlowHistory({ load, current, onPick, onClose }: FlowHistoryProps
                       <button type="button" className="flow-linkbtn" onClick={() => onPick(label)}>
                         <b>{v.version}</b> {v.title}
                       </button>
+                      {formerly(v, "title") && <span className="flow-history__was">was “{formerly(v, "title")}”</span>}
                     </td>
-                    <td>{v.goal ?? "—"}</td>
+                    <td>
+                      {v.goal ?? "—"}
+                      {formerly(v, "goal") && <span className="flow-history__was">was “{formerly(v, "goal")}”</span>}
+                    </td>
                     <td>
                       {v.stop_checks?.length ? v.stop_checks.map(c => <code key={c}>{c}</code>) : "—"}
                       {v.stop_result && <span className="flow-statebar__dim"> · {v.stop_result.outcome}</span>}

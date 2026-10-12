@@ -2818,6 +2818,8 @@ function graphPayload(opts = {}) {
   // who waits on whom: the open tasks that depend on each task (human.waiting_on's fallback)
   const dependentsOf = new Map();
   for (const t of tasks) for (const dep of Array.isArray(t.dependencies) ? t.dependencies : []) {
+    // pb version retitle: the words a version carried before, oldest first
+    retitles: Array.isArray(v.retitles) ? v.retitles : [],
     if (t.status === 'done') continue;
     if (!dependentsOf.has(dep)) dependentsOf.set(dep, []);
     dependentsOf.get(dep).push(t.id);
@@ -5558,8 +5560,8 @@ function cmdVersion(args) {
     return;
   }
   if (sub === 'migrate') return cmdVersionMigrate(args);
-  if (!['new', 'open', 'freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|list|migrate|release-operation');
-  if (['freeze', 'close', 'carry', 'drop', 'release-operation'].includes(sub)) {
+  if (!['new', 'open', 'freeze', 'close', 'carry', 'drop', 'retitle', 'release-operation'].includes(sub)) versionRefusal('V1', 'Use pb version new|open|freeze|close|carry|drop|retitle|list|migrate|release-operation');
+  if (['freeze', 'close', 'carry', 'drop', 'retitle', 'release-operation'].includes(sub)) {
     const context = ['PB_RUNTIME', 'PB_SESSION_ID', 'PB_AGENT_CHAIN', 'PB_PARENT_AGENT_ID', 'PB_CLAIM_TOKEN'].filter(k => process.env[k]);
     if (context.length || args.token) versionRefusal('V6', `Lifecycle decisions require a person at the local CLI; agent context detected (${context.join(', ') || 'claim token'})`);
   }
@@ -5630,6 +5632,34 @@ function cmdVersion(args) {
           return source;
         }
         const drafts = state.loops.filter(l => l.version && l.state === 'draft');
+      // retitle: correct a version's words — title, goal, stop — by APPENDING a version row.
+      // The journal stays append-only; the old words stay on the record (retitles[]), so
+      // History can say what a version was called before. Any state, closed included: a
+      // name is not work, and a closed version's tasks, proof and range do not change.
+      if (sub === 'retitle') {
+        const target = findVersion(args._[1] || args.name, state);
+        if (!target) versionRefusal('V1', `Name an existing version (versions: ${state.loops.filter(l => l.version).map(l => l.version).join(', ') || 'none'})`);
+        const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+        if (!reason) versionRefusal('V6', 'Retitling a version requires --reason');
+        const fields = ['title', 'goal', 'stop'].filter(k => args[k] !== undefined);
+        if (!fields.length) versionRefusal('V1', 'Give --title, --goal or --stop');
+        const next = {};
+        for (const k of fields) {
+          const val = typeof args[k] === 'string' ? args[k].trim() : '';
+          if (!val) versionRefusal('V1', `--${k} cannot be empty`);
+          if (val !== (target[k] ?? '')) next[k] = val;
+        }
+        if (!Object.keys(next).length) versionRefusal('V1', `Nothing changes: ${target.version} already reads that way`);
+        const at = nowISO();
+        const was = Object.fromEntries(Object.keys(next).map(k => [k, target[k] ?? null]));
+        Object.assign(target, next, { retitles: [...(Array.isArray(target.retitles) ? target.retitles : []), { at, by: agent, reason, was, now: next }] });
+        appendJournal({ seq: ctx.seq, ts: at, task: `version:${target.id}`, loop_id: target.id,
+          agent, action: 'version', status: 'event', checks: 'none', version: target.version,
+          version_record: target, active_loop: state.active, retitle: { was, now: next },
+          notes: `Version ${target.version} retitled (${Object.keys(next).join(', ')}): ${reason}` });
+        writeLoops(state);
+        return target;
+      }
         const target = args.to === 'next' ? (drafts.length === 1 ? drafts[0] : null) : findVersion(args.to, state);
         if (!target || target.state !== 'draft' || target.id === source.id) versionRefusal('V4', 'Stage a unique next draft using pb version new --draft --name ... --goal ... --stop-check ...');
         const relation = { from_version: source.version, to_version: target.version, from_loop: source.id, to_loop: target.id };
@@ -7337,6 +7367,9 @@ function cmdHelp() {
                           Autonomous loop execution: claim, execute commands, run checks,
                           record done/blocked, and retry failed checks up to N times.
                           Stops on blockers, manual tasks, honor-only tasks, or empty backlog.
+    version retitle <version> [--title ".."] [--goal ".."] [--stop ".."] --reason ".."
+                          Person-only. Corrects a version's words by appending a version row;
+                          the old words stay on the record (History shows them).
     loop close --status <done|failed|abandoned> [--reason ".."] [--allow-unreflected]
                           Close the active loop; failed loops require a learning reflection
                           before the next loop unless --skip-learning is stamped on loop new

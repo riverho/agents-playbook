@@ -2232,3 +2232,5 @@ code,
   color: var(--text-tertiary);
   white-space: nowrap;
 }
+/* pb version retitle: the words a version carried before its correction */
+.flow-history__was { display: block; margin-top: 2px; color: var(--text-tertiary); font-size: 12px; }

@@ -446,6 +446,17 @@ export interface FlowVersionInfo {
   legacy?: boolean;
   stop?: string | null;
   task_counts?: Record<string, number>;
+  /** pb version retitle: each correction of the version's words, oldest first. */
+  retitles?: VersionRetitle[];
+}
+
+export type RetitledField = "title" | "goal" | "stop";
+export interface VersionRetitle {
+  at: string;
+  by?: string;
+  reason: string;
+  was: Partial<Record<RetitledField, string | null>>;
+  now: Partial<Record<RetitledField, string>>;
 }
 export interface StateProjection {
   schema: string;
