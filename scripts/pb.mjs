@@ -2047,7 +2047,11 @@ function runValidate() {
     for (const l of loops.loops) {
       ok(l.id, `A loop entry in ${LOOPS} is missing an id`);
       if (l.id) ids.add(l.id);
-      ok(['active', 'done', 'failed', 'quarantined', 'abandoned'].includes(l.status), `Loop ${l.id || '?'} has invalid status: ${l.status}`);
+      // A version loop staged with `pb version new --draft` carries status draft until it
+      // opens; a plain (pre-version) loop never does.
+      const statuses = l.version ? ['draft', 'active', 'done', 'failed', 'quarantined', 'abandoned'] : ['active', 'done', 'failed', 'quarantined', 'abandoned'];
+      ok(statuses.includes(l.status), `Loop ${l.id || '?'} has invalid status: ${l.status}`);
+      if (l.version) ok(VERSION_STATES.includes(l.state), `Version ${l.version} has invalid state: ${l.state}`);
     }
     if (loops.active) ok(ids.has(loops.active), `${LOOPS} active loop does not exist: ${loops.active}`);
   }

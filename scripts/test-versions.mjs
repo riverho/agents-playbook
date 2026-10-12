@@ -40,6 +40,8 @@ s.ok('frozen accepts fixes', fix.code === 0 && !!fixId, fix.combined);
 noWrite('carry requires an explicit next draft', ['version', 'carry', task, '--to', 'next'], /draft/);
 const draft = run(['version', 'new', '--draft', '--name', 'v2', '--goal', 'two', '--stop-check', 'node -v']);
 s.ok('next draft can be staged without opening another version', draft.code === 0, draft.combined);
+const draftValid = run(['validate']);
+s.ok('pb validate passes while a draft version is staged (plan-20261011-006)', draftValid.code === 0 && !/invalid status: draft/.test(draftValid.combined), draftValid.combined.slice(-600));
 const beforeCarry = readJournal(root).length;
 s.ok('explicit carry succeeds', run(['version', 'carry', task, '--to', 'next']).code === 0);
 const carryRows = readJournal(root).slice(beforeCarry);
