@@ -1683,6 +1683,44 @@ code,
 .flow-room:not([data-tier="full"]) .flow-card {
   visibility: hidden;
 }
+/* the flow's two ends, at a fixed screen size below full zoom: start → end */
+.flow-bookend__mark {
+  display: none;
+}
+.flow-room:not([data-tier="full"]) .flow-bookend > .flow-bookend__mark {
+  visibility: visible;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%) scale(var(--inv, 1));
+  pointer-events: none;
+}
+.flow-bookend__mark i {
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+.flow-bookend__mark[data-kind="start"] i {
+  background: var(--accent-teal);
+  box-shadow: 0 0 0 4px var(--surface-1), 0 0 0 6px var(--accent-teal);
+}
+.flow-bookend__mark[data-kind="goal"] i {
+  background: var(--surface-1);
+  border: 6px solid var(--text-primary);
+  box-shadow: 0 0 0 4px var(--surface-1), 0 0 0 6px var(--text-primary);
+}
+.flow-bookend__mark b {
+  font-family: var(--f-ui);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
 .flow-room[data-tier="overview"] .flow-band__label {
   display: grid;
   position: absolute;

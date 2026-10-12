@@ -198,6 +198,58 @@ try {
   if (!bands.bands) problems.push('G1: no layer bands were drawn');
   if (bands.named !== bands.bands) problems.push(`G5 5%: ${bands.bands - bands.named} band(s) have no visible label`);
   if (fixture && bands.ids.join() !== 'L0,L1,L2') problems.push(`G1: the fixture's bands are [${bands.ids.join(', ')}], expected [L0, L1, L2]`);
+  // the flow's two ends stay marked when the cards' text is gone: Start, then End, left to right
+  const ends = await evaluate(`(() => [...document.querySelectorAll('.flow-bookend__mark')].map((m) => {
+    const r = m.querySelector('i').getBoundingClientRect();
+    return { kind: m.dataset.kind, shown: getComputedStyle(m).visibility === 'visible' && getComputedStyle(m).display !== 'none', size: Math.round(r.width), x: Math.round(r.left), label: m.textContent.trim() };
+  }))()`);
+  console.log(`  ends at 5%: ${JSON.stringify(ends)}`);
+  const start = ends.find((e) => e.kind === 'start'); const end = ends.find((e) => e.kind === 'goal');
+  if (!start?.shown || start.size < 16 || start.label !== 'Start') problems.push(`5%: the start of the flow has no visible marker: ${JSON.stringify(start)}`);
+  if (!end?.shown || end.size < 16 || end.label !== 'End') problems.push(`5%: the end of the flow has no visible marker: ${JSON.stringify(end)}`);
+  if (start && end && !(start.x < end.x)) problems.push(`5%: Start is not left of End: ${JSON.stringify(ends)}`);
+
+  // ── card moves are view state: Undo puts a moved card back, Reorganize returns them all ──
+  await evaluate('window.__flowRoom.setViewport({ x: 20, y: 20, zoom: 1 })');
+  await sleep(450);
+  const fullEnds = await evaluate(`[...document.querySelectorAll('.flow-bookend__mark')].filter((m) => getComputedStyle(m).display !== 'none').length`);
+  if (fullEnds) problems.push(`100%: ${fullEnds} start/end marker(s) drawn over the full-size bookend cards`);
+  const cardAt = () => evaluate(`(() => { const el = document.querySelector('.react-flow__node-flowTask'); if (!el) return null; const r = el.getBoundingClientRect();
+    const id = el.dataset.id; const n = window.__flowRoom.getNodes().find((x) => x.id === id); return { id, cx: r.left + r.width / 2, cy: r.top + 30, x: n?.position.x, y: n?.position.y }; })()`);
+  const drag = async (from, dx, dy) => {
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.cx, y: from.cy });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: from.cx, y: from.cy, button: 'left', clickCount: 1 });
+    for (let i = 1; i <= 8; i++) await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.cx + (dx * i) / 8, y: from.cy + (dy * i) / 8, button: 'left', buttons: 1 });
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: from.cx + dx, y: from.cy + dy, button: 'left', clickCount: 1 });
+    await sleep(300);
+  };
+  const posOf = (id) => evaluate(`(() => { const n = window.__flowRoom.getNodes().find((x) => x.id === ${JSON.stringify(id)}); return n ? { x: n.position.x, y: n.position.y } : null; })()`);
+  const home = await cardAt();
+  if (!home?.id) problems.push('moves: no task card to drag');
+  else {
+    const undoOff = await evaluate(`document.querySelector('.flow-ctl-undo')?.disabled ?? null`);
+    await drag(home, 160, 90);
+    const moved = await posOf(home.id);
+    const undoOn = await evaluate(`document.querySelector('.flow-ctl-undo')?.disabled ?? null`);
+    await evaluate(`document.querySelector('.flow-ctl-undo')?.click()`); await sleep(300);
+    const undone = await posOf(home.id);
+    await drag(home, -140, 120);
+    const movedAgain = await posOf(home.id);
+    await evaluate(`document.querySelector('.flow-ctl-reorganize')?.click()`); await sleep(500);
+    const reorganized = await posOf(home.id);
+    await evaluate(`document.querySelector('.flow-ctl-undo')?.click()`); await sleep(300);
+    const reorgUndone = await posOf(home.id);
+    await evaluate(`document.querySelector('.flow-ctl-reorganize')?.click()`); await sleep(500);
+    console.log(`  moves: home ${home.x},${home.y} · dragged ${JSON.stringify(moved)} · undo ${JSON.stringify(undone)} · dragged ${JSON.stringify(movedAgain)} · reorganize ${JSON.stringify(reorganized)} · undo that ${JSON.stringify(reorgUndone)}`);
+    const at = (p, x, y) => p && Math.abs(p.x - x) < 1 && Math.abs(p.y - y) < 1;
+    if (undoOff !== true) problems.push(`moves: Undo is offered before anything moved (disabled=${undoOff})`);
+    if (!moved || at(moved, home.x, home.y)) problems.push(`moves: dragging the card did not move it: ${JSON.stringify(moved)}`);
+    else if (undoOn !== false) problems.push(`moves: after a move Undo is not offered (disabled=${undoOn})`);
+    if (!at(undone, home.x, home.y)) problems.push(`moves: Undo did not put the card back at ${home.x},${home.y}: ${JSON.stringify(undone)}`);
+    if (!movedAgain || at(movedAgain, home.x, home.y)) problems.push(`moves: the second drag did not move the card: ${JSON.stringify(movedAgain)}`);
+    else if (!at(reorganized, home.x, home.y)) problems.push(`moves: Reorganize did not return the card to its layer at ${home.x},${home.y}: ${JSON.stringify(reorganized)}`);
+    else if (!at(reorgUndone, movedAgain.x, movedAgain.y)) problems.push(`moves: Undo after Reorganize did not restore the arrangement: ${JSON.stringify(reorgUndone)}`);
+  }
 
   // ── J1–J3: the + menu and a draft, with NO write before Create ────────────
   await evaluate('window.__flowRoom.setViewport({ x: 20, y: 20, zoom: 1 })');

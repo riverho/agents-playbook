@@ -217,6 +217,23 @@ try {
   if (s.past !== 'true' || !/Viewing v0\.1/.test(s.bar ?? '')) problems.push(`S7: picking v0.1 does not say you are viewing a closed version: "${s.bar}"`);
   if (s.cards.join() !== 'old-1,old-2') problems.push(`S6: v0.1's graph draws [${s.cards}], expected [old-1,old-2]`);
   if (s.bandPlus !== 0) problems.push(`S7: a closed version offers "+ Add a card" (${s.bandPlus})`);
+  // G3: an unfolded stack folds back from its band's head (its own card is gone while open)
+  const fold = await evaluate(`(async () => {
+    const wait = () => new Promise((r) => setTimeout(r, 800));
+    const count = () => ({ stacks: document.querySelectorAll('.flow-face--stack').length, cards: document.querySelectorAll('.flow-face[data-id="old-1"]').length });
+    const btns = () => [...document.querySelectorAll('.flow-band__about .flow-linkbtn')].filter((b) => /Stack them again/.test(b.textContent));
+    const open = { ...count(), buttons: btns().length };
+    for (const b of btns()) b.click();
+    await wait();
+    const folded = { ...count(), buttons: btns().length };
+    for (const b of document.querySelectorAll('.flow-face--stack .flow-linkbtn')) b.click();
+    await wait();
+    return { open, folded, reopened: count() };
+  })()`);
+  console.log(`  fold the stack: ${JSON.stringify(fold)}`);
+  if (fold.open.buttons < 1 || fold.open.stacks !== 0) problems.push(`G3: an unfolded band offers no "Stack them again": ${JSON.stringify(fold.open)}`);
+  else if (fold.folded.stacks < 1 || fold.folded.cards !== 0 || fold.folded.buttons !== 0) problems.push(`G3: "Stack them again" did not fold the cards back into one stack: ${JSON.stringify(fold.folded)}`);
+  else if (fold.reopened.cards !== 1) problems.push(`G3: the folded stack does not unfold again: ${JSON.stringify(fold.reopened)}`);
   const menu = await evaluate(`(async () => {
     const plus = document.querySelector('.flow-face[data-id="old-1"] .flow-plus');
     plus?.click(); await new Promise((r) => setTimeout(r, 250));

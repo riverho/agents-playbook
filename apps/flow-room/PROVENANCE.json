@@ -164,9 +164,9 @@
       ]
     },
     "components/stage/FlowRoom.tsx": {
-      "sha256": "64d0af9dca4ad9386bca0c20487f2fe64dcfab722219ede3a8b5144f39ef6099",
-      "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask (034, 015); legend as screen overlay (006); plan-20261010-040: changed-card ids from the host, a past version is read-only with Fork into the open version (S7)",
-      "recorded": "2026-10-11T18:22:24.110Z",
+      "sha256": "1078b4e7b41dbdabf58c7daebf8833b86249f983abda8720e7c3af3fa70ac507",
+      "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask (034, 015); legend as screen overlay (006); plan-20261010-040: changed-card ids from the host, a past version is read-only with Fork into the open version (S7); isExpanded so an unfolded stack can fold back from its band head (G3); card moves are undoable view state: Undo (Ctrl+Z) and Reorganize in the zoom controls",
+      "recorded": "2026-10-12T01:42:21.354Z",
       "superseded": [
         {
           "sha256": "37186fab692a5c8ff78055c4183b2046d423d4ed65176dce98e53610b8281b59",
@@ -223,6 +223,14 @@
         {
           "sha256": "b1673d015927bcf61c0056cb185b27ec172efba4a56476429fea78161dd3c38d",
           "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask for the open card (034, 015); the legend is a screen overlay, readable after load at every zoom (006)"
+        },
+        {
+          "sha256": "64d0af9dca4ad9386bca0c20487f2fe64dcfab722219ede3a8b5144f39ef6099",
+          "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask (034, 015); legend as screen overlay (006); plan-20261010-040: changed-card ids from the host, a past version is read-only with Fork into the open version (S7)"
+        },
+        {
+          "sha256": "c0dd2ee02b9a2d2974f1488d68d53ad78716886bedb756a44370eb27b1271386",
+          "reason": "plan-20261010-035 decision inbox + 022 source label + 021 steering, merged with agent/v2-room: Escape order, harness ask (034, 015); legend as screen overlay (006); plan-20261010-040: changed-card ids from the host, a past version is read-only with Fork into the open version (S7); isExpanded so an unfolded stack can fold back from its band head (G3)"
         }
       ]
     },
@@ -257,9 +265,9 @@
       ]
     },
     "components/stage/FlowCards.tsx": {
-      "sha256": "96a85ad510e5fff8022b3b516bea4a8834a07059085564e0f8c3dc3344635eac",
-      "reason": "plan-20261010-030/031/034 (v2): the five-slot face, data-live, + on every card; keyboard-focusable, Enter/Space opens it (A1); plan-20261010-040: a card that moved since the last refresh glows once, a carried card says where it came from (V5)",
-      "recorded": "2026-10-11T18:22:24.033Z",
+      "sha256": "2fe508692e22c683c5d93807b2c9058edc57e8e41b3b10b6a814b9a9f921a845",
+      "reason": "plan-20261010-030/031/034 (v2): the five-slot face, data-live, + on every card; keyboard-focusable, Enter/Space opens it (A1); plan-20261010-040: a card that moved since the last refresh glows once, a carried card says where it came from (V5); a Start / End marker on the bookends keeps the flow's two ends visible below full zoom (T3)",
+      "recorded": "2026-10-12T01:42:21.513Z",
       "superseded": [
         {
           "sha256": "b7ffdddba6b596037b4c5935e69279476bf6eb88ccedfc0e38ea0713de04f315",
@@ -284,6 +292,10 @@
         {
           "sha256": "4f4f970265d0067d7c175b93a0a85a392388ae7986225ec04fdace6a9e709f9a",
           "reason": "plan-20261010-030/031/034 (v2): the five-slot face, data-live, + on every card; the card is keyboard-focusable and Enter/Space opens it (A1)"
+        },
+        {
+          "sha256": "96a85ad510e5fff8022b3b516bea4a8834a07059085564e0f8c3dc3344635eac",
+          "reason": "plan-20261010-030/031/034 (v2): the five-slot face, data-live, + on every card; keyboard-focusable, Enter/Space opens it (A1); plan-20261010-040: a card that moved since the last refresh glows once, a carried card says where it came from (V5)"
         }
       ]
     },

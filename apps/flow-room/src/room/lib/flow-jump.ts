@@ -31,6 +31,8 @@ export interface FlowJump {
   forkCard(taskId: string): Promise<CreateOutcome>;
   /** Show or stack a band's finished cards. */
   toggleStack(band: string): void;
+  /** True while a band's finished cards are shown (its stack is unfolded). */
+  isExpanded(band: string): boolean;
   /** Open a card (comment / steer live in the open card). */
   openCard(id: string): void;
   /** The band a follow-up of this card lands in. */
@@ -56,6 +58,7 @@ export const FlowJumpContext = createContext<FlowJump>({
   createDraft: async () => ({ ok: false, note: "the room is not mounted" }),
   forkCard: async () => ({ ok: false, note: "the room is not mounted" }),
   toggleStack: noop,
+  isExpanded: () => false,
   openCard: noop,
   followUpBand: () => "",
   isDeclared: () => false,

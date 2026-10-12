@@ -316,6 +316,11 @@ export function FlowBookendCard({ data }: NodeProps<FlowBookendNode>) {
   return (
     <div className="flow-bookend" style={{ width, height }} data-kind={node.kind}>
       <Handle type="target" position={Position.Left} className="flow-handle" />
+      {/* zoomed out the card's text is gone (T3): a marker keeps the flow's two ends readable */}
+      <span className="flow-bookend__mark" data-kind={node.kind} aria-hidden>
+        <i />
+        <b>{isGoal ? "End" : "Start"}</b>
+      </span>
       <div className="flow-bookend__kicker">
         {isGoal ? "END GOAL · CYCLE STOP" : "START POINT · LOOP"}
       </div>

@@ -38,6 +38,15 @@ export function FlowBandCard({ data }: NodeProps<FlowBandNode>) {
         </div>
         <div className="flow-band__about">
           {[b.about, `${open} open`, `${b.done.length} done`].filter(Boolean).join(" · ")}
+          {/* G3: an unfolded stack folds back here — its own card is gone while it is open */}
+          {b.done.length > 0 && jump.isExpanded(b.id) && (
+            <>
+              {" · "}
+              <button type="button" className="flow-linkbtn nodrag nopan" onClick={() => jump.toggleStack(b.id)}>
+                Stack them again
+              </button>
+            </>
+          )}
         </div>
       </div>
       {/* overview: a fixed-size label so the band stays named at 5% (T3, G5) */}

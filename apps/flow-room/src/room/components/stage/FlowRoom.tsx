@@ -16,10 +16,11 @@
 //
 // Effects are CSS + SVG/SMIL only and honour prefers-reduced-motion (D8, frame 4).
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
+  ControlButton,
   Controls,
   MiniMap,
   ReactFlow,
@@ -32,6 +33,8 @@ import {
   type EdgeTypes,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { LayoutGrid, Undo2 } from "lucide-react";
+import { movedSince, pushHistory, restore, snapshot, type Positions } from "@/lib/flow-moves";
 import { useStageEscape } from "@/lib/stage-escape";
 
 import {
@@ -203,8 +206,12 @@ function FlowCanvas({
 
   // Seed positions whenever the filter (and therefore the layering) changes,
   // then fit the viewport once the new nodes have been committed.
+  // card moves are view state: Undo walks them back, Reorganize returns to the layout
+  const [moves, setMoves] = useState<Positions[]>([]);
+  const dragFrom = useRef<Positions | null>(null);
   useEffect(() => {
     setNodes(buildLayerNodes(filtered, layout, spawned) as FlowAnyNode[]);
+    setMoves([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout]);
   useEffect(() => {
@@ -296,6 +303,7 @@ function FlowCanvas({
       return active.forkTask(id);
     },
     toggleStack: band => setExpanded(list => (list.includes(band) ? list.filter(b => b !== band) : [...list, band])),
+    isExpanded: band => expanded.includes(band),
     openCard: id => setOpenId(id),
     followUpBand: taskId => {
       const node = filtered.nodes.find(n => n.id === taskId);
@@ -377,6 +385,33 @@ function FlowCanvas({
     [active, prompt, selection]
   );
 
+  const undoMove = useCallback(() => {
+    const last = moves[moves.length - 1];
+    if (!last) return;
+    setNodes(current => restore(current, last));
+    setMoves(list => list.slice(0, -1));
+  }, [moves, setNodes]);
+  const reorganize = useCallback(() => {
+    const fresh = buildLayerNodes(filtered, layout, spawned) as FlowAnyNode[];
+    const before = snapshot(reactFlow.getNodes());
+    // a reorganize that moved something is itself undoable
+    if (movedSince(before, fresh)) setMoves(list => pushHistory(list, before));
+    setNodes(current => restore(current, snapshot(fresh)));
+    void reactFlow.fitBounds(flowFitBounds(layout), { padding: FLOW_FIT_PADDING });
+  }, [filtered, layout, spawned, setNodes, reactFlow]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== "z") return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      if (!moves.length) return;
+      e.preventDefault();
+      undoMove();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [moves.length, undoMove]);
+
   // The browser gate's seam (scripts/check-room-browser.mjs): drive the zoom from outside
   // and read it back. Read-only apart from the viewport, which is view state anyway.
   useEffect(() => {
@@ -419,6 +454,12 @@ function FlowCanvas({
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
         onNodesChange={onNodesChange}
+        onNodeDragStart={() => { dragFrom.current = snapshot(reactFlow.getNodes()); }}
+        onNodeDragStop={() => {
+          const from = dragFrom.current;
+          dragFrom.current = null;
+          if (from && movedSince(from, reactFlow.getNodes())) setMoves(list => pushHistory(list, from));
+        }}
         onNodeClick={(_event, node) => {
           if (node.id === STEERING_NODE_ID) return;
           if (node.type === "flowBatch") { setOpenId(null); setShowDecisions(true); return; }
@@ -456,7 +497,25 @@ function FlowCanvas({
         <FlowEdgeMarkers />
         {/* The legend is canvas-space, drawn at the rect the layout reserved for
             it — so it can never sit on top of a card (frame 1's floating panel). */}
-        <Controls position="bottom-left" showInteractive={false} />
+        <Controls position="bottom-left" showInteractive={false}>
+          <ControlButton
+            className="flow-ctl-undo"
+            onClick={undoMove}
+            disabled={!moves.length}
+            title={moves.length ? "Undo the last card move (Ctrl+Z)" : "No card move to undo"}
+            aria-label="Undo the last card move"
+          >
+            <Undo2 size={14} aria-hidden />
+          </ControlButton>
+          <ControlButton
+            className="flow-ctl-reorganize"
+            onClick={reorganize}
+            title="Put every card back in its layer"
+            aria-label="Reorganize the cards into their layers"
+          >
+            <LayoutGrid size={14} aria-hidden />
+          </ControlButton>
+        </Controls>
         <MiniMap
           position="bottom-right"
           pannable
