@@ -467,8 +467,8 @@ try {
         '<div class="flow-cycle flow-face__bar flow-face__bar--working" data-step="3"><i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on flow-cycle__cur"></i><i></i><i></i><i></i></div>' +
         '<span class="flow-beacon flow-beacon--work"></span><span class="flow-beacon flow-beacon--hil"></span></div>' +
         // a SECOND live card: a fleet works several cards at once, and each must animate on its own
-        '<div class="flow-face flow-face--live" id="__motion-second"><div class="flow-cycle flow-face__bar flow-face__bar--working" data-step="5">' +
-        '<i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on flow-cycle__cur"></i><i></i></div></div>';
+        '<div class="react-flow__node" id="__motion-node" style="position:relative"><div class="flow-face flow-face--live" id="__motion-second"><div class="flow-cycle flow-face__bar flow-face__bar--working" data-step="5">' +
+        '<i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on"></i><i class="flow-cycle__on flow-cycle__cur"></i><i></i></div></div></div>';
       document.body.appendChild(host);
     }
     const q = (s) => host.querySelector(s);
@@ -481,6 +481,7 @@ try {
       card2: anim(q('#__motion-second')), stage2: anim(q('#__motion-second .flow-cycle__cur')),
       scale: getComputedStyle(q('.flow-face')).scale, scale2: getComputedStyle(q('#__motion-second')).scale,
       stageOutline: getComputedStyle(q('#__motion-second .flow-cycle__cur')).outlineStyle,
+      aura: anim(q('#__motion-node'), '::before'), auraBg: getComputedStyle(q('#__motion-node'), '::before').backgroundImage,
     };
   })()`;
   // headless Chrome may itself report reduced motion: state BOTH preferences explicitly
@@ -500,8 +501,9 @@ try {
   }
   if (moving.stage !== 'flow-stage' || moving.stage2 !== 'flow-stage') problems.push(`the current stage does not flash on every live card: ${moving.stage} / ${moving.stage2}`);
   if (moving.card2 !== 'flow-breathe') problems.push(`the second live card does not breathe: ${moving.card2}`);
+  if (!/flow-aura/.test(moving.aura) || !/radial-gradient/.test(moving.auraBg)) problems.push(`a live card has no breathing aura behind it: ${moving.aura} / ${moving.auraBg?.slice(0, 80)}`);
   if (still.stageOutline === 'none') problems.push('F4: under reduced motion the current stage lost its steady outline');
-  for (const k of ['card', 'label', 'led', 'sweep', 'beacon', 'sonar', 'stage', 'card2', 'stage2']) {
+  for (const k of ['card', 'label', 'led', 'sweep', 'beacon', 'sonar', 'stage', 'card2', 'stage2', 'aura']) {
     if (moving[k] === 'none') problems.push(`F4 probe: ${k} does not animate even with motion allowed — the probe stopped watching`);
     if (still[k] !== 'none') problems.push(`F4: ${k} still animates (${still[k]}) under prefers-reduced-motion`);
   }

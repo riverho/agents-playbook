@@ -54,6 +54,14 @@
   --you-tint: rgba(180, 22, 127, 0.1);
   /* v2 state washes (chips sit on these; text on them measured >= 4.5:1) */
   --accent-tint: #e3f1ee;
+  /* the live card's aura (an orb of four hues) and the white-hot flash of its current stage;
+     glow only, never under text, so the same values serve both themes */
+  --aura-1: #ff4fd8;
+  --aura-2: #7b5cff;
+  --aura-3: #2fa8ff;
+  --aura-4: #2ff0d0;
+  --flash-hot: #ffcf33;
+  --flash-glow: #ffb800;
   --line-strong: #d9d5cf;
   /* v2 layer bands (D21): darker for lower layers; text on them measured (C1) */
   --band-0: #ddd6cb;
@@ -102,6 +110,8 @@
     --you: #ff6ccb;
     --you-tint: #3a1a30;
     --accent-tint: #173530;
+    --flash-hot: #fffbe6;
+    --flash-glow: #fff3b0;
     --line-strong: #46423d;
     --band-0: #2b2824;
     --band-1: #26231f;
@@ -138,6 +148,8 @@
   --you: #ff6ccb;
   --you-tint: #3a1a30;
   --accent-tint: #173530;
+  --flash-hot: #fffbe6;
+  --flash-glow: #fff3b0;
   --line-strong: #46423d;
   --band-0: #2b2824;
   --band-1: #26231f;
@@ -1241,9 +1253,29 @@ code,
 .flow-room .react-flow__node:has(.flow-face--live) {
   z-index: 1000 !important;
 }
-/* the stage being worked on now flashes (1 per second, under the F3 limit) */
+/* the aura: a soft many-coloured glow BEHIND the card (an orb, not a ring). It lives on the
+   node wrapper because the face clips its own overflow; the wrapper's z-index makes it a
+   stacking context, so z-index -1 sits behind the face and above everything else. Two
+   independent animations: it breathes (scale + opacity) and its colours drift (hue). */
+.flow-room .react-flow__node:has(.flow-face--live)::before {
+  content: "";
+  position: absolute;
+  inset: -24px -22px;
+  z-index: -1;
+  border-radius: 40px;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 22% 30%, var(--aura-1) 0%, transparent 55%),
+    radial-gradient(circle at 78% 26%, var(--aura-2) 0%, transparent 55%),
+    radial-gradient(circle at 70% 80%, var(--aura-3) 0%, transparent 55%),
+    radial-gradient(circle at 25% 78%, var(--aura-4) 0%, transparent 55%);
+  filter: blur(20px) hue-rotate(-30deg);
+  animation: flow-aura 2.8s ease-in-out infinite, flow-aura-hue 5s ease-in-out infinite alternate;
+}
+/* the stage being worked on now flashes like a light: its own colour, then white-hot, about
+   once a second (under the F3 limit of 3 per second) */
 .flow-face__bar--working i.flow-cycle__cur {
-  animation: flow-stage 1s ease-in-out infinite;
+  animation: flow-stage 1s steps(1, end) infinite;
 }
 /* its glow is the stage's own colour */
 .flow-cycle[data-step="1"] i.flow-cycle__cur { color: var(--s1); }
@@ -1263,12 +1295,21 @@ code,
   50% { opacity: 0.25; box-shadow: 0 0 0 0 currentColor; }
 }
 @keyframes flow-breathe {
-  0%, 100% { box-shadow: 0 0 0 2px var(--accent-teal), 0 0 6px 2px var(--accent-tint); }
-  50% { box-shadow: 0 0 0 3px var(--accent-teal), 0 0 26px 10px var(--accent-tint); }
+  0%, 100% { box-shadow: 0 0 0 1px var(--accent-teal); }
+  50% { box-shadow: 0 0 0 2px var(--accent-teal); }
 }
 @keyframes flow-stage {
-  0%, 100% { opacity: 1; box-shadow: 0 0 6px 2px currentColor; }
-  50% { opacity: 0.3; box-shadow: none; }
+  0% { background: currentColor; box-shadow: 0 0 4px 1px currentColor; }
+  50% { background: var(--flash-hot); box-shadow: 0 0 10px 3px var(--flash-glow), 0 0 4px 1px currentColor; }
+}
+@keyframes flow-aura {
+  0%, 100% { scale: 0.98; opacity: 0.75; }
+  50% { scale: 1.1; opacity: 1; }
+}
+@keyframes flow-aura-hue {
+  /* drift within the orb's family (pink, violet, blue, cyan), never round to orange */
+  from { filter: blur(20px) hue-rotate(-30deg); }
+  to { filter: blur(20px) hue-rotate(35deg); }
 }
 @keyframes flow-asking {
   0% { background: var(--you); color: var(--surface-1); }
@@ -1398,6 +1439,7 @@ code,
   .flow-face[data-hil="asking"],
   .flow-face__bar--working i.flow-cycle__cur::after,
   .flow-face__bar--working i.flow-cycle__cur,
+  .flow-room .react-flow__node:has(.flow-face--live)::before,
   .flow-beacon--work,
   .flow-beacon--work::before,
   .flow-beacon--hil::before {
