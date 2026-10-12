@@ -573,10 +573,13 @@ function verifyTaskClaim(taskId, args = {}, state = null) {
   const holder = entry.claimed_by || entry.agent_id || null;
   if (!holder) return { ok: true, status: 'unclaimed', holder: null };
   const token = (args && args.token) || process.env.PB_CLAIM_TOKEN || null;
-  if (token && entry.claim_token && token === entry.claim_token) {
-    return { ok: true, status: 'token', holder, token };
-  }
+  // The token proves the RIGHT to write; the chain still says WHO wrote and for whom.
+  // Leaving it off the token path gave a delegated record ownership:token but no
+  // agent_chain, while pb comment from the same writer stamped one.
   const chain = resolveAgentChain(args);
+  if (token && entry.claim_token && token === entry.claim_token) {
+    return { ok: true, status: 'token', holder, token, chain };
+  }
   if (chain.includes(holder)) return { ok: true, status: 'chain', holder, chain };
   return { ok: false, status: 'unproven', holder, chain };
 }
