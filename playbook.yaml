@@ -192,6 +192,18 @@ loop:
       command: node scripts/pb.mjs report
 
 # ----------------------------------------------------------------------------
+# orchestrator — the cron pass (`pb tick`). The host owns the schedule; pb owns the
+# pass. It releases quiet claims, asks a person, routes around stuck work and
+# PROPOSES the next task. It never starts agents, decides, merges or closes a version.
+# ----------------------------------------------------------------------------
+orchestrator:
+  every_minutes: 15          # how often the host should run `pb tick`
+  max_workers: 0             # 0 = propose only (spending is undecided, D27)
+  stale_claim_minutes: 30    # a claim with no journal row this long is released
+  reprompt_minutes: [60, 240, 1440]   # re-ask a question 1 h, 4 h, 1 day after the first ask
+  paused: false
+
+# ----------------------------------------------------------------------------
 # guardrails — lightweight. `pb validate` enforces the structural ones; the rules
 # below are the human-judgment ones every agent is expected to honor.
 # ----------------------------------------------------------------------------
