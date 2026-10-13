@@ -458,8 +458,17 @@ A **mode** is a persona pack mounted *on* the invariant floor. It injects a `dir
 `acceptance_checks`. Resolution order is `task.mode ?? loop.mode ?? default_mode`.
 
 Bundled modes: `coding` (the reference pack; empty directive = inherit the host prompt), `demo`,
-`blogwatch`, `fable-5`, `wiki-news`, `attention-research`. `pb list modes` prints the catalog;
-`pb pack build <id>` / `pb pack install <file.pbpack>` ship and mount one.
+`blogwatch`, `fable-5`, `wiki-news`, `attention-research`, `fleet`. `pb list modes` prints the
+catalog; `pb pack build <id>` / `pb pack install <file.pbpack>` ship and mount one.
+
+**`fleet`** is the always-on orchestrator persona for a long-lived fleet working one repo. It
+serves the person's Flow room (`pb ui --port 4317`), reads the backlog's comment rows every pass
+(`pb runcard list --json` / `pb graph --json`), classifies each block by mechanism, and defers
+human-in-the-loop work with `pb tick` instead of idling the fleet on a question. Its pack
+(`modes/fleet/`) carries `fleet-orchestration` as both a skill and a process; the mode ships no
+`scaffold` block by intent — a fleet is driven by `pb tick` over the open version, not by item
+scaffolding. The boundary it is written to is the repo plus the version's `stop_checks`; deciding,
+closing a version and merging stay person-only.
 
 ### Mode packs in practice: conformance-first intake (v0.3.3)
 

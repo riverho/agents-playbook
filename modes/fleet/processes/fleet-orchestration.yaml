@@ -1,0 +1,157 @@
+name: fleet-orchestration
+version: 1.0.0
+purpose: >-
+  Run one pass of a long-lived fleet against a single repo: serve the person's
+  Flow room, read the backlog's comments, classify every block, defer the ones
+  that can wait, keep the workers fed, and never widen the boundary past the repo
+  and the open version's stop_checks.
+
+applies_to:
+  - a session acting as the orchestrator of a fleet (mode `fleet`), not as a worker
+  - routing around blocked / waiting / failing work so the fleet keeps draining
+
+source_of_truth:
+  master: playbook.yaml
+  backlog: memory/backlog.yaml
+  journal: memory/journal.ndjson
+  orchestrator: playbook.yaml `orchestrator:` block (every_minutes, max_workers,
+    stale_claim_minutes, reprompt_minutes, paused)
+
+required_inputs:
+  - an open version (`pb version list`) whose `stop_checks` ARE the end goal
+  - a built Flow room app (`apps/flow-room/dist`) or a scaffolded one via --with-ui
+  - the orchestrator config from playbook.yaml
+
+canonical_steps:
+  - step: 1
+    name: Serve the person's surface
+    requirements:
+      - >-
+        `node scripts/pb.mjs ui --port 4317` — serves the built Flow room against
+        the playbook you are standing in, bound to 127.0.0.1. Resolution order:
+        `--app`, then `$PB_APP_DIR`, then `<engine>/apps/flow-room`.
+      - >-
+        If it is already up, leave it up; do not start a second room on the same
+        port. Confirm with `GET /api/health`.
+      - >-
+        The room is the person's surface. You read it; you never edit its files.
+
+  - step: 2
+    name: Orient on the engine
+    requirements:
+      - >-
+        `node scripts/pb.mjs state --json` — schema `agent-playbook.state.v1`:
+        open version, phase, orchestrator state, counts (todo / in_progress /
+        blocked / done / needs_you / stale) and `journal_seq` + `change_token`.
+      - >-
+        Poll with the token, not with a full re-read: `GET /api/state?since=<token>`
+        answers 304 while nothing moved.
+      - "`pb status` and `pb version list` when the counts alone are not enough."
+
+  - step: 3
+    name: Read the backlog's comments (v0.8)
+    requirements:
+      - >-
+        Sweep every thread in ONE read: `pb runcard list --json` returns
+        `runcards[].journal[]`, and `pb graph --json` (schema
+        `agent-playbook.graph.v1`) carries the same rows per node, so a card's
+        steering thread needs no second store. `pb runcard show <id> --json` is
+        the same projection for one card.
+      - >-
+        A row with `action: comment` is a message addressed to the orchestrator.
+        `--intent steer` means the plan changed; `--intent question` wants an
+        answer; `--intent finding` is evidence of a defect (a plain note has no
+        `intent`, and `seq` orders the thread).
+      - >-
+        Answer in the same thread: `pb comment --task <id> --text "..." --intent
+        finding`. A defect becomes its own checked card (`pb plan --goal "..."
+        --check "..."`), never a ninth note on the same card.
+      - >-
+        A question only the person can answer stays open and is theirs to close
+        with `pb decide` — you may carry a recommendation into the room, not a
+        decision.
+
+  - step: 4
+    name: Select work, and see the pass as a plan
+    requirements:
+      - "`pb next` — the next claimable card and the checks that define done."
+      - >-
+        `pb plan --layers --check-gates` — which strata are held back and which
+        gate is red. Gates are executed only with `--check-gates`; exit 2 means the
+        plan is structurally invalid or a checked gate fails.
+      - >-
+        `pb tick --dry-run --json` — the whole pass as a plan that writes nothing.
+
+  - step: 5
+    name: Classify every block before touching it
+    requirements:
+      - >-
+        Name the mechanism out loud: a real dependency, a failing layer gate, a
+        missing capability, or a decision. An unclassified block is a stall.
+      - >-
+        Dependency / ordering -> reorder with `pb plan --dep` at birth rather than
+        parking the card.
+      - >-
+        Failing layer gate -> the missing work is in the LOWER layer; fix there.
+        Layer order is enforced at CLAIM time: a task above a red (or unverified)
+        gate is never a candidate, and there is no switch that relaxes the
+        partition (`--force` overrides the phase-brief guard, not a gate).
+      - >-
+        Missing capability -> a `pending` proposal in
+        artifacts/reports/orchestrator-iterations.ndjson. Do not scaffold an
+        unroutable task and do not edit the mode's machinery mid-run.
+      - >-
+        Stale claim -> `pb release --stale <minutes>`. Projection drifted from the
+        journal -> `pb repair-state --check` then `--apply`.
+
+  - step: 6
+    name: Defer before you stall
+    requirements:
+      - >-
+        Ask whether the block can wait before asking whether it needs a person.
+        Deferrable work is deferred and the fleet keeps draining everything else.
+      - >-
+        Run the pass with `pb tick --json`: it releases quiet claims, re-asks open
+        questions on the `reprompt_minutes` schedule, routes around blocked /
+        waiting / failing cards (one `defer` row each, naming the card it chose
+        instead), chooses the next card and proposes dispatch — and writes exactly
+        ONE `tick` row.
+      - >-
+        `pb tick` never answers a decision, opens/closes a version, merges, or
+        starts an agent. Neither do you on its behalf.
+
+  - step: 7
+    name: Dispatch the fleet
+    requirements:
+      - >-
+        One card per worker, one worker per worktree: `pb worker create`, then
+        `exec` / `verify` inside the worktree, then the gated `merge` (refused
+        unless the branch actually carries verified work).
+      - >-
+        Stamp every sub-agent with `PB_AGENT_ID`, `PB_PARENT_AGENT_ID`,
+        `PB_AGENT_CHAIN` and `PB_CLAIM_TOKEN` so its writes are attributable and
+        proven entitled to the claim it inherited.
+      - >-
+        `done` is the card's `acceptance_checks` exiting 0 — `pb record
+        --status done` re-runs them and refuses on failure. There is no second
+        opinion about done.
+
+  - step: 8
+    name: Keep the boundary and close the pass
+    requirements:
+      - >-
+        The repo plus the open version's `stop_checks` are the whole boundary.
+        Everything else is a proposal to the person, however good the idea.
+      - >-
+        Person-only: `pb decide`, `version close|carry|drop|retitle`, and merging
+        a branch you did not verify. The engine refuses these from an agent (V6);
+        do not look for a way around the refusal.
+      - >-
+        Roll up for the person with `pb report`, record what you changed to the
+        journal with `pb record`, and log a capability gap as a `pending` proposal
+        instead of fixing the machinery inside the pass.
+
+acceptance_checks:
+  - node scripts/check-fleet-mode.mjs
+  - node scripts/test-fleet-mode.mjs
+  - node scripts/pb.mjs validate

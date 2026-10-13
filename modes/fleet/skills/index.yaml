@@ -1,0 +1,11 @@
+# Pack-local skill index for the fleet pack. Registered ONLY here — the engine's
+# global skills/index.yaml does not know about it. Visible only while `fleet` is
+# active; the engine's own skills stay visible too (additive union).
+
+skills:
+  - id: fleet-orchestration
+    file: modes/fleet/skills/fleet-orchestration/SKILL.md
+    process: fleet-orchestration
+    summary: >-
+      Run one orchestrator pass over the fleet — serve the Flow room, read the
+      backlog's comments, classify and defer blocks, dispatch workers.

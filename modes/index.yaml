@@ -54,3 +54,10 @@ modes:
     abstract: >-
       Pack-local daily-research-run + attention-research-verify skills/processes ∪ engine ops;
       project scaffolds supply topics, windows, delivery, and concrete acceptance commands.
+
+  - id: fleet
+    description: Always-on fleet orchestrator — serve the Flow room, read the backlog's comments, classify every block, defer what can wait.
+    abstract: >-
+      Pack-local fleet-orchestration skill/process ∪ engine ops; one continuous pass over the
+      open version — serve the room, read each card's comment rows, classify and defer blocks,
+      dispatch workers — inside the repo plus the version's stop_checks.

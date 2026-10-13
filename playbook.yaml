@@ -165,6 +165,12 @@ modes:
   wiki-news: modes/wiki-news.yaml
   # attention-research — reusable daily research digest mode; project scaffolds own concrete cron inputs.
   attention-research: modes/attention-research.yaml
+  # fleet — the always-on orchestrator of a long-lived agent fleet (v0.8). Serves the
+  # Flow room (`pb ui`), reads the backlog's comment rows every pass, classifies every
+  # block and defers human-in-the-loop work instead of idling the fleet. A pack:
+  # modes/fleet/ carries the fleet-orchestration skill + process. Driven by `pb tick`,
+  # not by item scaffolding, so it declares no `scaffold` block by intent.
+  fleet: modes/fleet.yaml
 
 # ----------------------------------------------------------------------------
 # loop — the friction-free contract. One command per step. SKILL.md expands this.

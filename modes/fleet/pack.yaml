@@ -1,0 +1,12 @@
+id: fleet
+version: 0.1.0
+engine_range: ">=0.8.0"
+files:
+  - processes/fleet-orchestration.yaml
+  - processes/index.yaml
+  - skills/fleet-orchestration/SKILL.md
+  - skills/index.yaml
+license: free
+provenance:
+  author: riverho
+  source: "https://github.com/riverho/agents-playbook"

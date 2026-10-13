@@ -1,0 +1,6 @@
+# Pack-local process index for the fleet pack. Registered ONLY here.
+
+processes:
+  - id: fleet-orchestration
+    file: modes/fleet/processes/fleet-orchestration.yaml
+    owner: fleet
