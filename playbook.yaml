@@ -51,6 +51,14 @@ fixation:
     with `pb reflect`. The North Star is invariant; the cycle goal changes per phase.
   - Acceptance_checks must test the task's own artifacts — `pb validate` alone is not a task
     check. A gate that passes without the work being done is worse than no gate.
+  - The engine and its consumers are SEPARATE LAYERS. `apps/` (the flow room) is an
+    integration surface that CONSUMES the engine (`pb graph --json`, `pb state --json`); it is
+    never a dependency of it. Engine work must not require, import, or gate on `apps/`, and the
+    engine's own checks must pass with `apps/` absent. Dependence runs one way, never back.
+  - Nothing outside this folder is part of this playbook. A task naming a path in another
+    repository (a sibling checkout, a host app, another tree's `src-tauri`) is out of scope by
+    construction — capture it as a proposal, never carry it as an engine card, and never let it
+    hold a version open. Every card in a version must be closable inside this folder.
 
 # ----------------------------------------------------------------------------
 # paths — canonical layout. The CLI resolves everything relative to this file's
@@ -177,6 +185,69 @@ modes:
 # ----------------------------------------------------------------------------
 loop:
   description: Orient → Select → Act → Verify → Record → Report → repeat.
+  # ---------------------------------------------------------------------------
+  # stop_when — the terminal state. OPTIONAL, and the missing half of the contract.
+  #
+  # The loop above says how to keep going; nothing said how to STOP. A phase's stop
+  # condition lived in memory/cycle.md as PROSE, which `pb anchor` printed and no
+  # command ever evaluated — so an instruction-following agent had no observable
+  # "done", answered the next injected banner, and the loop had no end. The cost was
+  # turns, not CPU (see artifacts/debrief-pb-optimization-2026-10-13.md, Part 0).
+  #
+  # This is an EXECUTABLE command, exactly like a task's `acceptance_checks`:
+  # cwd = playbook root, exit 0 = the phase's goal is met. Exit codes, not prose.
+  #
+  #   pb stop-check          run it and print the verdict
+  #   pb stop-check --json   the same verdict, machine-readable
+  #
+  # A PROSE value is a GUARDRAIL FAILURE (`pb validate` exits non-zero), not a warning:
+  # an unenforceable condition is the same as no condition, which is the defect itself.
+  # Absent means "this playbook has not adopted a stop condition" and is not an error —
+  # but an idle backlog is still reported inert, so a finished phase stops asking.
+  #
+  # stop_action — what a GREEN check means the caller should do, from a closed vocabulary:
+  #   idle        say nothing and wait for a human (the default)
+  #   report      roll the journal up into an artifact, then idle
+  #   close-cycle run `pb reflect` to close the phase, then idle
+  #   ask-human   surface one question and hand back
+  # It is read by `pb anchor --brief` and the harness integration; it never gates work.
+  # ---------------------------------------------------------------------------
+  stop_when: "node scripts/check-phase-stop.mjs"
+  stop_action: idle
+  # ---------------------------------------------------------------------------
+  # gate_tiers — the two speeds of "is this phase finished?".
+  #
+  # v0.8.0's stop condition ran the WHOLE suite. Measured on this repo: 327s across 77
+  # commands, of which seven timeout/kill suites alone are 188s (58%). That is a fair price
+  # at a phase boundary and an impossible one on the per-turn path: `pb status --json` feeds
+  # the harness's per-STEP context injection, so the check deciding "may the loop continue?"
+  # was costing minutes per step. The verdict was cached on the journal seq to make the
+  # harness usable at all — a mitigation, not a design guarantee.
+  #
+  # So the question is split in two, which is the whole point:
+  #   fast — "may the loop continue?" Structural health + the terminal-state contract.
+  #          Runs on the per-turn / banner path. Budget: seconds, not minutes.
+  #   full — "is this repo sound?" The whole suite. Runs at phase boundaries: a release,
+  #          `pb version close`, a deliberate `pb stop-check --full`.
+  #
+  # `pb stop-check` defaults to the FAST tier; `--full` opts into the other. A version's
+  # `stop_checks` are the full tier by definition, because closing a version IS a boundary.
+  # ---------------------------------------------------------------------------
+  gate_tiers:
+    fast:
+      description: The per-turn path — structural guards plus the terminal-state contract.
+      budget_ms: 20000
+      commands:
+        - node scripts/pb.mjs validate
+        - node scripts/test-stop-when.mjs
+        - node scripts/test-dry-run-is-inert.mjs
+        - node scripts/test-release-blocked-card.mjs
+        - node scripts/test-dsh-inert-banner.mjs
+    full:
+      description: The phase boundary — the whole suite, plus the room's own gates.
+      commands:
+        - npm test
+        - node scripts/check-flow-room-app.mjs
   steps:
     - id: orient
       do: Re-anchor. Read this master + memory/project-memory.md, then snapshot state.

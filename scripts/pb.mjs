@@ -571,12 +571,25 @@ function resolveAgentChain(args = {}) {
 function verifyTaskClaim(taskId, args = {}, state = null) {
   const entry = (state || readBacklogState())[taskId] || {};
   const holder = entry.claimed_by || entry.agent_id || null;
-  if (!holder) return { ok: true, status: 'unclaimed', holder: null };
   const token = (args && args.token) || process.env.PB_CLAIM_TOKEN || null;
+  const chain = resolveAgentChain(args);
+  // A TOKEN WITH NO HOLDER IS NOT A CLAIM. A terminal write (`done`/`blocked`) ends the
+  // claim but keeps the issued token on the record, so a card that nobody is working on is
+  // still attributable to the writer who was issued it. Reading that as "held" would
+  // resurrect the deadlock (carry/drop and `pb next` key on being held); reading it as
+  // "nothing to prove" would drop real attribution. So it is neither: the card is unclaimed,
+  // and a writer presenting the matching token is still proven.
+  if (!holder) {
+    const issued = entry.claim_token || entry.issued_claim_token || null;
+    if (token && issued && token === issued) return { ok: true, status: 'token', holder: null, token, chain };
+    // A chain that ends at the recorded owner is still proof when a terminal write released
+    // the claim but left the trail (entry.agent_id is cleared with the claim, so this keys
+    // on the issued token only — an unowned card otherwise needs no proof).
+    return { ok: true, status: 'unclaimed', holder: null, chain };
+  }
   // The token proves the RIGHT to write; the chain still says WHO wrote and for whom.
   // Leaving it off the token path gave a delegated record ownership:token but no
   // agent_chain, while pb comment from the same writer stamped one.
-  const chain = resolveAgentChain(args);
   if (token && entry.claim_token && token === entry.claim_token) {
     return { ok: true, status: 'token', holder, token, chain };
   }
@@ -1702,6 +1715,10 @@ function runOneCheck(cmd, cwd, limit) {
     const out = [e.stdout, e.stderr].filter(Boolean).map(String).join('\n').trim();
     return {
       cmd, ok: false,
+      // The child's own exit code, when it had one. `null` for a signal death or a timer
+      // kill, which is deliberate: a stop condition that was KILLED did not answer, and
+      // reporting a fabricated code for it would turn "no verdict" into a verdict.
+      exit_code: typeof e.status === 'number' ? e.status : null,
       timedOut: status === 'timeout' || isCheckTimeout(e),
       overflow: status === 'output-limit' || isOutputOverflow(e),
       kill_failed: killFailed,
@@ -1903,6 +1920,273 @@ function reportModeCheckVerdict(id, results) {
 //  --mode: also run the active mode's kind:check principles.
 //  Exit 1 on any failure.
 // ============================================================================
+// ============================================================================
+//  stop_when — the loop's TERMINAL STATE (playbook.yaml `loop.stop_when`).
+// ----------------------------------------------------------------------------
+// The loop contract said how to keep going and never how to STOP. A phase's stop
+// condition lived in memory/cycle.md as prose: `pb anchor` printed it, and no command
+// ever evaluated it, so an instruction-following agent had no observable "done". It
+// answered the next injected banner and the loop had no end (cost: turns, not CPU).
+//
+// The fix is the same shape as a task's acceptance_checks — an executable command,
+// cwd = playbook root, exit 0 = the phase's goal is met. And a PROSE value is a
+// GUARDRAIL FAILURE rather than a warning, because an unenforceable condition is the
+// same as no condition, which is precisely the defect.
+// ============================================================================
+
+// What a green stop check means the caller should do. A closed vocabulary: a typo that
+// silently degraded to "idle" would recreate the unenforceable declaration in a new place.
+const STOP_ACTIONS = ['idle', 'report', 'close-cycle', 'ask-human'];
+
+// Heuristic for "this is a sentence, not a command". Deliberately narrow, because the
+// false-positive cost is refusing a real command: we only call something prose when it
+// STARTS with a capitalised English word that is not a program name, and contains no
+// shell metacharacter that would make it a pipeline/invocation. The honest check is
+// always the run itself (below); this exists so `pb validate` can refuse BEFORE a phase
+// opens on a condition nothing can evaluate.
+function looksLikeProse(value) {
+  const s = String(value || '').trim();
+  if (!s) return true;
+  // A leading program name + argument is a command. Allow anything whose first token is a
+  // known runner, or that carries shell syntax, or that is a path/relative script.
+  if (/[|&;><$`()]/.test(s)) return false;              // shell syntax present
+  if (/^(node|npm|npx|pnpm|yarn|python|python3|bash|sh|pwsh|powershell|cmd|deno|bun|make|git|test|\[)\b/i.test(s)) return false;
+  if (/^[.\w/\\-]+\.(mjs|cjs|js|ts|sh|ps1|cmd|bat|exe)\b/i.test(s)) return false;
+  if (/^[A-Za-z]:[\\/]/.test(s)) return false;          // absolute Windows path
+  if (/^\.{0,2}[\\/]/.test(s)) return false;            // relative path
+  // A multi-word sentence starting with a capital and ending in a period is prose.
+  if (/^[A-Z][a-z]+(\s+\S+){2,}/.test(s)) return true;
+  return false;
+}
+
+// Declared stop condition, resolved from the master. `null` means "not adopted" — which
+// is NOT an error (the key is opt-in), but an idle backlog still reports inert.
+function stopWhen() {
+  const raw = master?.loop?.stop_when;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return null;
+  return String(raw).trim();
+}
+function stopAction() {
+  const raw = master?.loop?.stop_action;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return 'idle';
+  return String(raw).trim();
+}
+
+// Run the declared stop condition and report the verdict as data. Never throws.
+// The verdict is a THREE-valued thing, not a boolean: met / not-met / not-executable.
+// Collapsing "we could not evaluate it" into "not met" would make a broken stop
+// condition look like a busy phase, which is the failure being fixed.
+function evaluateStopWhen() {
+  const command = stopWhen();
+  if (command === null) {
+    return { declared: false, executable: true, met: false, command: null, exit_code: null, action: stopAction(), output: '' };
+  }
+  if (looksLikeProse(command)) {
+    return {
+      declared: true,
+      executable: false,
+      met: false,
+      command,
+      exit_code: null,
+      action: stopAction(),
+      error: 'not-executable',
+      output: `the declared stop_when is a sentence, not a command: ${command}`,
+    };
+  }
+  const limit = Number(master?.loop?.stop_timeout_ms) > 0
+    ? { ms: Number(master.loop.stop_timeout_ms), source: 'loop.stop_timeout_ms' }
+    : { ms: 600_000, source: 'default' };
+  // The stop condition runs through the SAME launcher as a task's acceptance_checks, so it
+  // inherits the bounded time, the output cap, and the process-tree kill. A stop condition
+  // that hangs must not hang the evaluation of every banner.
+  const r = runOneCheck(command, ROOT, limit);
+  if (!r) {
+    return { declared: true, executable: false, met: false, command, exit_code: null, action: stopAction(), error: 'not-executable', output: 'the declared stop_when parsed to an empty command' };
+  }
+  const verdict = {
+    declared: true,
+    executable: true,
+    met: r.ok,
+    command,
+    exit_code: r.ok ? 0 : (typeof r.exit_code === 'number' ? r.exit_code : null),
+    timed_out: Boolean(r.timedOut),
+    overflow: Boolean(r.overflow),
+    elapsed_ms: r.elapsed_ms,
+    action: stopAction(),
+    output: r.ok ? '' : String(r.output || ''),
+  };
+  // THE LATENCY BUDGET. A hang guard and a per-turn budget are different questions: a check
+  // that returns correct-but-slow is not hung, it is WRONG FOR THIS CALLER. Without this,
+  // a stop_when that takes four minutes is reported as a healthy green on the banner path,
+  // and the harness spends four minutes per step discovering that. The budget is declared
+  // as `loop.gate_tiers.fast.budget_ms`, so a project sets its own.
+  return withLatencyBudget(verdict);
+}
+
+// Tools that run PER TURN (the banner, `pb status --json` on every agent step) must not just
+// be bounded — they must be told when a green is too expensive to be useful there.
+function fastTierBudgetMs() {
+  const raw = master?.loop?.gate_tiers?.fast?.budget_ms;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+function withLatencyBudget(verdict) {
+  const budget = fastTierBudgetMs();
+  if (budget === null || typeof verdict.elapsed_ms !== 'number') return verdict;
+  if (verdict.elapsed_ms <= budget) return verdict;
+  // Over budget is NOT a failure of the check — it passed. It is a diagnosis about the
+  // DECLARATION: this command is too slow to answer a per-turn question. Reported as a
+  // distinct outcome so nobody reads "over budget" as "red": the work is fine, the gate
+  // placement is not. The caller decides; the engine does not silently downgrade a green.
+  return {
+    ...verdict,
+    over_budget: true,
+    budget_ms: budget,
+    elapsed_ms: verdict.elapsed_ms,
+    diagnosis: `the stop condition took ${verdict.elapsed_ms}ms, over the ${budget}ms per-turn budget `
+      + '(loop.gate_tiers.fast.budget_ms). It is not failing — it is too slow to run on the '
+      + 'per-turn path. Move the expensive gates to the full tier, or raise the budget if the '
+      + 'per-turn cost is really acceptable.',
+  };
+}
+
+// ============================================================================
+//  stop-check caching — the verdict is EXPENSIVE and the callers are PER-TURN.
+// ----------------------------------------------------------------------------
+// A stop condition is usually a real gate (this repo's runs the whole test suite). That is
+// fine for `pb stop-check`, which a human or a release checklist runs deliberately — but
+// `pb status --json` feeds the harness's per-STEP context injection, and `pb anchor --brief`
+// is injected every turn. Running a 6-minute suite on every step would make the harness
+// unusable, so the verdict is cached and the cache is keyed on the thing that can change it:
+//
+//   the journal seq (what actually happened) + the command (what is being evaluated)
+//
+// A cached verdict is only reused while the record has not moved. The moment any journal row
+// is appended — a record, a claim, a comment — the seq advances and the check runs again.
+// That is the honest trade: the verdict can lag the WORK, but never lags the RECORD.
+//
+// `pb stop-check` bypasses the cache by default (a person asking wants the truth NOW);
+// `--cached` opts in. The banner/status always use the cache.
+// ============================================================================
+function stopCachePath() {
+  return p(join(MEMORY_DIR, '.stop-check-cache.json'));
+}
+function readStopCache() {
+  try { return JSON.parse(readFileSync(stopCachePath(), 'utf8')); } catch { return null; }
+}
+function writeStopCache(entry) {
+  try {
+    ensureDir(MEMORY_DIR);
+    writeFileSync(stopCachePath(), JSON.stringify(entry), 'utf8');
+  } catch { /* a cache that cannot be written must not break the command */ }
+}
+// The seq the cache is keyed on: the highest journal seq, or 0 when the journal is empty.
+function journalSeqForCache() {
+  try {
+    const rows = readJournal().filter((e) => !e.__malformed);
+    return rows.reduce((m, r) => (typeof r.seq === 'number' && r.seq > m ? r.seq : m), 0);
+  } catch { return 0; }
+}
+function evaluateStopWhenCached() {
+  const command = stopWhen();
+  if (command === null) return evaluateStopWhen();
+  // A prose value is refused before any execution — cheap and always current.
+  if (looksLikeProse(command)) return evaluateStopWhen();
+  const seq = journalSeqForCache();
+  const cached = readStopCache();
+  if (cached && cached.command === command && cached.seq === seq && typeof cached.verdict === 'object') {
+    // The latency budget is re-derived on every read rather than frozen into the cache: the
+    // BUDGET is a property of the master (which can be edited without touching the journal),
+    // and a cached verdict must not keep asserting the budget it was measured against after
+    // the declaration changed. `elapsed_ms` comes from the cached run — that is the fact.
+    return withLatencyBudget({ ...cached.verdict, cached: true, cached_seq: seq });
+  }
+  const verdict = evaluateStopWhen();
+  writeStopCache({ command, seq, at: new Date().toISOString(), verdict });
+  return { ...verdict, cached: false, cached_seq: seq };
+}
+// `evaluateStopWhen` itself stays uncached: it is the primitive. Callers that run PER TURN
+// use the cached wrapper; `pb stop-check` uses the primitive unless asked otherwise.
+
+// The banner's mode. This is the NEGATIVE signal the loop lacked: `complete` says stop,
+// and the injected text must be inert so an instruction-following agent cannot read it
+// as a task (debrief design rules 1 and 3).
+function loopPosture() {
+  const stop = evaluateStopWhenCached();
+  const tasks = backlogTasks();
+  const claimable = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t) && unmetDeps(t, tasks).length === 0);
+  const wip = tasks.filter((t) => t.status === 'in_progress');
+  if (stop.declared && stop.executable && stop.met) return { posture: 'complete', stop, claimable, wip };
+  if (!claimable.length && !wip.length) return { posture: 'idle', stop, claimable, wip };
+  return { posture: 'active', stop, claimable, wip };
+}
+
+// The one line every banner variant carries, so the harness and a human read the same
+// state. An inert posture spells out that it asks for nothing — the whole point.
+function inertFooter(posture, reason) {
+  return [
+    `[agent-playbook] ${posture === 'complete' ? 'PHASE COMPLETE' : 'NO ACTION REQUIRED'} — ${reason}`,
+    'no action required — this is status, not a request.',
+    'Nothing to inject: nothing here asks for work. Do NOT reply to this banner; wait for the human.',
+  ].join('\n');
+}
+
+// ============================================================================
+//  Backlog file vs journal — the fossil-status hazard.
+// ----------------------------------------------------------------------------
+// `memory/backlog.yaml` carries a `status:` key that NOTHING MAINTAINS. `writeBacklog`
+// deliberately never rewrites the file (status lives in the sidecar so hand-edited YAML
+// formatting and comments survive), so a task's `status:` in the file is whatever it was
+// CREATED as. Measured on this repository: 85 of 85 tasks disagreed with the journal.
+//
+// The record is the journal; `backlog-state.json` is its projection and is authoritative.
+// The file is a DEFINITION (id, title, skill, checks) that happens to also carry a fossil
+// status — which makes it a trap: opening the backlog is the most natural thing to do in a
+// repo named "backlog", and the list it shows is 100% wrong while every gate stays green.
+//
+// This REPORTS and never GATES. The authoritative state is correct and consistent, so a
+// fossil file is a documentation hazard rather than a broken playbook; failing `validate`
+// on it would turn every existing playbook red for a cosmetic reason and teach people to
+// ignore the gate — worse than the hazard.
+// ============================================================================
+function backlogFileDisagreements({ limit = 5 } = {}) {
+  let fileTasks = [];
+  try {
+    const doc = readData(BACKLOG);
+    fileTasks = Array.isArray(doc?.tasks) ? doc.tasks : [];
+  } catch { return { total: 0, checked: 0, examples: [] }; }
+  let state = {};
+  try { state = readBacklogState(); } catch { return { total: 0, checked: 0, examples: [] }; }
+  const examples = [];
+  let total = 0;
+  let checked = 0;
+  for (const t of fileTasks) {
+    if (!t || !t.id) continue;
+    const proj = state[t.id];
+    // Only a task the record actually knows about can disagree with it. An unknown id is a
+    // different condition (an unrecorded task) and is not this warning's business.
+    if (!proj || !proj.status) continue;
+    checked += 1;
+    const disposed = proj.disposition === 'dropped';
+    // A dropped task reads `todo` in the file by construction (nothing rewrites it), and the
+    // disposition lives in the projection. That is the documented shape, not a stray fossil.
+    if (t.status === proj.status || (disposed && t.status === 'todo')) continue;
+    total += 1;
+    if (examples.length < limit) examples.push(`${t.id} (file: ${t.status}, record: ${proj.status})`);
+  }
+  return { total, checked, examples };
+}
+
+// The one line every surface prints. Silent when the file agrees, so this cannot become
+// permanent noise people learn to scroll past.
+function backlogFileWarning() {
+  const d = backlogFileDisagreements();
+  if (!d.total) return null;
+  return `memory/backlog.yaml disagrees with the record in ${d.total} of ${d.checked} task(s) `
+    + `— its \`status:\` is a FOSSIL (written at creation, never updated; the journal is truth). `
+    + `Examples: ${d.examples.join(', ')}. Fix the reader with \`pb status\`; the file is authoritative for id/title/skill/checks only.`;
+}
+
 function runValidate() {
   const failures = [];
   const ok = (cond, msg) => { if (!cond) failures.push(msg); };
@@ -1914,6 +2198,22 @@ function runValidate() {
     ok(master[key] !== undefined, `${MASTER} is missing required key: ${key}`);
   }
   ok(exists(ENTRY), `entry file does not exist: ${ENTRY}`);
+  // 1b. the loop contract's terminal state, if declared. Exit codes, not prose: a
+  //     stop_when that no command can evaluate is REFUSED, not warned about.
+  const sw = master?.loop?.stop_when;
+  if (sw !== undefined && sw !== null && String(sw).trim() !== '') {
+    ok(!looksLikeProse(String(sw)),
+      `${MASTER} loop.stop_when is not an executable command — it reads as prose: "${String(sw).trim()}". `
+      + 'A stop condition no command can evaluate is the same as no stop condition; make it a shell command that exits 0 when the phase goal is met.');
+  }
+  const sa = master?.loop?.stop_action;
+  if (sa !== undefined && sa !== null && String(sa).trim() !== '') {
+    ok(STOP_ACTIONS.includes(String(sa).trim()),
+      `${MASTER} loop.stop_action must be one of ${STOP_ACTIONS.join(' | ')} (got: ${String(sa).trim()})`);
+  }
+  const swType = typeof sw;
+  ok(sw === undefined || sw === null || swType === 'string',
+    `${MASTER} loop.stop_when must be a string shell command (got: ${swType})`);
 
   // 2. processes index (global must parse) + each referenced process file in the
   //    resolved union (engine globals ∪ active-mode pack-local).
@@ -2136,6 +2436,13 @@ function cmdValidate(args) {
   }
   console.log('Playbook validation passed.');
 
+  // A REPORT, never a gate: the record is authoritative and consistent, so a fossil file is
+  // a documentation hazard rather than a broken playbook (see backlogFileDisagreements).
+  const fileWarn = backlogFileWarning();
+  if (fileWarn) {
+    console.log(`\n⚠ ${fileWarn}`);
+  }
+
   // Hollow-check pass: warn (or fail with --strict) when actionable tasks rely only on
   // structural checks. The structural gate (pb validate) proves the playbook is well-formed,
   // not that the task's work was done — making "done" a false green.
@@ -2194,6 +2501,15 @@ function statusPayload() {
   const loop = activeLoop();
   const failures = runValidate();
   const next = tasks.filter((t) => t.status === 'todo' && taskInOpenVersion(t)).sort((a, b) => prio(a) - prio(b))[0] || null;
+  const cur = readCycle();
+  // The loop's TERMINAL STATE, surfaced for the harness. A consumer that only reads counts
+  // cannot tell "finished" from "busy" — which is exactly how a completed phase kept asking
+  // for more. `stop.met` is the negative signal; see loop.stop_when in the master.
+  //
+  // CACHED: `status --json` is called on every agent step by the harness integration, so it
+  // must not run a multi-minute gate each time. The cache is keyed on the journal seq, so it
+  // is re-evaluated as soon as any row is appended (see the stop-check caching note).
+  const stop = evaluateStopWhenCached();
   return {
     schema: 'agent-playbook.status.v1',
     name: master?.name || 'playbook',
@@ -2205,7 +2521,27 @@ function statusPayload() {
       in_progress: tasks.filter((t) => t.status === 'in_progress').map((t) => ({ id: t.id, title: t.title, claimed_by: taskHolder(t) })),
     },
     loop: loop ? { id: loop.id, status: loop.status, goal: loop.goal || null, mode: loop.mode || null } : null,
+    cycle: cur.exists ? { phase: cur.phase ?? null, goal: cur.goal || null, stop: cur.stop || null } : null,
+    stop: {
+      declared: stop.declared,
+      executable: stop.executable,
+      met: stop.met,
+      command: stop.command,
+      action: stop.action,
+      ...(stop.error ? { error: stop.error } : {}),
+      // The per-turn callers (`status --json`, the banner) are exactly who needs the budget
+      // verdict: they run on every agent step. A diagnosis visible only to a human running
+      // `pb stop-check` would never reach the harness that pays the cost.
+      ...(typeof stop.elapsed_ms === 'number' ? { elapsed_ms: stop.elapsed_ms } : {}),
+      ...(stop.over_budget ? { over_budget: true, budget_ms: stop.budget_ms } : {}),
+    },
     guardrails: { status: failures.length ? 'fail' : 'green', failures },
+    // The file's `status:` is a fossil; surface the disagreement here so a harness or UI can
+    // show it rather than presenting a task list that contradicts the record.
+    backlog_file: (() => {
+      const d = backlogFileDisagreements();
+      return { disagrees: d.total, checked: d.checked, examples: d.examples, warning: backlogFileWarning() };
+    })(),
     lessons: { high_open: openLessons().filter((l) => l.severity === 'high').length },
     recent_journal: journal.slice(-5),
   };
@@ -3854,6 +4190,10 @@ function cmdStatus(args = {}) {
   const failures = runValidate();
   console.log('  ' + '-'.repeat(68));
   console.log(failures.length ? `  Guardrails: FAIL (${failures.length}) — run \`pb validate\`` : '  Guardrails: green');
+  // A green guardrail line over a file that says something different is the trap this warns
+  // about: the reader sees "green" and a task list that contradicts the record.
+  const fileWarn = backlogFileWarning();
+  if (fileWarn) console.log(`  ⚠ ${fileWarn}`);
   console.log('');
 }
 
@@ -4020,6 +4360,19 @@ function cmdNext(args) {
 // in_progress forever (`--force` on someone else's claim was the only escape).
 // Ownership is enforced the same way as a write: holder, token, or delegation
 // chain. `pb release --stale <minutes>` sweeps claims whose holder went away.
+// The fields that make up a CLAIM — the assertion "someone is working on this now". Clearing
+// a claim means clearing all of them together; a partial clear leaves a card that looks held
+// but has no token, or vice versa.
+// Declared BEFORE its first use (`cmdRelease`) rather than beside the replay that shares it:
+// a `const` in the temporal dead zone would throw only on the release path, which is the
+// path least likely to be exercised by a passing test run.
+const CLAIM_CLEAR_FIELDS = ['claimed_by', 'agent_id', 'claim_token', 'claim_token_issued_at', 'claimed_at'];
+// What a TERMINAL status clears. Identical to a release EXCEPT the token: a terminal write
+// ends the claim (nobody is working) while the issued token stays on the record, because a
+// blocked/done card is still written to afterwards and those writers prove themselves with
+// the token they were issued. `verifyTaskClaim` reads a token with NO holder as unclaimed.
+const TERMINAL_CLAIM_CLEAR_FIELDS = ['claimed_by', 'agent_id', 'claim_token_issued_at', 'claimed_at'];
+
 function cmdRelease(args) {
   const taskId = args.task || args._[0];
   const staleMinutes = args.stale ? Number(args.stale) : null;
@@ -4047,18 +4400,39 @@ function cmdRelease(args) {
 
   if (staleMinutes) {
     const cutoff = Date.now() - staleMinutes * 60_000;
-    const stale = backlogTasks().filter((t) => taskInOpenVersion(t) && t.status === 'in_progress' && (t.claimed_at ? Date.parse(t.claimed_at) < cutoff : true));
-    if (!stale.length) { console.log(`No in_progress claims older than ${staleMinutes} minute(s).`); return; }
+    const state = readBacklogState();
+    // A stale claim is a claim whose journal has gone quiet — NOT necessarily a card still
+    // in_progress. A card can be claimed and then blocked/abandoned, and that abandoned claim
+    // is exactly what a human wants swept. Restricting the sweep to `in_progress` left those
+    // cards holding an unclearable token (carry/drop refuse, and `release --task` used to
+    // refuse too), so the sweep would have missed the one case it exists for.
+    const stale = backlogTasks().filter((t) => {
+      if (!taskInOpenVersion(t)) return false;
+      const entry = state[t.id] || {};
+      const holdsClaim = Boolean(entry.claim_token || entry.claimed_by || entry.claimed_at);
+      const working = t.status === 'in_progress' || holdsClaim;
+      if (!working) return false;
+      // Prefer the projection's claimed_at: it is the record, and the backlog file's status
+      // is a fossil (it is never rewritten after creation).
+      const at = entry.claimed_at || t.claimed_at;
+      return at ? Date.parse(at) < cutoff : true;
+    });
+    if (!stale.length) { console.log(`No stale claims older than ${staleMinutes} minute(s).`); return; }
     if (args['dry-run']) {
-      for (const t of stale) console.log(`[dry-run] would release [${t.id}] (held by ${taskHolder(t)} since ${t.claimed_at || 'unknown'})`);
+      for (const t of stale) console.log(`[dry-run] would release [${t.id}] (${t.status}, held by ${taskHolder(t)} since ${(state[t.id] || {}).claimed_at || t.claimed_at || 'unknown'})`);
       return;
     }
     let released = 0;
     for (const t of stale) {
       const holder = taskHolder(t);
-      const entry = readBacklogState()[t.id] || {};
+      const entry = state[t.id] || {};
+      // Same rule as `release --task`: an in_progress claim returns to the pool as `todo`
+      // (otherwise the card is orphaned); any other status keeps it and only loses the claim.
+      const toPool = t.status === 'in_progress';
       const commit = commitIteration(t.id, releaseRow(t.id, holder, entry.claim_token, `stale claim (>${staleMinutes}m) swept by ${agent}`),
-        () => ({ status: 'todo', __unset: ['claimed_by', 'agent_id', 'claim_token', 'claim_token_issued_at', 'claimed_at'], released_at: nowISO(), released_by: agent }),
+        () => (toPool
+          ? { status: 'todo', __unset: CLAIM_CLEAR_FIELDS, released_at: nowISO(), released_by: agent }
+          : { __unset: CLAIM_CLEAR_FIELDS, released_at: nowISO(), released_by: agent }),
         { agent });
       if (commit) released++;
     }
@@ -4069,23 +4443,52 @@ function cmdRelease(args) {
   const task = backlogTasks().find((t) => t.id === taskId);
   if (!task) { console.error(`Task not found: ${taskId}`); process.exit(1); }
   versionWriteGuard(task, 'release', args);
-  if (task.status !== 'in_progress') {
-    console.log(`[${taskId}] is "${task.status}", not in_progress — nothing to release.`);
+
+  // A CLAIM CAN OUTLIVE `in_progress`. The obvious guard — refuse anything not in_progress —
+  // made the one command that clears a claim refuse to look at a card whose claim most
+  // needed clearing, while carry/drop refused to proceed until that claim was gone. A card
+  // blocked, carried, or replayed into a stuck state therefore had NO exit.
+  //
+  // So the question is not "is it in_progress?" but "does it actually hold a claim?" —
+  // which is the thing `release` operates on. A card with no claim is an honest no-op; a
+  // card in ANY status with a claim is releasable.
+  const claimRecord = readBacklogState()[taskId] || {};
+  const holdsClaim = Boolean(claimRecord.claim_token || claimRecord.claimed_by || claimRecord.claimed_at);
+  if (!holdsClaim && task.status !== 'in_progress') {
+    console.log(`[${taskId}] is "${task.status}" and holds no claim — nothing to release.`);
     return;
   }
   const ownership = verifyTaskClaim(taskId, args);
-  if (!ownership.ok && !args.force) {
+  // `blocked` (and any non-in_progress status) has no live holder to prove ownership
+  // against, so requiring proof there would recreate the deadlock. Releasing a card that
+  // is not being worked on cannot interrupt a live writer — the risk this guard exists for.
+  const needsProof = task.status === 'in_progress';
+  if (needsProof && !ownership.ok && !args.force) {
     console.error(`Refusing to release [${taskId}] — it is held by "${ownership.holder}", and this writer cannot prove ownership.`);
     console.error('Pass --token <claim-token>, set PB_AGENT_CHAIN, or use --force (recorded on the journal row).');
     process.exit(1);
   }
-  const holder = ownership.holder || taskHolder(task);
-  const claimRecord = readBacklogState()[taskId] || {};
+  const holder = ownership.holder || taskHolder(task) || claimRecord.claimed_by || 'unknown';
+  // RELEASING RETURNS LIVE WORK TO THE POOL, AND ONLY THAT.
+  //
+  // An `in_progress` claim is work in flight: dropping it must put the card back to `todo`,
+  // or the task is orphaned — claimed by nobody, listed as being worked on, and invisible to
+  // `pb next --claim`. That is the established contract (pinned by test-concurrency-state).
+  //
+  // A card in ANY OTHER status is NOT being worked on, so only its claim is cleared and its
+  // status is left alone. Un-blocking a blocked card here would silently discard the reason it
+  // was parked — a different fact from "nobody is holding it" — and that is precisely the
+  // deadlock escape hatch this path exists to provide.
+  const returningToPool = task.status === 'in_progress';
   const commit = commitIteration(taskId, releaseRow(taskId, holder, claimRecord.claim_token, args.notes || (args.force ? `force-released by ${agent}` : undefined)),
-    () => ({ status: 'todo', __unset: ['claimed_by', 'agent_id', 'claim_token', 'claim_token_issued_at', 'claimed_at'], released_at: nowISO(), released_by: agent }),
+    () => (returningToPool
+      ? { status: 'todo', __unset: CLAIM_CLEAR_FIELDS, released_at: nowISO(), released_by: agent }
+      : { __unset: CLAIM_CLEAR_FIELDS, released_at: nowISO(), released_by: agent }),
     { agent });
   if (!commit) process.exit(1);
-  console.log(`Released [${taskId}] → todo (was held by ${holder}${ownership.ok ? '' : ', FORCED'}).`);
+  console.log(returningToPool
+    ? `Released [${taskId}] → todo (was held by ${holder}${ownership.ok ? '' : ', FORCED'}).`
+    : `Released [${taskId}] — cleared the claim held by ${holder} (status left as "${task.status}"${ownership.ok || !needsProof ? '' : ', FORCED'}).`);
 }
 
 // unlock — clear a leaked lock. The age-based stale break is deliberately
@@ -4138,7 +4541,6 @@ function cmdUnlock(args) {
 // silently deleting state that the journal does not model would be a data loss
 // dressed up as a repair. `--strict` opts into dropping them.
 const TERMINAL_ROW_STATUSES = new Set(['done', 'blocked']);
-const CLAIM_CLEAR_FIELDS = ['claimed_by', 'agent_id', 'claim_token', 'claim_token_issued_at', 'claimed_at'];
 function reconstructStateFromJournal({ strict = false, ids = null } = {}) {
   const journal = readJournal().filter((e) => !e.__malformed);
   // Order by the monotonic seq where present; rows without one predate ordering and
@@ -4206,6 +4608,21 @@ function reconstructStateFromJournal({ strict = false, ids = null } = {}) {
     if (TERMINAL_ROW_STATUSES.has(row.status)) {
       entry.status = row.status;
       entry.updated_at = ts;
+      // A TERMINAL STATUS ENDS THE CLAIM. Without this the replay kept the token from the
+      // earlier `claim` row and re-attached it to a card the same journal records as
+      // blocked/done — so LIVE state (which `record` correctly clears) and REPLAYED state
+      // disagreed, and `repair-state --apply`, the documented recovery for exactly that
+      // disagreement, is what manufactured the inconsistency. The result was a card that
+      // could not be carried, dropped or released by any path: a deadlock, and the same
+      // defect class as the loop with no terminal state.
+      //
+      // `done` and `blocked` are both terminal for a CLAIM: neither leaves work in flight, so
+      // the holder fields go. The ISSUED TOKEN stays, because it is attribution rather than a
+      // claim — a blocked card is still written to afterwards, and those writers prove
+      // themselves with the token they were issued (see verifyTaskClaim: a token with no
+      // holder is not a claim). `released_at`/`released_by` are NOT written here, because
+      // this is a reconstruction, not a release — inventing an actor would be worse than a gap.
+      for (const f of TERMINAL_CLAIM_CLEAR_FIELDS) delete entry[f];
       applied++;
       continue;
     }
@@ -4820,12 +5237,31 @@ function cmdRecord(args) {
   // The journal row and the task-state touch commit together, in one order. This
   // is what makes "who wrote last" answerable and identical across both stores.
   const endsIteration = !!(task && ['done', 'blocked'].includes(args.status));
+  // A TERMINAL STATUS ENDS THE CLAIM — but the TOKEN is kept as proof of authorship.
+  //
+  // `done` and `blocked` mean "nobody is working on this now", so `claimed_by`/`claimed_at`
+  // go with the transition. Leaving them behind created a card that `version carry`/`drop`
+  // refuse ("release the active claim first") while `pb release` refused to look at it
+  // ("is blocked, not in_progress") — a deadlock with no documented exit, which blocked a
+  // real version close.
+  //
+  // The TOKEN is a different thing from the claim: it proves WHO MAY WRITE, not who is
+  // working. A blocked card is still written to afterwards (progress notes, comments,
+  // decisions), and those writers prove themselves with the token they were issued — so
+  // the card must not read as held, yet must keep the token verifiable. Clearing
+  // `claim_token` broke exactly that (test-claim-token-chain: a later write came back
+  // ownership:unclaimed), which is how this distinction was found.
+  //
+  // So: `verifyTaskClaim` treats a token WITHOUT a holder as unclaimed (nothing is held),
+  // while still honouring the token as proof if a writer presents it. The deadlock cannot
+  // return, because carry/drop key on `claim_token` only when a HOLDER exists.
   const commit = commitIteration(args.task, entry, (existing) => {
     if (!endsIteration) return {};
     return {
       status: args.status,
       updated_at: entry.ts,
       loop_id: existing.loop_id || (loop ? loop.id : undefined),
+      __unset: TERMINAL_CLAIM_CLEAR_FIELDS,
     };
   }, { agent: agentId, versionAction: 'record' });
   if (!commit) process.exit(1);
@@ -5628,6 +6064,12 @@ function cmdVersion(args) {
         if (!name || typeof args.goal !== 'string' || !args.goal.trim() || !checks.length) versionRefusal('V5', 'Provide --name, --goal and at least one executable --stop-check');
         if (findVersion(name, state)) versionRefusal('V1', `Version ${name} already exists`);
         if (!args.draft && (v || state.active)) versionRefusal('V1', 'Close the active version/legacy loop before opening another');
+        // Every refusal above is VALIDATION and still runs, so a dry run reports the same
+        // problems the real command would. Only the write is withheld.
+        if (args['dry-run']) {
+          dryRunNotice(`would create version ${name} (${args.draft ? 'draft' : 'open'}, ${checks.length} stop check${checks.length === 1 ? '' : 's'})`);
+          return null;
+        }
         const loop = { id: nextLoopId(state), version: name, title: args.title || name, state: args.draft ? 'draft' : 'open',
           status: args.draft ? 'draft' : 'active', goal: String(args.goal), stop: args.stop || String(args.goal), stop_checks: checks,
           created_at: nowISO(), started_at: args.draft ? null : nowISO(), closed_at: null,
@@ -5643,6 +6085,7 @@ function cmdVersion(args) {
         if (v || state.active) versionRefusal('V1', 'Close the active version before opening the next draft');
         v = findVersion(args.name || args._[1], state);
         if (!v || v.state !== 'draft') versionRefusal('V1', 'Name an existing draft version with --name');
+        if (args['dry-run']) { dryRunNotice(`would open ${v.version} (${v.id})`); return v; }
         v.state = 'open'; v.status = 'active'; v.started_at = nowISO(); state.active = v.id;
         event(v, v.id); seedCycleFromLoop(v, { ...args, goal: v.goal, stop: v.stop });
         return v;
@@ -5656,22 +6099,63 @@ function cmdVersion(args) {
         if (!target) versionRefusal('V1', `Name an existing version (versions: ${state.loops.filter(l => l.version).map(l => l.version).join(', ') || 'none'})`);
         const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
         if (!reason) versionRefusal('V6', 'Retitling a version requires --reason');
+        // `--stop-check` corrects the EXECUTABLE end condition, which `retitle` used to leave
+        // stranded: title, goal and stop were editable, but the commands that actually decide
+        // the phase were not. A version created with a wrong or circular check therefore had
+        // no way to declare its real gates short of closing and reopening it — and a version
+        // that cannot state what "done" means is the same defect as a stop condition in prose.
+        //
+        // Repeatable, and it REPLACES the whole list rather than appending: the argument is the
+        // version's new definition of done, and a silent append would leave a stale gate in
+        // force. What it replaced is recorded in `retitles[]` like every other retitle.
+        const rawChecks = args['stop-check'] === undefined ? undefined
+          : (Array.isArray(args['stop-check']) ? args['stop-check'] : [args['stop-check']]);
+        const nextChecks = rawChecks === undefined ? undefined
+          : rawChecks.filter(c => typeof c === 'string' && c.trim()).map(c => c.trim());
+        // A version whose stop check is the DISPATCHER (`loop.stop_when` -> this same script)
+        // is circular: it would invoke itself, exit 0 on the recursion, and report the phase
+        // complete without evaluating anything. Refuse it at the door rather than let a later
+        // run report a hollow green.
+        if (nextChecks) {
+          if (!nextChecks.length) versionRefusal('V5', 'Refusing an empty --stop-check list: a version must declare what "done" means');
+          const circular = nextChecks.filter(c => /check-phase-stop\.mjs/.test(c));
+          if (circular.length) versionRefusal('V5', `Refusing a circular stop check (${circular.join(', ')}): that script IS the dispatcher which runs these checks. Name the real gates instead (e.g. "npm test").`);
+          // A CLOSED version's stop_result is the EVIDENCE for what ran when it closed. Moving
+          // the stop_checks afterwards would re-point that evidence at gates that never ran —
+          // the record would claim the version was closed by checks it was not. Words (title,
+          // goal, stop) stay editable on any version; the executable end condition does not.
+          const frozenWith = (Array.isArray(target.stop_checks) ? target.stop_checks : []).join(' && ');
+          if (target.state === 'closed' && nextChecks.join(' && ') !== frozenWith) {
+            versionRefusal('V7', `Refusing to change the stop_checks of closed version ${target.version}: its stop_result records the checks that closed it (${frozenWith || 'none'}). Reopening is a human decision, not a retitle.`);
+          }
+        }
         const fields = ['title', 'goal', 'stop'].filter(k => args[k] !== undefined);
-        if (!fields.length) versionRefusal('V1', 'Give --title, --goal or --stop');
+        if (!fields.length && nextChecks === undefined) versionRefusal('V1', 'Give --title, --goal, --stop or --stop-check');
         const next = {};
         for (const k of fields) {
           const val = typeof args[k] === 'string' ? args[k].trim() : '';
           if (!val) versionRefusal('V1', `--${k} cannot be empty`);
           if (val !== (target[k] ?? '')) next[k] = val;
         }
+        // The stop checks are part of the same append-only retitle record, so "what did this
+        // version's end condition used to be?" stays answerable from `retitles[]`.
+        if (nextChecks !== undefined) {
+          const cur = (Array.isArray(target.stop_checks) ? target.stop_checks : []).join(' && ');
+          const nxt = nextChecks.join(' && ');
+          if (cur !== nxt) next.stop_checks = nextChecks;
+        }
         if (!Object.keys(next).length) versionRefusal('V1', `Nothing changes: ${target.version} already reads that way`);
         const at = nowISO();
+        // `was` records the PREVIOUS value of every field being changed — for `stop_checks`
+        // that is the array itself, so History can show the end condition that was replaced
+        // rather than merely that something changed.
         const was = Object.fromEntries(Object.keys(next).map(k => [k, target[k] ?? null]));
+        const changed = Object.keys(next).map(k => (k === 'stop_checks' ? `stop_checks (${nextChecks.length})` : k));
         Object.assign(target, next, { retitles: [...(Array.isArray(target.retitles) ? target.retitles : []), { at, by: agent, reason, was, now: next }] });
         appendJournal({ seq: ctx.seq, ts: at, task: `version:${target.id}`, loop_id: target.id,
           agent, action: 'version', status: 'event', checks: 'none', version: target.version,
           version_record: target, active_loop: state.active, retitle: { was, now: next },
-          notes: `Version ${target.version} retitled (${Object.keys(next).join(', ')}): ${reason}` });
+          notes: `Version ${target.version} retitled (${changed.join(', ')}): ${reason}` });
         writeLoops(state);
         return target;
       }
@@ -5682,12 +6166,26 @@ function cmdVersion(args) {
         if (!source || source.state === 'closed') versionRefusal('V7', 'The source version is closed');
         if (task.status === 'done' || task.disposition === 'dropped') versionRefusal('V6', 'Only unfinished, undisposed cards may be carried or dropped');
         if (latestProcessRecords(source.id).some(rec => rec.lifecycle_lease && rec.status !== 'stopped' && rec.task === task.id)) versionRefusal('V6', 'Stop the worker operation before carrying or dropping its card');
-        if (draft[task.id]?.claim_token || task.status === 'in_progress') versionRefusal('V6', 'Release the active claim before carrying or dropping its card');
+        // Keyed on the HOLDER, not the bare token. A terminal write ends the claim but keeps
+        // the issued token on the record for attribution, so testing `claim_token` alone would
+        // refuse a card that nobody is working on — the deadlock this guard caused before.
+        // "Is it held?" is about a holder; a token with no holder is not a claim.
+        if (draft[task.id]?.claimed_by || task.status === 'in_progress') versionRefusal('V6', 'Release the active claim before carrying or dropping its card');
         const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
         if (sub === 'drop' && !reason) versionRefusal('V6', 'Dropping a task requires --reason');
         const ts = nowISO();
         const base = { ts, task: task.id, agent, action: sub, status: task.status, checks: 'none', notes: reason || `Carry ${task.id} forward`, reason };
         ctx.draft = draft;
+        // Validation (the guards above) still runs, so a dry run reports the same refusals the
+        // real command would. The draft target is resolved too, so the notice can name it.
+        if (args['dry-run']) {
+          const drafts = state.loops.filter(l => l.version && l.state === 'draft');
+          const target = args.to === 'next' ? (drafts.length === 1 ? drafts[0] : null) : findVersion(args.to, state);
+          if (sub === 'drop') { dryRunNotice(`would drop ${task.id} from ${source.version}: ${reason}`); return source; }
+          if (!target || target.state !== 'draft' || target.id === source.id) versionRefusal('V4', 'Stage a unique next draft using pb version new --draft --name ... --goal ... --stop-check ...');
+          dryRunNotice(`would carry ${task.id} from ${source.version} to ${target.version}`);
+          return target;
+        }
         if (sub === 'drop') {
           appendJournal({ ...base, seq: ctx.seq, loop_id: source.id, version: source.version });
           applyTaskMutation(task.id, () => ({ disposition: 'dropped', drop_reason: reason, updated_at: ts }), ctx, agent);
@@ -5706,16 +6204,26 @@ function cmdVersion(args) {
       }
       if (!v || !['open', 'frozen'].includes(v.state)) versionRefusal('V6', 'No open version; use pb version new');
       if (sub === 'freeze') {
+        if (args['dry-run']) { dryRunNotice(`would freeze ${v.version} (${v.id})`); return v; }
         v.state = 'frozen'; v.frozen_at = nowISO(); event(v, state.active); return v;
       }
       const pending = backlogTasks().filter(t => t.version === v.version && t.status !== 'done' && t.disposition !== 'dropped');
       if (pending.length) versionRefusal('V6', `Carry or drop every unfinished task before closing: ${pending.map(t => t.id).join(', ')}`);
       const live = latestProcessRecords(v.id).filter(rec => rec.status !== 'stopped' && (rec.lifecycle_lease || pidAlive(rec.pid)));
       if (live.length) versionRefusal('V6', `Stop tracked processes before closing: ${live.map(rec => rec.pid).join(', ')}`);
+      // A DRY RUN STILL RUNS THE CHECKS, THEN STOPS. "Show me what would happen" is only
+      // useful if it performs the real evaluation — a dry run that skipped the stop checks
+      // would report a close as ready that the real close would then refuse. Everything
+      // before the mutation is validation, so it all runs; nothing is written.
       const checks = runChecks({ id: v.id, acceptance_checks: v.stop_checks });
       if (!checks.length || checks.some(c => !c.ok)) {
         printCheckResults(checks);
         versionRefusal('V6', 'Version stop checks are unverified; fix their failure or limit before closing');
+      }
+      if (args['dry-run']) {
+        printCheckResults(checks);
+        dryRunNotice(`would close ${v.version} (${v.id}) — every stop check above passed, no unfinished cards, no live processes`);
+        return v;
       }
       v.stop_result = { outcome: 'passed', at: nowISO(), commands: v.stop_checks };
       const originallyBorn = new Set((readData(BACKLOG)?.tasks || []).filter(t => t.version === v.version).map(t => t.id));
@@ -6517,6 +7025,41 @@ function cmdMode(args) {
   process.exit(1);
 }
 
+// ============================================================================
+//  --dry-run — the "show me, change nothing" contract.
+// ----------------------------------------------------------------------------
+// The flag is parsed GENERICALLY: `--dry-run` is just another key in `args`, so any command
+// that does not explicitly read it ACCEPTS it silently and performs the action anyway. That
+// made `pb version close --dry-run` close the version — a state change no re-run can undo,
+// on the one verb whose entire purpose is a safe look. It survived because three commands
+// read the flag and the version verb read it nowhere.
+//
+// Two halves to the fix, and the second is the durable one:
+//   1. `dryRunNotice` — the commands that mutate version state now honour the flag.
+//   2. `assertDryRunSupported` — a command that does NOT implement --dry-run REFUSES it.
+//      Without this, the next command added to the parser silently inherits the same
+//      destructive no-op; with it, "forgot to implement" is a visible error, not a surprise.
+// ============================================================================
+function dryRunNotice(what) {
+  console.log(`[dry-run] ${what}`);
+  console.log('[dry-run] Nothing was written.');
+}
+
+// The commands that implement --dry-run. A command NOT in this set that receives the flag is
+// refused rather than silently obeyed. Kept as an explicit list (not a per-function flag) so
+// adding a command forces a decision about the flag instead of defaulting to "ignore it".
+const DRY_RUN_CAPABLE = new Set([
+  'tick', 'release', 'loop', 'version', 'plan', 'worker',
+]);
+function assertDryRunSupported(command, args) {
+  if (!args || args['dry-run'] === undefined) return;
+  if (DRY_RUN_CAPABLE.has(command)) return;
+  console.error(`Refusing --dry-run: \`pb ${command}\` does not implement it, and a flag that ` +
+    'silently does nothing is worse than one that is rejected — the caller believes they took ' +
+    'a safe look. Nothing was written.');
+  process.exit(2);
+}
+
 function cmdAnchor(args) {
   const name = master.name || 'playbook';
   const loopDesc = master.loop?.description || 'orient → select → act → verify → record → report';
@@ -6538,6 +7081,35 @@ function cmdAnchor(args) {
   const _modeLine = modeAnchorLine(_modeId, _modeDoc);
 
   if (args.brief) {
+    // The banner has THREE shapes, and which one it is matters more than what it says.
+    // `complete` and `idle` ask for NOTHING, and must be readable as status by an
+    // instruction-following agent — this is the fix for the endless loop, at the source.
+    const posture = loopPosture();
+    if (posture.posture === 'complete') {
+      console.log(`[${name} anchor] master=${MASTER} · loop: ${loopDesc}`);
+      console.log(purpose);
+      console.log(cycleLine);
+      console.log(loopLine);
+      console.log(lessonLine);
+      console.log(_modeLine);
+      console.log(inertFooter('complete', `the declared stop condition exited 0 (stop_action: ${posture.stop.action})`));
+      console.log(`  $ ${posture.stop.command}`);
+      return;
+    }
+    if (posture.posture === 'idle') {
+      console.log(`[${name} anchor] master=${MASTER} · loop: ${loopDesc}`);
+      console.log(purpose);
+      console.log(cycleLine);
+      console.log(loopLine);
+      console.log(lessonLine);
+      console.log(_modeLine);
+      const why = posture.stop.declared
+        ? 'no claimable task, and the declared stop condition is not yet met'
+        : 'no claimable task and no `loop.stop_when` declared';
+      console.log(inertFooter('idle', why));
+      console.log(`Backlog: 0 claimable · ${posture.wip.length} in_progress. Rehydrate with \`node scripts/pb.mjs status\`.`);
+      return;
+    }
     console.log(`[${name} anchor] master=${MASTER} · loop: ${loopDesc}`);
     console.log(purpose);
     console.log(cycleLine);
@@ -6592,7 +7164,94 @@ function cmdAnchor(args) {
 //  Call it on resume, after compaction, or whenever unsure. `--snapshot`
 //  writes memory/RESUME.md as a single "where you are" breadcrumb.
 // ============================================================================
+// ============================================================================
+//  stop-check — the loop's terminal state, read as a verdict.
+// ----------------------------------------------------------------------------
+// `pb stop-check` exits 0 when the phase's declared stop condition is met. It is the one
+// command whose SUCCESS means "stop", which is what the loop was missing: `pb checkpoint`
+// reports drift, and drift is a request for more work, so a finished phase looked busy.
+//
+// Exit codes: 0 = met (the phase is complete), 1 = not met (keep working),
+//             2 = declared but not executable / no stop condition declared at all.
+// A JSON shape is available for the harness integration via `--json`.
+// ============================================================================
+function cmdStopCheck(args) {
+  // A person running `pb stop-check` wants the truth NOW, so the cache is opt-in here while
+  // `status`/`anchor` (per-turn callers) always use it. `--cached` is for a caller that has
+  // already decided a stale-by-one-row verdict is acceptable.
+  const stop = args.cached ? evaluateStopWhenCached() : evaluateStopWhen();
+  const payload = {
+    schema: 'agent-playbook.stop.v1',
+    at: new Date().toISOString(),
+    declared: stop.declared,
+    executable: stop.executable,
+    met: stop.met,
+    command: stop.command,
+    action: stop.action,
+    exit_code: stop.exit_code ?? null,
+    ...(stop.error ? { error: stop.error } : {}),
+    ...(stop.timed_out ? { timed_out: true } : {}),
+    ...(stop.overflow ? { overflow: true } : {}),
+    ...(typeof stop.elapsed_ms === 'number' ? { elapsed_ms: stop.elapsed_ms } : {}),
+    ...(stop.over_budget ? { over_budget: true, budget_ms: stop.budget_ms } : {}),
+    ...(stop.cached ? { cached: true, cached_seq: stop.cached_seq } : {}),
+    output: stop.output ? stop.output.slice(-4000) : '',
+  };
+  if (args.json) {
+    printJson(payload);
+    process.exit(stop.met ? 0 : (stop.declared && stop.executable ? 1 : 2));
+  }
+  if (!stop.declared) {
+    console.log(`No \`loop.stop_when\` declared in ${MASTER}.`);
+    console.log('That is allowed — the key is opt-in — but the loop then has no machine-checkable terminal state,');
+    console.log('so it can only ever be stopped by a human. Declare one:');
+    console.log('  loop:');
+    console.log('    stop_when: "node scripts/check-phase-stop.mjs"   # exit 0 = the phase goal is met');
+    console.log('    stop_action: idle                                 # idle | report | close-cycle | ask-human');
+    process.exit(2);
+  }
+  if (!stop.executable) {
+    console.error(`REFUSING: ${stop.output}`);
+    console.error('A stop condition no command can evaluate is the same as no stop condition.');
+    process.exit(2);
+  }
+  console.log(`stop_when: ${stop.command}`);
+  if (stop.output) {
+    console.log('--- output ---');
+    console.log(stop.output.split('\n').slice(-25).join('\n'));
+    console.log('--------------');
+  }
+  if (stop.met) {
+    console.log(`\nPHASE COMPLETE — the stop condition is met (exit 0). stop_action: ${stop.action}.`);
+    // A green that is too expensive for the per-turn path is still a green — but the caller
+    // must be told, or the harness silently pays the cost on every step.
+    if (stop.over_budget) {
+      console.log('');
+      console.log(`WARNING: over the per-turn budget — ${stop.diagnosis}`);
+    }
+    console.log('Nothing here asks for more work. Do not start another iteration on this banner alone.');
+    process.exit(0);
+  }
+  if (stop.timed_out) console.error('\nNOT MET — the stop condition TIMED OUT. That is not a pass (no verdict was read).');
+  else if (stop.overflow) console.error('\nNOT MET — the stop condition produced more output than the runner accepts. That is not a pass.');
+  else console.error('\nNOT MET — the stop condition exited non-zero. The phase is not finished.');
+  process.exit(1);
+}
+
 function cmdCheckpoint(args) {
+  const posture = loopPosture();
+  // A green stop check is COMPLETE, and completion is a NEGATIVE signal — it must not be
+  // dressed as drift. The heartbeat used to only ever ask for more, so a finished phase
+  // read exactly like a busy one. Ordering matters: report the verdict before the
+  // warnings, because "you are done" outranks "your brief is stale".
+  if (posture.posture === 'complete') {
+    console.log('PHASE COMPLETE — loop.stop_when exited 0.');
+    console.log(`  command: ${posture.stop.command}`);
+    console.log(`  action:  ${posture.stop.action}`);
+    console.log('  Nothing is being asked of you. Do not reply to this banner; wait for the human.');
+    if (args.json) printJson({ schema: 'agent-playbook.checkpoint.v1', posture: 'complete', stop: posture.stop });
+    return;
+  }
   cmdAnchor({ brief: true });
 
   const tasks = backlogTasks();
@@ -7407,7 +8066,7 @@ function cmdHelp() {
                           Open a version, or stage the next draft without opening it.
     version open --name <draft> | freeze | close
                           Close requires passing stop checks and explicit carry/drop of open work.
-    version retitle <version> [--title ".."] [--goal ".."] [--stop ".."] --reason ".."
+    version retitle <version> [--title ".."] [--goal ".."] [--stop ".."] [--stop-check ".."] --reason ".."
                           Person-only. Corrects a version's words by appending a version row;
                           the old words stay on the record (History shows them).
     version carry <task> --to next|<draft> | drop <task> --reason ".."
@@ -7450,6 +8109,7 @@ function cmdHelp() {
     validate --task <id>   Run that task's executable acceptance_checks (same bounded check
                            timeout: 600000 ms default, then check_timeout_ms, then PB_CHECK_TIMEOUT_MS)
     anchor [--brief]       Print the constitution to re-inject (keeps the playbook salient)
+    stop-check [--json] [--cached]  Run loop.stop_when and report the phase verdict (exit 0 = the phase's goal is met)
     checkpoint [--snapshot]  Heartbeat: re-anchor + detect drift; --snapshot writes memory/RESUME.md
     list [processes|skills|modes]  Print the indices ("list modes" prints the mode catalog)
     mode [show|skills|processes|check] [<id>]
@@ -7601,6 +8261,10 @@ const isMainModule = (() => {
 if (isMainModule) {
   const [, , cmd, ...rest] = process.argv;
   const args = parseArgs(rest);
+  // A command that does not implement --dry-run must REFUSE it, never ignore it. See the
+  // `--dry-run` contract note: the flag is parsed generically, so silence is the default and
+  // silence is what made `version close --dry-run` destructive.
+  assertDryRunSupported(cmd, args);
   switch (cmd) {
   case 'status': cmdStatus(args); break;
   case 'next': cmdNext(args); break;
@@ -7637,6 +8301,7 @@ if (isMainModule) {
     }
   }
   case 'anchor': cmdAnchor(args); break;
+  case 'stop-check': cmdStopCheck(args); break;
   case 'checkpoint': cmdCheckpoint(args); break;
   case 'attach': cmdAttach(args); break;
   case 'cycle': cmdCycle(args); break;

@@ -60,6 +60,12 @@ export const Config = z.object({  // Where the playbook lives. Omitted → disco
   // this agent still holds a claim with no recorded outcome, hold the turn open once and say
   // so. Off makes the gate advisory again (the agent must remember to verify).
   stopGate: z.boolean().default(true),
+  // Self-limit for a non-converging loop (debrief design rule 4). Progress = a new journal
+  // `seq`; after this many consecutive injections that added NO journal row, the plugin
+  // stops injecting and says so once. 0 disables the backstop. Three is the debrief's
+  // proposed value: enough slack for a genuine multi-step task, short enough that a loop
+  // that is only talking to itself cannot run unattended.
+  maxTurnsWithoutProgress: z.number().default(3),
 });
 
 // Human/model-readable rendering of a tool result. Kept in the plugin (not the
@@ -87,6 +93,7 @@ export function apply(ctx, config = {}) {
     maxContextChars: config.maxContextChars ?? 4000,
     commandTimeoutMs: config.commandTimeoutMs ?? 120_000,
     stopGate: config.stopGate ?? true,
+    maxTurnsWithoutProgress: config.maxTurnsWithoutProgress ?? 3,
   };
 
   // WHICH directory is this session operating on?
@@ -141,6 +148,13 @@ export function apply(ctx, config = {}) {
         // never nag one task into a runaway turn; see the `agent/turn-stopping` handler.
         stopGateReminded: new Set(),
         stopGateSteers: 0,
+        // No-progress backstop (debrief design rule 4). Progress = a NEW journal seq.
+        // `lastSeq` is the highest seq seen so far; `staleTurns` counts consecutive
+        // injections that advanced it by nothing. Even with the inert banner in place, a
+        // non-converging loop should self-limit rather than run on the agent's manners.
+        lastSeq: null,
+        staleTurns: 0,
+        progressStalledReported: false,
       });
     }
     return store.get(id);
@@ -174,6 +188,26 @@ export function apply(ctx, config = {}) {
     if (!state.root) return null;
     const r = call(state, ['status', '--json']);
     return r.ok ? parseJsonOutput(r.stdout) : null;
+  };
+
+  // Progress is measured on the JOURNAL SEQ — the engine's own monotonic record counter.
+  // Deriving it from `recent_journal` (already in the status payload) keeps the backstop
+  // to zero extra `pb` invocations per step, which matters because this runs on EVERY step.
+  //
+  // An EMPTY journal yields 0, not null: "no rows yet" is the strongest form of "no progress
+  // so far", and it is exactly the state a fresh playbook is in when a runaway loop starts.
+  // Returning null there (the first version of this) meant the backstop could not engage on
+  // a brand-new workspace — the case it most needs to cover. A journal that is absent or
+  // unparseable is different: that is "cannot measure", and the backstop stays out of it.
+  const journalSeqOf = (status) => {
+    const rows = status?.recent_journal;
+    if (!Array.isArray(rows)) return null;
+    let max = 0;
+    for (const row of rows) {
+      const n = Number(row?.seq);
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+    return max;
   };
 
   // ---------------------------------------------------------------------------
@@ -441,6 +475,48 @@ export function apply(ctx, config = {}) {
     const counts = status.backlog?.counts || {};
     const idle = (counts.todo ?? 0) === 0 && (counts.in_progress ?? 0) === 0;
     if (cfg.quietWhenIdle && idle) return decision;
+
+    // ---------------------------------------------------------------------------
+    // The no-progress backstop (debrief design rule 4). Measured on the JOURNAL SEQ,
+    // not on turn count: a turn that recorded nothing advanced the record by zero, and
+    // N consecutive turns like that mean the loop is talking to itself. Without this,
+    // even a well-behaved agent has no ceiling — the debrief's `Holding.` loop ran for
+    // dozens of turns precisely because nothing counted them.
+    // ---------------------------------------------------------------------------
+    const seq = journalSeqOf(status);
+    if (seq !== null) {
+      if (state.lastSeq === null || seq > state.lastSeq) {
+        state.staleTurns = 0;           // the record advanced — real progress
+      } else {
+        state.staleTurns += 1;          // no new journal row since last injection
+      }
+      state.lastSeq = seq;
+      const cap = Number(cfg.maxTurnsWithoutProgress) || 0;
+      if (cap > 0 && state.staleTurns >= cap) {
+        // Say it ONCE, then stop injecting entirely for this state. Repeating the same
+        // status every turn is what added no information and cost the turns.
+        if (!state.progressStalledReported) {
+          state.progressStalledReported = true;
+          try {
+            const message = createUserMessage({
+              content: [{
+                type: 'text',
+                text: [
+                  `[agent-playbook] NO PROGRESS for ${state.staleTurns} consecutive turns — the journal seq`,
+                  `has not advanced (still ${seq}). This is STATUS, not a request: nothing further will be`,
+                  'injected until the record moves. Do not reply to this banner; if you are genuinely',
+                  'waiting, wait for the human.',
+                ].join('\n'),
+              }],
+              source: { kind: 'agent-playbook', form: 'instructions' },
+            });
+            if (typeof agent.inject === 'function') agent.inject(message);
+            else agent.inbox.append('next-step', message);
+          } catch { /* staging context must never fail the step */ }
+        }
+        return decision;
+      }
+    }
 
     // The task in hand, if this agent holds one — its checks are what "done" means.
     const held = (status.backlog?.in_progress || []).find((t) => t.claimed_by === state.id);

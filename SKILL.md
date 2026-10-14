@@ -70,9 +70,12 @@ Resolution order, most specific first:
 | `PB_CHECK_TIMEOUT_MS` | the environment | machine / CI override |
 | default | — | The default is 600000 ms (10 minutes). |
 
-The default is deliberately **bounded and generous**: ~4x this repo's full `npm test`
-(~142s, and growing as gates are added), so a busy machine cannot kill a green suite, while a
-genuine hang still surfaces inside the iteration that started it. A nonsense value (zero,
+The default is deliberately **bounded and generous**: several times this repo's full `npm test`,
+so a busy machine cannot kill a green suite, while a genuine hang still surfaces inside the
+iteration that started it. (The engine deliberately does **not** quote a duration: the figure
+that used to live here — `~142 s` — was measured in a *different* repo and was inherited into a
+recommendation before anyone checked it. Time your own suite rather than trusting a number in a
+doc; see `lesson-20261013-006`.) A nonsense value (zero,
 negative, non-numeric) is never allowed to disable the limit — it warns and falls through to
 the next source.
 
@@ -126,7 +129,7 @@ because the mode is unverified.
 
 This matters because the limits are separate on purpose — raising a task's check budget must
 not silently move the mode's — and because it was not always true: mode checks kept a
-hard-coded 120000 ms, so a green `npm test` taking 142 s was printed as
+hard-coded 120000 ms, so a green `npm test` that outran 120 s was printed as
 `FAIL  [tests_green] npm test`, indistinguishable from a red suite. `evalLayerGate` (layer
 gates) still carries that old hard-coded limit and the same misclassification; it is filed,
 not fixed — so a slow or chatty **green** gate can still be reported as a failing one, and a
@@ -470,6 +473,61 @@ changing **cycle goal**:
 **Memory precedence:** on project matters this folder (`north_star` + `memory/`) outranks your own or
 host memory. Host memory is the past; the playbook is the present and future. On conflict, surface it
 — never silently follow host memory.
+
+## The stop condition (the loop's other half)
+
+The loop contract above says how to **keep going**. Without a matching instruction for how to
+**stop**, a loop cannot finish — it can only run out of work, and "no work" is not something the
+injected banner used to say. Give the loop a terminal state:
+
+```yaml
+# playbook.yaml
+loop:
+  stop_when: "node scripts/check-phase-stop.mjs"   # exit 0 = the phase's goal is met
+  stop_action: idle          # idle | report | close-cycle | ask-human
+```
+
+`stop_when` is an **executable command**, exactly like a task's `acceptance_checks`: cwd =
+playbook root, exit 0 = done. It is optional — but if you declare it, a **prose** value is a
+`pb validate` **failure**, not a warning. An unenforceable condition is the same as no
+condition, which is the defect this exists to prevent.
+
+```bash
+pb stop-check            # run it and print the verdict; exit 0 = met, 1 = not met, 2 = not declared/not executable
+pb stop-check --json     # the same verdict, machine-readable (schema agent-playbook.stop.v1)
+pb stop-check --cached   # accept a verdict already computed for the current journal seq
+pb checkpoint            # now reports PHASE COMPLETE instead of drift when the stop check is green
+```
+
+**The verdict is cached, keyed on the journal `seq`.** A stop condition is usually a real gate —
+this repo's runs the whole test suite — while `pb status --json` feeds the harness's *per-step*
+context injection and `pb anchor --brief` is injected every turn. Running a six-minute suite on
+every step would make the harness unusable, so `status` and `anchor` reuse a cached verdict and
+recompute it the moment any journal row is appended: **the verdict may lag the work, but never
+lags the record.** `pb stop-check` without `--cached` always runs the gate, because a person
+asking wants the truth now. The cache lives at `memory/.stop-check-cache.json` (runtime state,
+inside the gitignored `memory/`).
+
+**Completion is a NEGATIVE signal, and the banner respects it.** `pb anchor --brief` has three
+shapes, and which one appears matters more than what it says:
+
+| Posture | When | The banner |
+| --- | --- | --- |
+| `complete` | the stop check exits 0 | `PHASE COMPLETE` — **no action required**, do not reply |
+| `idle` | nothing claimable, nothing in hand | `NO ACTION REQUIRED` — **no action required**, do not reply |
+| `active` | there is work | the loop instructions, as before |
+
+The two inert shapes carry **no imperative at all**. This is deliberate and load-bearing: a
+status line that ends with an instruction ("Drive the loop…", "re-anchor any time") is read as a
+**task** by an instruction-following agent, and answering it *creates the next turn*. That is how
+one injected line became dozens of turns in one session — the loop had no observable "done", so
+there was always one more piece of text to consume. If you are an agent reading an inert banner:
+**do nothing.** It is status, not a request.
+
+The harness integration enforces the same rule from its side: the injected context block is inert
+under the same conditions, drops every imperative when it is, and carries a
+`max_turns_without_progress` backstop (default 3) measured on the journal `seq` — after N turns
+that record nothing new, injection stops and says so once.
 
 ## Loop epochs and learning
 

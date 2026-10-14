@@ -246,6 +246,18 @@ export function parseClaimedTask(stdout) {
  * compaction), name the work in hand and its checks, and state the one rule that
  * matters — done is an exit code, not a claim. Deterministic: pure function of the
  * inputs, so it can be asserted in tests and cached by the host if it wants to.
+ *
+ * THE INERT RULE (debrief 2026-10-13, mechanisms 1-3). This block is the thing that made
+ * the loop endless: it was injected every turn and always ended on an imperative, so an
+ * instruction-following agent read a STATUS LINE as a PROMPT, answered it, and answering
+ * created the next turn. Two consequences are enforced here:
+ *
+ *   1. When there is nothing to ask for, the block is INERT — it says so in words that
+ *      cannot be read as a task, and it carries NO imperative. A banner that asks for
+ *      nothing must look like nothing.
+ *   2. `status.stop` (the engine's `loop.stop_when` verdict, when the engine provides it)
+ *      outranks everything: a green stop means the phase is over and the block is inert
+ *      even if a claim is still technically open.
  */
 export function buildContextBlock({ status, next = null, task = null, driftWarning = null, maxChars = 4000 } = {}) {
   if (!status) return null;
@@ -261,6 +273,21 @@ export function buildContextBlock({ status, next = null, task = null, driftWarni
   lines.push(`backlog: ${counts.todo ?? 0} todo · ${counts.in_progress ?? 0} in_progress · ${counts.blocked ?? 0} blocked · ${counts.done ?? 0} done`);
 
   const claimed = Array.isArray(status.backlog?.in_progress) ? status.backlog.in_progress : [];
+
+  // ---- The terminal state. Green stop => PHASE COMPLETE, and nothing else is said. ----
+  const stop = status.stop && typeof status.stop === 'object' ? status.stop : null;
+  if (stop?.declared && stop.executable && stop.met) {
+    lines.push(`phase: COMPLETE — the declared stop condition exited 0 (stop_action: ${stop.action || 'idle'})`);
+    if (stop.command) lines.push(`  $ ${stop.command}`);
+    return clampBlock(inertBlock(lines, 'the phase is complete; this is status, not a request'), maxChars);
+  }
+  // A stop condition that is declared but NOT evaluable is a broken contract, and the
+  // agent is the one who can fix it — so unlike a complete phase, this one DOES ask.
+  if (stop?.declared && stop.executable === false) {
+    lines.push(`⚠ the phase stop condition is not executable: ${stop.command || '(unknown)'}`);
+    lines.push('Fix it in playbook.yaml (`loop.stop_when` must be a shell command that exits 0 when the phase goal is met).');
+  }
+
   if (claimed.length) lines.push(`in progress: ${claimed.map((t) => `${t.id} (${t.claimed_by || 'unclaimed'})`).join(', ')}`);
 
   if (task) {
@@ -281,12 +308,65 @@ export function buildContextBlock({ status, next = null, task = null, driftWarni
   if (driftWarning) lines.push(`⚠ ${driftWarning}`);
   if (status.memoryPrecedence) lines.push(status.memoryPrecedence);
 
+  // ---- Nothing claimable, nothing in hand: INERT. ----
+  // This is the exact state the debrief session was in when it repeated "Holding." dozens
+  // of times: the task was done, the backlog was clear, and the banner still ended with
+  // "Drive the loop". No imperative is emitted here, on purpose.
+  if (!task && !next?.task && !claimed.length) {
+    return clampBlock(inertBlock(lines, 'no claimable task and nothing in hand; this is status, not a request'), maxChars);
+  }
+
   lines.push('Rule: "done" is an exit code, not a claim. Record with `pb record` — it re-runs the checks and refuses on failure.');
   lines.push('Drive the loop with the `playbook` tool; re-anchor any time with action=anchor.');
 
-  let out = lines.join('\n');
-  if (out.length > maxChars) out = `${out.slice(0, Math.max(0, maxChars - 24))}\n… (truncated)`;
-  return out;
+  return clampBlock(lines.join('\n'), maxChars);
+}
+
+/** Enforce the character cap. Applied on EVERY return path — an inert block that skipped
+ *  the cap would be the one block allowed to grow unbounded, which is backwards: inert
+ *  text is the text we most want to keep short.
+ *
+ *  When the block is an inert `{head, tail}` pair, the TAIL is reserved its space before
+ *  the head is truncated. The head is the part that can be cut; the "no action required"
+ *  marker is the part that must survive, or truncation would silently restore the original
+ *  defect (a banner that reads like a task and never says it is inert). */
+function clampBlock(text, maxChars) {
+  const cap = Number(maxChars);
+  if (!Number.isFinite(cap) || cap <= 0) return text;
+  const isPair = text && typeof text === 'object' && typeof text.head === 'string';
+  if (!isPair) {
+    // A plain (active) block: the ordinary cap, no reserved tail.
+    const s = String(text);
+    return s.length > cap ? `${s.slice(0, Math.max(0, cap - 24))}\n… (truncated)` : s;
+  }
+  // An inert block's tail is reserved before the head is cut.
+  const tail = text.tail;
+  const room = cap - tail.length - 1;
+  if (room <= 0) return tail;
+  if (text.head.length <= room) return `${text.head}\n${tail}`;
+  return `${text.head.slice(0, Math.max(0, room - 16))}\n… (truncated)\n${tail}`;
+}
+
+/**
+ * Render an INERT block: status, explicitly marked as asking for nothing.
+ *
+ * The wording is the feature. A status line that ends on an imperative ("Drive the loop",
+ * "re-anchor any time") is read as an instruction by an instruction-following agent, and
+ * *answering it creates the next turn* — which is how a correct answer turned into dozens
+ * of turns. So an inert block names itself as inert, drops every imperative, and tells the
+ * reader not to reply.
+ *
+ * The tail is assembled FIRST and reserved its space. Truncation used to be able to strip
+ * it, leaving a header with no marker — i.e. a banner that reads like a task and says
+ * nothing about being inert, which is the exact shape of the original defect. A safe tail
+ * that can be truncated away is not a safe tail.
+ */
+function inertBlock(lines, reason) {
+  const tail = [
+    `no action required — ${reason}.`,
+    'Do NOT reply to this banner and do not start another iteration on it; wait for the human.',
+  ];
+  return { head: lines.join('\n'), tail: tail.join('\n') };
 }
 
 /** Scaffold a playbook into `target` from the bundled engine, then hydrate it. */export function scaffoldFromBundle(target, { pluginDir = PLUGIN_DIR, timeoutMs = 120_000 } = {}) {

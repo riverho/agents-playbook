@@ -30,7 +30,12 @@ npm run check:version
 npm test                      # engine + plugin suites
 node scripts/pb.mjs validate  # structural guardrails
 node scripts/pb.mjs repair-state --check   # projection agrees with the journal
+node scripts/pb.mjs stop-check             # the phase's declared stop condition (exit 0 = complete)
 ```
+
+`stop-check` is listed because it is the loop's terminal state: it runs `loop.stop_when` and
+exits 0 only when the phase goal is met. A release is a phase boundary, so "is the phase
+actually finished?" should be answered by a command rather than by reading the brief.
 
 The plugin suites skip honestly when their prerequisites are absent, so a green run that
 contains a `SKIP` line means those assertions did **not** run. To run them:
@@ -42,7 +47,8 @@ DSH_PACKAGES=<path to a @deepseek-ai directory> npm test   # the index suite nee
 
 Suite totals: engine 29+28+22+15+12+4+5 concurrency/worktree/recovery/API/attribution
 assertions; plugin 57 (core) + 31 (bundle) + 15 (profile composition) + 29 (entry against
-the real harness) + 14 (the packed tarball).
+the real harness) + 14 (the packed tarball). The loop-termination work (v0.8) adds
+`test-stop-when` (18), `test-dsh-inert-banner` (19) and `test-dsh-no-progress-backstop` (11).
 
 ## 3. Build and verify the plugin tarball
 

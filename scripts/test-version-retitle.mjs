@@ -79,7 +79,7 @@ refused('an agent context (V6)', ['v0.1', '--title', 'x', '--reason', 'r'], { ag
 refused('an unknown version', ['v9.9', '--title', 'x', '--reason', 'r'], PERSON, /existing version/);
 refused('a retitle without --reason', ['v0.1', '--title', 'x'], PERSON, /--reason/);
 refused('an empty title', ['v0.1', '--title', '  ', '--reason', 'r'], PERSON, /cannot be empty/);
-refused('no field to change', ['v0.1', '--reason', 'r'], PERSON, /--title, --goal or --stop/);
+refused('no field to change', ['v0.1', '--reason', 'r'], PERSON, /--title, --goal, --stop or --stop-check/);
 refused('a retitle that changes nothing', ['v0.1', '--title', 'Flow room, the v2 build', '--reason', 'r'], PERSON, /Nothing changes/);
 
 // ── 4. it is discoverable ─────────────────────────────────────────────────────────

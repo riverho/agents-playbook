@@ -37,6 +37,16 @@ const INCLUDE_FILES = ['playbook.yaml', 'SKILL.md', 'AGENTS.md', 'README.md', 'I
 
 // Excluded inside the included dirs: suites and fixtures are for DEVELOPING the engine,
 // not for running it inside a plugin.
+//
+// The `check-*.mjs` rule excludes DEVELOPMENT gates (harbor checks, mode checks, release
+// checks). It must NOT exclude a script the bundled master NAMES as a runtime dependency:
+// `playbook.yaml` ships `loop.stop_when: "node scripts/check-phase-stop.mjs"`, so omitting
+// that file would ship a master whose declared stop condition cannot run — a bundled file
+// naming a path the consumer does not have, which is the same defect as a check that passes
+// without the work. Any script referenced from the master's `loop.stop_when` belongs here.
+const BUNDLED_RUNTIME_SCRIPTS = [
+  /^scripts[/\\]check-phase-stop\.mjs$/i,
+];
 const EXCLUDE_PATTERNS = [
   /^scripts[/\\]test-.*\.mjs$/i,
   /^scripts[/\\]check-.*\.mjs$/i,
@@ -51,7 +61,8 @@ const EXCLUDE_PATTERNS = [
   /^scripts[/\\]pack-dsh-plugin\.mjs$/i,
   /^modes[/\\][^/\\]+[/\\]config[/\\]/i,
 ];
-const shouldExclude = (rel) => EXCLUDE_PATTERNS.some((re) => re.test(rel));
+const shouldExclude = (rel) => EXCLUDE_PATTERNS.some((re) => re.test(rel))
+  && !BUNDLED_RUNTIME_SCRIPTS.some((re) => re.test(rel));
 
 // The stamp records WHAT was bundled, not merely which version. Keying the cache on the
 // version alone was wrong in a way that actually shipped: engine files were edited without

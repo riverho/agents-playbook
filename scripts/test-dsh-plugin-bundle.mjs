@@ -58,6 +58,25 @@ if (!bundle) {
   }
   ok('the bundle excludes engine test suites (dev material, not runtime)',
     !existsSync(join(bundle.root, 'scripts', 'test-concurrency-state.mjs')));
+
+  // A script the bundled MASTER names as a runtime dependency must ship with it. The
+  // exclusion rules drop `scripts/check-*.mjs` as development gates, which silently also
+  // dropped `check-phase-stop.mjs` — the command `playbook.yaml` declares as
+  // `loop.stop_when`. That shipped a master whose stop condition could not run: the same
+  // defect class as a bundled file naming a path the consumer does not have.
+  {
+    const bundledMaster = readFileSync(join(bundle.root, 'playbook.yaml'), 'utf8');
+    const stopWhen = /^[ \t]*stop_when[ \t]*:[ \t]*["']?([^"'\r\n]+)/m.exec(bundledMaster)?.[1]?.trim() || null;
+    ok('the bundled master declares a stop condition (the loop has a terminal state)',
+      stopWhen !== null, bundledMaster.slice(0, 200));
+    if (stopWhen) {
+      // Resolve the script the command names, ignoring any leading `node`.
+      const scriptRel = stopWhen.replace(/^node\s+/, '').split(/\s+/)[0];
+      ok('the bundle carries the script its declared stop_when names',
+        existsSync(join(bundle.root, scriptRel)),
+        `stop_when: ${stopWhen}\n        expected at: ${join(bundle.root, scriptRel)}`);
+    }
+  }
   ok('the bundle declares its own version', typeof engineVersion(bundle.pb) === 'string' && engineVersion(bundle.pb).length > 0,
     String(engineVersion(bundle.pb)));
   ok('the bundled engine version equals the engine repo version (no drift on publish)',
