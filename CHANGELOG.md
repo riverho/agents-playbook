@@ -5,6 +5,64 @@ makes the pair identifiable. `npm run check:version` guards the engine's own
 `package.json` ↔ `playbook.yaml` agreement, and `npm run pack:plugin` refuses to build a
 tarball whose plugin version differs from the engine it carries.
 
+## 0.8.1 — the loop gets a terminal state, a gate with two speeds, and a backlog that stops lying
+
+Patch. No new surface and no new verbs: the loop contract and the engine are corrected in place.
+A playbook that declares no `loop.stop_when` and no `loop.gate_tiers` behaves exactly as before.
+
+### Fixed
+
+- **The loop had no terminal state.** `playbook.yaml` declared `loop.steps` and `orchestrator:`,
+  but nothing said when the loop *ends*: the phase's stop condition lived in `memory/cycle.md` as
+  prose, printed by `pb anchor` and never evaluated. A finished phase therefore looked identical
+  to a busy one — `pb checkpoint` reports DRIFT, which asks for **more** work — so an
+  instruction-following agent answered the injected banner as though it were a task, and one
+  status line became dozens of turns. The loop now has an **executable** `loop.stop_when` (prose
+  is a `pb validate` failure, not a warning), a `pb stop-check` that reports the verdict as exit
+  code plus `agent-playbook.stop.v1` JSON, and a verdict cached on the journal `seq` — the truth
+  may lag the work, but never the record. The banner is **inert** when the check is green
+  (`PHASE COMPLETE`) or nothing is claimable (`NO ACTION REQUIRED`): it carries no imperative at
+  all. The plugin's injected block does the same, and gains a `maxTurnsWithoutProgress` backstop
+  (default 3, measured on the journal `seq`) that stops injecting once N turns have recorded
+  nothing. Pinned by `scripts/test-stop-when.mjs` (24), `scripts/test-dsh-inert-banner.mjs` (19)
+  and `scripts/test-dsh-no-progress-backstop.mjs` (11).
+- **The stop gate had one speed, and it was the expensive one.** It ran the whole suite —
+  measured on this repo, 327 s across 77 commands, of which seven timeout/kill suites alone were
+  188 s (58 %) — while `pb status --json` feeds the harness's per-step context injection. Caching
+  the verdict kept the harness usable, but the command was still wrong for the caller. The gate
+  is now split in `loop.gate_tiers`: **fast** (default) answers "may the loop continue?" and runs
+  in seconds; **`--full`** answers "is this repo sound?" and runs the version's own `stop_checks`.
+  A fast green says which question it answered and never claims the suite passed. Pinned by
+  `scripts/test-gate-tiers.mjs` (14).
+- **A budget that is only declared is not a budget.** A green stop gate that overran the per-turn
+  budget was reported as a plain healthy green while the harness paid minutes per step.
+  `loop.gate_tiers.fast.budget_ms` now makes an over-budget green a **three-valued** outcome —
+  `met: true, over_budget: true`, with a diagnosis that says it is not failing — and `met` is
+  never flipped to false by a budget. Pinned by `scripts/test-gate-latency-budget.mjs` (14).
+- **`memory/backlog.yaml` reported completion wrongly, and every gate stayed green.** 85 of 85
+  tasks disagreed with the journal's projection: each still read `status: todo` while the record
+  said done/blocked/dropped. Status lives in the projection; the file's `status:` is a fossil
+  written at creation. `pb status`/`pb validate` now name the count and an example (and the
+  file's header warns the reader), but it is a warning, not a failure — the projection is
+  authoritative. Pinned by `scripts/test-backlog-file-truth.mjs` (11).
+- **`--dry-run` was not inert on the version verb.** `pb version close --dry-run` really closed
+  the version — the one verb whose entire purpose is "show me what would happen". Every command
+  must now either honour the flag or refuse it at parse time. Pinned by
+  `scripts/test-dry-run-is-inert.mjs` (16).
+- **A version's `stop_checks` were write-once.** `pb version retitle --stop-check` (repeatable)
+  can now replace the commands that decide whether a phase is over. Not hypothetical: v0.8.1 was
+  opened with the dispatcher as its own stop check, which recursed, exited 0 and reported
+  COMPLETE having evaluated nothing. Pinned by `scripts/test-version-stop-checks.mjs` (14).
+- **A `blocked` card could hold a claim token it could never shed.** `version carry`/`drop`
+  refused while a token existed, and the only command that clears one (`pb release`) ignored
+  blocked cards — so no documented path could move the card. The root cause was journal replay:
+  a terminal status was applied without clearing the claim fields. Replay now clears them, and
+  `release --stale` sees blocked cards. Pinned by `scripts/test-release-blocked-card.mjs` (27).
+- **The plugin bundle shipped a master whose stop condition could not run.** The
+  `scripts/check-*.mjs` exclusion dropped `check-phase-stop.mjs` — the script the bundled
+  `playbook.yaml` names as `loop.stop_when`. A script the master references at runtime now ships
+  with it. Pinned by `scripts/test-dsh-plugin-bundle.mjs` (33).
+
 ## 0.8.0 — versions you have to close, an orchestrator that only proposes, and the Flow room as a real app
 
 Minor. New lifecycle surface (versions), a new scheduling surface (`pb tick`), and the graph UI

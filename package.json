@@ -1,6 +1,6 @@
 {
   "name": "agents-playbook",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "type": "module",
   "description": "A portable, agent-first playbook engine: a master playbook.yaml that indexes skills + processes, a friction-free loop CLI with enforced executable acceptance checks, and agent records that roll up into human reports. Everything lives in the folder (carry-on).",
   "keywords": [
